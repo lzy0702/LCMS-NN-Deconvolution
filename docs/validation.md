@@ -24,6 +24,7 @@ Component-level checks that run in the test suite:
 | Ionisation saturation | detected on a compressed response, not raised on a linear one |
 | Charge estimation without a model | the comb estimator names at least six of eleven charge states of a 20 kDa envelope |
 | Impurity recovery, whole run, no trained model | main species exact; three of seven true components recovered, including a 4 % impurity 438 Da below the main |
+| A saturated 144 kDa antibody in a two-peak run | found at the correct retention time, 520 ppm high, charge states agreeing to 11 ppm; 180 frames processed in 7.5 s |
 
 ## Defects this validation found
 
