@@ -111,8 +111,12 @@ def refine_frame(
     min_component_frac: float = 1e-4,
     max_mass_spread_ppm: float = 150.0,
     adduct_refit_frac: float = 1e-3,
-) -> list[Component]:
-    """Greedy weighted-NNLS fit of candidates on the residual, strongest first."""
+) -> tuple[list[Component], float]:
+    """Greedy weighted-NNLS fit of candidates on the residual, strongest first.
+
+    Returns the accepted components and the fraction of signal-bearing intensity they leave
+    unexplained.
+    """
     residual = observed.astype(np.float64).copy()
     weights = 1.0 / np.sqrt(np.clip(observed, 0, None) + noise_sigma**2 + 1e-9)
     # Detection uses only the base state and one of each adduct: enough to recognise a species
