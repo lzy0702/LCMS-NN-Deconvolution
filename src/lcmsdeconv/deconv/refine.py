@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import nnls
 
 from ..chem.adducts import AdductLibrary, AdductState, carrier_mass, mass_from_mz
 from ..chem.instrument import InstrumentModel
 from ..core.model import Component
 from .decode import Candidate
+from .nnls_solve import weighted_nnls
 from .templates import build_template, template_mz
 
 
@@ -82,11 +82,8 @@ def _fit_candidate(
         # every template bin is in the support by construction, so a sorted lookup suffices
         A[np.searchsorted(support, col.bins), j] = col.values
     w = weights[support]
-    b = residual[support] * w
-    Aw = A * w[:, None]
-    try:
-        x, _ = nnls(Aw, b, maxiter=5 * A.shape[1])
-    except Exception:
+    x = weighted_nnls(A, residual[support], w)
+    if x.size == 0:
         return {}, [], 0.0
     peak = x.max() if x.size else 0.0
     coeffs: dict[tuple[int, str], float] = {}
@@ -241,21 +238,26 @@ def _recenter_base(cand, coeffs, used, explained, residual, weights, grid, instr
                 hits += 1
         return hits
 
-    base_hits = support(cand.mass)
+    start_hits = support(cand.mass)
+    if start_hits < 2:
+        return cand, coeffs, used, explained
+    # Walk to the lightest mass in the adduct ladder that the spectrum still supports. Requiring
+    # *more* support would stop at the most abundant adducted form; requiring support to hold up
+    # reaches the base form, which is the one that carries a chemical identity.
+    floor = max(2, int(round(0.6 * start_hits)))
     mass = cand.mass
     moved = False
     for _ in range(max_steps):
-        best_d, best_hits = None, base_hits
+        best_d, best_hits = None, -1
         for d in deltas:
             if mass - d <= 0:
                 continue
             h = support(mass - d)
-            if h > best_hits:
+            if h >= floor and h > best_hits:
                 best_d, best_hits = d, h
         if best_d is None:
             break
         mass -= best_d
-        base_hits = best_hits
         moved = True
     if not moved:
         return cand, coeffs, used, explained

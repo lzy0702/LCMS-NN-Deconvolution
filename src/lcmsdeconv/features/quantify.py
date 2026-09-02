@@ -11,13 +11,25 @@ still reporting how each adduct's contribution changes across the peak.
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import nnls
 
 from ..chem.adducts import AdductLibrary, AdductState
 from ..chem.instrument import InstrumentModel, estimate_noise_sigma
 from ..core.model import Component, FrameResult, Spectrum
+from ..deconv.nnls_solve import weighted_nnls
 from ..deconv.templates import build_template
 from ..nn.grid import LogMzGrid
+
+
+def _keep_top(values: np.ndarray, fraction: float) -> np.ndarray:
+    """Indices of the largest entries whose sum reaches ``fraction`` of the total."""
+    if values.size == 0 or fraction >= 1.0:
+        return np.arange(values.size)
+    order = np.argsort(-values)
+    csum = np.cumsum(values[order])
+    n = int(np.searchsorted(csum, fraction * csum[-1]) + 1)
+    keep = np.zeros(values.size, dtype=bool)
+    keep[order[:n]] = True
+    return np.nonzero(keep)[0]
 
 
 class TemplateBank:
@@ -25,7 +37,8 @@ class TemplateBank:
 
     def __init__(self, components: list[Component], grid: LogMzGrid, instrument: InstrumentModel,
                  library: AdductLibrary, compound_class: str = "peptide",
-                 max_components: int = 40, min_adduct_fraction: float = 0.01):
+                 max_components: int = 20, min_adduct_fraction: float = 0.02,
+                 keep_fraction: float = 0.995, max_rows: int = 20000):
         self.grid = grid
         self.instrument = instrument
         by_intensity = sorted(components, key=lambda c: -c.intensity)[:max_components]
@@ -64,17 +77,26 @@ class TemplateBank:
                 s = vals.sum()
                 if s <= 0:
                     continue
-                cols_bins.append(bins)
-                cols_vals.append(vals / s)
+                vals = vals / s
+                # Drop the faint tails: they add rows to every frame's solve without carrying
+                # information, and a per-frame scale factor is set by the envelope's body.
+                keep = _keep_top(vals, keep_fraction)
+                cols_bins.append(bins[keep])
+                cols_vals.append(vals[keep])
                 self.keys.append((ci, label))
 
         if cols_bins:
-            self.support = np.unique(np.concatenate(cols_bins))
-            pos = {int(b): i for i, b in enumerate(self.support)}
+            support = np.unique(np.concatenate(cols_bins))
+            if support.size > max_rows:
+                # a uniform thinning keeps every envelope represented and the scale unbiased
+                support = support[np.linspace(0, support.size - 1, max_rows).astype(np.int64)]
+            self.support = support
             self.A = np.zeros((self.support.size, len(cols_bins)))
             for j, (bins, vals) in enumerate(zip(cols_bins, cols_vals)):
-                rows = np.fromiter((pos[int(b)] for b in bins), dtype=np.int64, count=bins.size)
-                self.A[rows, j] = vals
+                idx = np.searchsorted(self.support, bins)
+                idx = np.clip(idx, 0, self.support.size - 1)
+                hit = self.support[idx] == bins
+                np.add.at(self.A[:, j], idx[hit], vals[hit])
         else:
             self.support = np.array([], dtype=np.int64)
             self.A = np.zeros((0, 0))
@@ -95,10 +117,7 @@ class TemplateBank:
         if b.max() <= 0:
             return FrameResult(spectrum.rt, spectrum.polarity, [], noise, 0.0)
         w = 1.0 / np.sqrt(np.clip(b, 0, None) + noise**2 + 1e-9)
-        try:
-            x, _ = nnls(self.A * w[:, None], b * w, maxiter=10 * self.A.shape[1])
-        except Exception:
-            x = np.zeros(self.A.shape[1])
+        x = weighted_nnls(self.A, b, w)
 
         per_comp: dict[int, dict[str, float]] = {}
         for j, (ci, label) in enumerate(self.keys):
