@@ -8,12 +8,13 @@ import numpy as np
 
 from ..chem.adducts import AdductLibrary
 from ..chem.instrument import InstrumentModel, estimate_noise_sigma
-from ..core.model import FrameResult, Spectrum
+from ..core.model import Component, FrameResult, Spectrum
 from ..nn.grid import LogMzGrid
 from ..nn.infer import ChargePredictor
 from .decode import (
     accumulate_mass_histogram,
     dedupe_adduct_candidates,
+    drop_harmonics_of,
     pick_candidates,
     refine_candidate_masses,
     suppress_harmonics,
@@ -77,33 +78,40 @@ def deconvolve_spectrum(
     if observed.max() <= 0:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0, meta={"grid": grid})
 
-    prediction = predictor.predict_grid(grid, observed, noise_sigma)
-    lm_axis, hist, charge_sets = accumulate_mass_histogram(
-        grid, observed, prediction, noise_sigma, snr=params.snr, prob_min=params.prob_min,
-        mass_min=params.mass_range[0], mass_max=params.mass_range[1],
-        z_min=params.charge_range[0], z_max=params.charge_range[1],
-    )
-    candidates = pick_candidates(lm_axis, hist, charge_sets,
-                                 min_charge_support=params.min_charge_support,
-                                 rel_height=params.min_relative_abundance)
-    if not candidates:
-        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0, meta={"grid": grid})
     library = AdductLibrary.from_mode(params.adduct_mode, polarity,
                                       include=params.adduct_include, exclude=params.adduct_exclude,
                                       max_per_type=params.adduct_max_per_type,
                                       max_total=params.adduct_max_total)
     raw_order = np.argsort(spectrum.mz)
     raw_mz, raw_int = spectrum.mz[raw_order], spectrum.intensity[raw_order]
-    candidates = refine_candidate_masses(candidates, raw_mz, raw_int, polarity,
-                                         noise_sigma=noise_sigma, snr=params.snr,
-                                         max_spread_ppm=params.max_mass_spread_ppm)
-    candidates = _dedupe_by_mass(candidates)
-    candidates = suppress_harmonics(candidates, suppress_multimers=params.suppress_multimers)
-    candidates = dedupe_adduct_candidates(candidates, library.deltas())
-    if candidates:
-        floor = params.min_relative_abundance * max(c.score for c in candidates)
-        candidates = [c for c in candidates if c.score >= floor]
-    candidates = candidates[: params.max_components]
+
+    def detect(signal: np.ndarray):
+        """Charge assignment, mass histogram and candidate cleanup for one spectrum."""
+        prediction = predictor.predict_grid(grid, signal, noise_sigma)
+        lm_axis, hist, charge_support = accumulate_mass_histogram(
+            grid, signal, prediction, noise_sigma, snr=params.snr, prob_min=params.prob_min,
+            mass_min=params.mass_range[0], mass_max=params.mass_range[1],
+            z_min=params.charge_range[0], z_max=params.charge_range[1],
+        )
+        cands = pick_candidates(lm_axis, hist, charge_support,
+                                min_charge_support=params.min_charge_support,
+                                rel_height=params.min_relative_abundance)
+        if not cands:
+            return []
+        cands = refine_candidate_masses(cands, raw_mz, raw_int, polarity,
+                                        noise_sigma=noise_sigma, snr=params.snr,
+                                        max_spread_ppm=params.max_mass_spread_ppm)
+        cands = _dedupe_by_mass(cands)
+        cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
+        cands = dedupe_adduct_candidates(cands, library.deltas())
+        if cands:
+            floor = params.min_relative_abundance * max(c.score for c in cands)
+            cands = [c for c in cands if c.score >= floor]
+        return cands[: params.max_components]
+
+    candidates = detect(observed)
+    if not candidates:
+        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0, meta={"grid": grid})
 
     cls = params.compound_class
     auto_selected = cls == "auto"
@@ -111,13 +119,34 @@ def deconvolve_spectrum(
         cls = _auto_class(candidates, grid, observed, noise_sigma, instrument, library,
                           params.class_candidates)
 
-    components, residual_fraction = refine_frame(
-        candidates, grid, observed, noise_sigma, instrument, cls, library,
-        raw_mz=raw_mz, raw_int=raw_int,
-        max_iter=params.refine_iterations, min_charge_support=params.min_charge_support,
-        min_component_frac=params.min_relative_abundance,
-        max_mass_spread_ppm=params.max_mass_spread_ppm,
-    )
+    # Fit, then look again at what is left. Subtracting the strong envelopes uncovers the
+    # low-abundance species that the first pass could not separate from their tails, which is
+    # where impurities below one percent of the ion current live.
+    components: list[Component] = []
+    residual = observed.astype(np.float64).copy()
+    residual_fraction = 1.0
+    for iteration in range(max(1, params.refine_iterations)):
+        if iteration > 0:
+            found_masses = [e.mass for e in components]
+            candidates = [c for c in detect(residual)
+                          if all(abs(c.mass - e) > max(e * 1e-4, 0.5) for e in found_masses)]
+            candidates = drop_harmonics_of(candidates, found_masses,
+                                           suppress_multimers=params.suppress_multimers)
+            if not candidates:
+                break
+        new, residual_fraction, residual = refine_frame(
+            candidates, grid, observed, noise_sigma, instrument, cls, library,
+            raw_mz=raw_mz, raw_int=raw_int,
+            min_charge_support=params.min_charge_support,
+            min_component_frac=params.min_relative_abundance,
+            max_mass_spread_ppm=params.max_mass_spread_ppm,
+            residual=residual, start_id=len(components),
+            strongest_explained=max((c.intensity for c in components), default=0.0),
+        )
+        if not new:
+            break
+        components.extend(new)
+
     for c in components:
         c.compound_class = cls
         if auto_selected:

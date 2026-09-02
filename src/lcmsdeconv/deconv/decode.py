@@ -251,7 +251,7 @@ def refine_candidate_masses(
     return out
 
 
-def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 150.0,
+def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 500.0,
                        max_order: int = 6, score_ratio: float = 0.6,
                        suppress_multimers: bool = True) -> list[Candidate]:
     """Drop candidates that are a charge harmonic of a stronger one.
@@ -271,12 +271,41 @@ def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 150.0,
         for s in kept:
             if c.score >= score_ratio * s.score:
                 continue
-            tol = max(c.mass * tol_ppm * 1e-6, 0.5)
+            tol = max(c.mass * tol_ppm * 1e-6, 2.0)
             for n in range(2, max_order + 1):
                 if abs(c.mass - s.mass / n) <= tol:
                     harmonic = True
                     break
                 if suppress_multimers and abs(c.mass - s.mass * n) <= max(tol, n * 0.5):
+                    harmonic = True
+                    break
+            if harmonic:
+                break
+        if not harmonic:
+            kept.append(c)
+    return kept
+
+
+def drop_harmonics_of(candidates: list[Candidate], masses: list[float], tol_ppm: float = 500.0,
+                      max_order: int = 6, suppress_multimers: bool = True) -> list[Candidate]:
+    """Drop candidates that are a charge harmonic of an already-accepted mass.
+
+    Once a species has been fitted and subtracted it no longer appears in the candidate list,
+    so a later pass over the residual has nothing to recognise its harmonics against. Passing
+    the accepted masses back in keeps M/n and n*M artefacts out of the later passes.
+    """
+    if not masses:
+        return candidates
+    kept: list[Candidate] = []
+    for c in candidates:
+        harmonic = False
+        for m in masses:
+            tol = max(c.mass * tol_ppm * 1e-6, 2.0)
+            for n in range(2, max_order + 1):
+                if abs(c.mass - m / n) <= tol:
+                    harmonic = True
+                    break
+                if suppress_multimers and abs(c.mass - m * n) <= max(tol, n * 0.5):
                     harmonic = True
                     break
             if harmonic:

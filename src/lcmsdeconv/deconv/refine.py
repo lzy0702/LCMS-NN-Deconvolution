@@ -111,95 +111,94 @@ def refine_frame(
     min_component_frac: float = 1e-4,
     max_mass_spread_ppm: float = 150.0,
     adduct_refit_frac: float = 1e-3,
-) -> tuple[list[Component], float]:
-    """Greedy weighted-NNLS fit of candidates on the residual, strongest first.
+    residual: np.ndarray | None = None,
+    start_id: int = 0,
+    strongest_explained: float = 0.0,
+) -> tuple[list[Component], float, np.ndarray]:
+    """Greedy weighted-NNLS fit of candidates, strongest first.
 
-    Returns the accepted components and the fraction of signal-bearing intensity they leave
-    unexplained.
+    Fits against ``residual`` (the observed spectrum by default) while weighting by the original
+    measurement, and returns the accepted components, the fraction of signal-bearing intensity
+    still unexplained, and the updated residual so the caller can re-detect on what is left.
     """
-    residual = observed.astype(np.float64).copy()
+    residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = 1.0 / np.sqrt(np.clip(observed, 0, None) + noise_sigma**2 + 1e-9)
     # Detection uses only the base state and one of each adduct: enough to recognise a species
     # without paying for every adduct combination on candidates that will be rejected anyway.
     states_fast = [AdductState()]
     states_full = library.states()
     mz_range = (float(raw_mz.min()), float(raw_mz.max())) if raw_mz is not None and raw_mz.size else None
-    total_obs = observed.sum() + 1e-9
+    # An abundance floor relative to the whole grid would depend on how wide the grid is and how
+    # noisy the baseline is. Impurity limits are quoted against the main component, so that is
+    # what candidates are measured against: the strongest fit seen so far in this frame.
+    strongest = float(strongest_explained)
 
     components: list[Component] = []
     remaining = list(candidates)
-    cid = 0
-    for _ in range(max_iter):
-        remaining.sort(key=lambda c: -c.score)
-        progressed = False
-        for cand in remaining:
-            coeffs, used, explained = _fit_candidate(
-                cand, residual, weights, grid, instrument, compound_class, states_fast,
+    cid = start_id
+    remaining.sort(key=lambda c: -c.score)
+    for cand in remaining:
+        coeffs, used, explained = _fit_candidate(
+            cand, residual, weights, grid, instrument, compound_class, states_fast,
+            mz_range=mz_range,
+        )
+        if explained <= 0:
+            continue
+        charges_present = {z for (z, _lab) in coeffs}
+        if len(charges_present) < min_charge_support and charges_present != {1}:
+            continue
+        strongest = max(strongest, explained)
+        if explained < min_component_frac * strongest:
+            continue
+        # aggregate by charge and by adduct
+        charge_int: dict[int, float] = {}
+        adduct_int: dict[str, float] = {}
+        for (z, lab), v in coeffs.items():
+            charge_int[z] = charge_int.get(z, 0.0) + v
+            adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
+        comp = Component(
+            mass=cand.mass, intensity=explained, mass_type="average",
+            charges=charge_int, adducts=adduct_int, score=cand.score,
+            compound_class=compound_class, id=cid,
+        )
+        if raw_mz is not None:
+            _refine_mass(comp, raw_mz, raw_int, grid.polarity)
+        if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
+            # charge states disagree on the mass: a degenerate fit, not a real species
+            continue
+        # An adduct only ever adds mass, so if the fit is centred on an adducted form the
+        # lighter base form cannot be represented at all. Trying the centre one adduct
+        # lower and keeping it when it explains more recovers the true neutral mass.
+        if len(states_full) > 1 and explained >= adduct_refit_frac * strongest:
+            cand, coeffs, used, explained = _recenter_base(
+                cand, coeffs, used, explained, residual, weights, grid, instrument,
+                compound_class, states_full, library, mz_range,
+                raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
+            )
+            if abs(cand.mass - comp.mass) > 1e-6:
+                # re-centred: measure the mass again from the raw apexes at the new centre
+                comp.mass = cand.mass
+                if raw_mz is not None:
+                    _refine_mass(comp, raw_mz, raw_int, grid.polarity)
+        if len(states_full) > 1 and explained >= adduct_refit_frac * strongest:
+            coeffs_full, used_full, explained_full = _fit_candidate(
+                cand, residual, weights, grid, instrument, compound_class, states_full,
                 mz_range=mz_range,
             )
-            if explained <= 0:
-                continue
-            charges_present = {z for (z, _lab) in coeffs}
-            if len(charges_present) < min_charge_support and charges_present != {1}:
-                continue
-            if explained < min_component_frac * total_obs:
-                continue
-            # aggregate by charge and by adduct
-            charge_int: dict[int, float] = {}
-            adduct_int: dict[str, float] = {}
-            for (z, lab), v in coeffs.items():
-                charge_int[z] = charge_int.get(z, 0.0) + v
-                adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
-            comp = Component(
-                mass=cand.mass, intensity=explained, mass_type="average",
-                charges=charge_int, adducts=adduct_int, score=cand.score,
-                compound_class=compound_class, id=cid,
-            )
-            if raw_mz is not None:
-                _refine_mass(comp, raw_mz, raw_int, grid.polarity)
-            if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
-                # charge states disagree on the mass: a degenerate fit, not a real species
-                continue
-            # An adduct only ever adds mass, so if the fit is centred on an adducted form the
-            # lighter base form cannot be represented at all. Trying the centre one adduct
-            # lower and keeping it when it explains more recovers the true neutral mass.
-            if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
-                cand, coeffs, used, explained = _recenter_base(
-                    cand, coeffs, used, explained, residual, weights, grid, instrument,
-                    compound_class, states_full, library, mz_range,
-                    raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
-                )
-                if abs(cand.mass - comp.mass) > 1e-6:
-                    # re-centred: measure the mass again from the raw apexes at the new centre
-                    comp.mass = cand.mass
-                    if raw_mz is not None:
-                        _refine_mass(comp, raw_mz, raw_int, grid.polarity)
-            if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
-                coeffs_full, used_full, explained_full = _fit_candidate(
-                    cand, residual, weights, grid, instrument, compound_class, states_full,
-                    mz_range=mz_range,
-                )
-                if explained_full >= 0.8 * explained:
-                    coeffs, used, explained = coeffs_full, used_full, explained_full
-                    adduct_int = {}
-                    charge_int = {}
-                    for (z, lab), v in coeffs.items():
-                        charge_int[z] = charge_int.get(z, 0.0) + v
-                        adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
-                    comp.charges, comp.adducts, comp.intensity = charge_int, adduct_int, explained
-            components.append(comp)
-            cid += 1
-            # subtract fitted envelope
-            for tpl, coef in used:
-                np.subtract.at(residual, tpl.bins, tpl.values * coef)
-            residual = np.clip(residual, 0, None)
-            progressed = True
-        # re-detect on residual for the next iteration
-        if not progressed:
-            break
-        remaining = _redetect(residual, grid, noise_sigma, components)
-        if not remaining:
-            break
+            if explained_full >= 0.8 * explained:
+                coeffs, used, explained = coeffs_full, used_full, explained_full
+                adduct_int = {}
+                charge_int = {}
+                for (z, lab), v in coeffs.items():
+                    charge_int[z] = charge_int.get(z, 0.0) + v
+                    adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
+                comp.charges, comp.adducts, comp.intensity = charge_int, adduct_int, explained
+        components.append(comp)
+        cid += 1
+        # subtract fitted envelope
+        for tpl, coef in used:
+            np.subtract.at(residual, tpl.bins, tpl.values * coef)
+        residual = np.clip(residual, 0, None)
 
     # residual over signal-bearing bins only (whole-grid noise would dominate otherwise)
     sig_bins = observed > 10.0 * noise_sigma
@@ -211,7 +210,7 @@ def refine_frame(
     _merge_adduct_components(components, library)
     _flag_harmonics(components)
     _flag_adduct_ambiguity(components, library)
-    return components, residual_fraction
+    return components, residual_fraction, residual
 
 
 def _recenter_base(cand, coeffs, used, explained, residual, weights, grid, instrument,
@@ -276,15 +275,6 @@ def _recenter_base(cand, coeffs, used, explained, residual, weights, grid, instr
     if e2 >= explained:
         return trial, c2, u2, e2
     return cand, coeffs, used, explained
-
-
-def _redetect(residual, grid, noise_sigma, existing) -> list[Candidate]:
-    """Look for leftover envelopes in the residual (cheap: strong isolated bins)."""
-    thr = 6 * noise_sigma
-    if residual.max() < thr:
-        return []
-    # coarse: not re-running the NN; return empty to keep it deterministic and fast
-    return []
 
 
 def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 200.0):
