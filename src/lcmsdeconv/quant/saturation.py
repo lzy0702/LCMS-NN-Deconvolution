@@ -91,7 +91,8 @@ def estimate_uv_delay(tic: Chromatogram, uv: Chromatogram, max_delay: float = 0.
     lags = np.arange(-max_lag, max_lag + 1)
     corr = np.array([np.dot(a, np.roll(b, int(k))) for k in lags])
     best = lags[int(np.argmax(corr))]
-    return float(best * dt)
+    # positive result means the UV trace lags the MS trace, which is how it is applied below
+    return float(-best * dt)
 
 
 def detect_esi_saturation(
