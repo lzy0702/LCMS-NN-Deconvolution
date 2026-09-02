@@ -74,12 +74,40 @@ class LogMzGrid:
         return self.mz_min <= mz <= self.mz_max
 
     # --------------------------------------------------------------- resampling
-    def resample_profile(self, mz: np.ndarray, intensity: np.ndarray) -> np.ndarray:
-        """Area-preserving resample of a raw profile spectrum onto the grid.
+    def resample_profile(self, mz: np.ndarray, intensity: np.ndarray,
+                         centroided: bool | None = None) -> np.ndarray:
+        """Resample a raw spectrum onto the grid, preserving peak shape.
 
-        Intensities are treated as a density in m/z; each source interval contributes to the
-        grid bins it overlaps. Falls back to nearest-bin accumulation for centroided input.
+        Profile data is bin-averaged (the raw axis is usually denser than the grid, so summing
+        would turn peaks into spikes whose shape no longer matches the instrument line shape)
+        and empty bins between samples are linearly interpolated, so a rendered template and a
+        resampled measurement have the same shape. Centroided data is splatted with the
+        instrument line width instead, by :meth:`render_centroids`.
         """
+        mz = np.asarray(mz, dtype=float)
+        intensity = np.asarray(intensity, dtype=float)
+        out = np.zeros(self.size, dtype=np.float64)
+        m = (mz > self.mz_min) & (mz < self.mz_max)
+        if not np.any(m):
+            return out
+        mz, intensity = mz[m], intensity[m]
+        b = np.clip(self.mz_to_bin(mz), 0, self.size - 1)
+        sums = np.bincount(b, weights=intensity, minlength=self.size)
+        counts = np.bincount(b, minlength=self.size)
+        filled = counts > 0
+        out[filled] = sums[filled] / counts[filled]
+        if centroided is False or filled.sum() < 2:
+            return out
+        # linear interpolation across bins that received no raw sample (upsampling regions)
+        idx = np.nonzero(filled)[0]
+        if idx.size >= 2 and idx.size < self.size:
+            lo, hi = idx[0], idx[-1]
+            span = np.arange(lo, hi + 1)
+            out[lo:hi + 1] = np.interp(span, idx, out[idx])
+        return out
+
+    def render_centroids(self, mz: np.ndarray, intensity: np.ndarray, instrument) -> np.ndarray:
+        """Place centroided peaks on the grid with the instrument line shape."""
         mz = np.asarray(mz, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
         out = np.zeros(self.size, dtype=np.float64)
@@ -87,8 +115,15 @@ class LogMzGrid:
         if not np.any(m):
             return out
         mz, intensity = mz[m], intensity[m]
-        b = np.clip(self.mz_to_bin(mz), 0, self.size - 1)
-        np.add.at(out, b, intensity)
+        centers = (self.mz_to_u(mz) - self.u_min) / self.step
+        sigma = np.maximum(instrument.sigma_mz(mz) / (mz - self.carrier) / self.step, 0.5)
+        hw = int(np.ceil(4 * sigma.max())) + 1
+        offs = np.arange(-hw, hw + 1)
+        bins = np.floor(centers).astype(np.int64)[:, None] + offs[None, :]
+        d = centers[:, None] - bins
+        vals = intensity[:, None] * np.exp(-0.5 * (d / sigma[:, None]) ** 2)
+        keep = (bins >= 0) & (bins < self.size)
+        np.add.at(out, bins[keep], vals[keep])
         return out
 
     def resample_max(self, mz: np.ndarray, intensity: np.ndarray) -> np.ndarray:
