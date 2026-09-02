@@ -78,6 +78,7 @@ class DeconvSettings:
     refine_iterations: int = 2
     nn_probability_min: int | float = 0.05
     min_charge_support: int = 2
+    suppress_multimers: bool = True
     grid_step: float = 2e-5
     max_components: int = 200
     quantify_frames: bool = True

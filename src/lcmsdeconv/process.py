@@ -73,6 +73,7 @@ def _deconv_params(method: Method) -> DeconvParams:
         snr=d.snr_threshold,
         prob_min=float(d.nn_probability_min),
         min_charge_support=d.min_charge_support,
+        suppress_multimers=d.suppress_multimers,
         min_relative_abundance=d.min_relative_abundance,
         refine_iterations=d.refine_iterations,
         max_components=d.max_components,

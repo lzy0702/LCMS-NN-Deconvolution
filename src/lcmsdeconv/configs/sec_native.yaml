@@ -48,6 +48,7 @@ deconvolution:
   refine_iterations: 2
   nn_probability_min: 0.05
   min_charge_support: 2
+  suppress_multimers: false
   grid_step: 2.0e-05
   max_components: 200
   quantify_frames: true

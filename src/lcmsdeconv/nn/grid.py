@@ -84,13 +84,14 @@ class LogMzGrid:
     # --------------------------------------------------------------- resampling
     def resample_profile(self, mz: np.ndarray, intensity: np.ndarray,
                          centroided: bool | None = None) -> np.ndarray:
-        """Resample a raw spectrum onto the grid, preserving peak shape.
+        """Resample a raw spectrum onto the grid, preserving both shape and scale.
 
-        Profile data is bin-averaged (the raw axis is usually denser than the grid, so summing
-        would turn peaks into spikes whose shape no longer matches the instrument line shape)
-        and empty bins between samples are linearly interpolated, so a rendered template and a
-        resampled measurement have the same shape. Centroided data is splatted with the
-        instrument line width instead, by :meth:`render_centroids`.
+        Each raw sample is treated as covering its own slice of the axis, so a bin's value is
+        the integral of intensity over that bin divided by the bin width. For densely sampled
+        data this equals the mean of the samples in the bin, so peak shape is preserved; for
+        the thresholded profiles that vendor software writes, where only points near peaks
+        survive, it correctly reports less signal instead of averaging the surviving peak tops
+        up to full height. Empty bins between surviving samples are left at zero.
         """
         mz = np.asarray(mz, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
@@ -99,19 +100,25 @@ class LogMzGrid:
         if not np.any(m):
             return out
         mz, intensity = mz[m], intensity[m]
-        b = np.clip(self.mz_to_bin(mz), 0, self.size - 1)
-        sums = np.bincount(b, weights=intensity, minlength=self.size)
-        counts = np.bincount(b, minlength=self.size)
-        filled = counts > 0
-        out[filled] = sums[filled] / counts[filled]
-        if centroided is False or filled.sum() < 2:
+        if mz.size == 1:
+            b = int(np.clip(self.mz_to_bin(mz), 0, self.size - 1))
+            out[b] = intensity[0]
             return out
-        # linear interpolation across bins that received no raw sample (upsampling regions)
-        idx = np.nonzero(filled)[0]
-        if idx.size >= 2 and idx.size < self.size:
-            lo, hi = idx[0], idx[-1]
-            span = np.arange(lo, hi + 1)
-            out[lo:hi + 1] = np.interp(span, idx, out[idx])
+
+        u = self.mz_to_u(mz)
+        # width in u represented by each sample (midpoints between neighbours)
+        du = np.empty_like(u)
+        du[1:-1] = 0.5 * (u[2:] - u[:-2])
+        du[0] = u[1] - u[0]
+        du[-1] = u[-1] - u[-2]
+        # a sample never represents more than a bin's worth when data is denser than the grid,
+        # and never less than its own spacing when it is sparser
+        du = np.clip(du, 0.0, None)
+        b = np.clip(self.mz_to_bin(mz), 0, self.size - 1)
+        np.add.at(out, b, intensity * du / self.step)
+        if centroided is False:
+            return out
+        # bins that received several samples are already integrated; nothing else to do
         return out
 
     def render_centroids(self, mz: np.ndarray, intensity: np.ndarray, instrument) -> np.ndarray:

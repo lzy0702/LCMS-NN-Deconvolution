@@ -19,19 +19,30 @@ from .spec import Compound
 
 
 def emg(t: np.ndarray, center: float, sigma: float, tau: float) -> np.ndarray:
-    """Exponentially modified Gaussian elution profile (unit apex ~1)."""
-    if tau < 1e-4:
-        y = np.exp(-0.5 * ((t - center) / sigma) ** 2)
-    else:
-        from scipy.special import erfc
+    """Exponentially modified Gaussian elution profile, scaled to unit apex.
 
-        arg = (sigma / tau - (t - center) / sigma) / np.sqrt(2)
-        z = 0.5 * (sigma / tau) ** 2 - (t - center) / tau
-        z = np.clip(z, -700, 700)
-        y = np.exp(z) * erfc(arg)
-        y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-    m = y.max()
+    The normalisation is computed from a dense reference grid over the peak rather than from
+    the values passed in, so evaluating the profile at a single time gives the same answer as
+    evaluating it across the whole run.
+    """
+    t = np.atleast_1d(np.asarray(t, dtype=float))
+    y = _emg_raw(t, center, sigma, tau)
+    ref = _emg_raw(np.linspace(center - 4 * sigma - 4 * tau, center + 6 * sigma + 8 * tau, 512),
+                   center, sigma, tau)
+    m = float(ref.max())
     return y / m if m > 0 else y
+
+
+def _emg_raw(t: np.ndarray, center: float, sigma: float, tau: float) -> np.ndarray:
+    if tau < 1e-4:
+        return np.exp(-0.5 * ((t - center) / sigma) ** 2)
+    from scipy.special import erfc
+
+    arg = (sigma / tau - (t - center) / sigma) / np.sqrt(2)
+    z = 0.5 * (sigma / tau) ** 2 - (t - center) / tau
+    z = np.clip(z, -700, 700)
+    y = np.exp(z) * erfc(arg)
+    return np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 @dataclass
@@ -92,7 +103,10 @@ def generate_run(
 
     # build peaks
     peaks: list[PeakTruth] = []
-    centers = np.sort(rng.uniform(rt_range[0] + 0.5, rt_range[1] - 0.5, n_peaks))
+    # keep peaks away from the run edges, but never invert the interval on a short run
+    span = max(rt_range[1] - rt_range[0], 1e-6)
+    margin = min(0.5, 0.25 * span)
+    centers = np.sort(rng.uniform(rt_range[0] + margin, rt_range[1] - margin, n_peaks))
     for c in centers:
         cc = choose_class(rng, cfg.classes)
         main = sample_compound(rng, cc)
@@ -134,12 +148,13 @@ def generate_run(
     spectra: list[Spectrum] = []
     uv = np.zeros(n_frames)
     esi_level = np.percentile([p.intensity for p in peaks], 60) * 3 if peaks else 1e6
+    profiles = [emg(times, p.rt, p.sigma, p.tau) for p in peaks]
 
     for fi, (t, pol) in enumerate(zip(times, pol_sched)):
         components: list[ComponentInstance] = []
         frame_conc = 0.0
-        for p in peaks:
-            prof = float(emg(np.array([t]), p.rt, p.sigma, p.tau)[0])
+        for pi, p in enumerate(peaks):
+            prof = float(profiles[pi][fi])
             if prof < 1e-4:
                 continue
             for idx, (comp, rel) in enumerate(p.members):

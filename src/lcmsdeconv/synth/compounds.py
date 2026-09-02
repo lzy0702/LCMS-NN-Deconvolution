@@ -123,7 +123,8 @@ def sample_compound(rng: np.random.Generator, cls_config: ClassConfig) -> Compou
     cls = cls_config.name
     mr = cls_config.mass_range
     if cls == "peptide":
-        if rng.random() < 0.1:
+        # antibodies only when the configured range actually reaches antibody masses
+        if mr[0] <= 144000.0 and mr[1] >= 150000.0 and rng.random() < 0.1:
             return sample_mab(rng)
         return sample_peptide(rng, mr)
     if cls in ("dna", "rna", "ps_dna", "ps_rna"):

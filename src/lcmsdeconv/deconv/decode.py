@@ -252,13 +252,18 @@ def refine_candidate_masses(
 
 
 def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 150.0,
-                       max_order: int = 6, score_ratio: float = 0.6) -> list[Candidate]:
+                       max_order: int = 6, score_ratio: float = 0.6,
+                       suppress_multimers: bool = True) -> list[Candidate]:
     """Drop candidates that are a charge harmonic of a stronger one.
 
-    Reading an envelope's charges as z/n puts a spurious candidate at M/n carrying the same
-    ions, so a weak candidate sitting at an integer fraction of a much stronger mass is almost
-    always an artefact. A candidate of comparable strength is kept: a monomer really can appear
-    at half the mass of its dimer, and the residual fit is left to decide between them.
+    Reading an envelope's charges as z/n puts a spurious candidate at M/n carrying exactly the
+    same ions, and reading them as n*z puts one at n*M. Both are artefacts of the charge
+    assignment rather than separate species, and both are dropped when clearly weaker than the
+    candidate they mirror.
+
+    Multiples (n*M) are the ambiguous direction: a genuine dimer is indistinguishable from a
+    doubled charge assignment within one spectrum. ``suppress_multimers`` should be turned off
+    for native and size-exclusion work, where oligomers are the point of the experiment.
     """
     kept: list[Candidate] = []
     for c in sorted(candidates, key=lambda x: -x.score):
@@ -269,6 +274,9 @@ def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 150.0,
             tol = max(c.mass * tol_ppm * 1e-6, 0.5)
             for n in range(2, max_order + 1):
                 if abs(c.mass - s.mass / n) <= tol:
+                    harmonic = True
+                    break
+                if suppress_multimers and abs(c.mass - s.mass * n) <= max(tol, n * 0.5):
                     harmonic = True
                     break
             if harmonic:

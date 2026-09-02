@@ -39,11 +39,15 @@ def test_grid_stick_roundtrip():
         assert abs(rec - mass) / mass < 5e-5  # within grid quantization (~20 ppm)
 
 
-def test_emg_unit_apex():
+def test_emg_unit_apex_and_pointwise_consistency():
     t = np.linspace(0, 5, 500)
     y = emg(t, 2.5, 0.1, 0.15)
-    assert abs(y.max() - 1.0) < 1e-6
+    # normalization comes from a dense reference grid, so the apex is 1 to grid precision
+    assert abs(y.max() - 1.0) < 1e-3
     assert y.min() >= 0.0
+    # evaluating one time at a time must agree with evaluating the whole run at once
+    pointwise = np.array([emg(np.array([x]), 2.5, 0.1, 0.15)[0] for x in t[::25]])
+    assert np.allclose(pointwise, y[::25])
 
 
 def test_run_generation_small():

@@ -34,6 +34,7 @@ class DeconvParams:
     refine_iterations: int = 2
     max_components: int = 30
     max_mass_spread_ppm: float = 150.0
+    suppress_multimers: bool = True
     grid_step: float = 2e-5
     grid_mz_max: float = 10000.0
     adduct_mode: str = "rplc"
@@ -97,7 +98,7 @@ def deconvolve_spectrum(
                                          noise_sigma=noise_sigma, snr=params.snr,
                                          max_spread_ppm=params.max_mass_spread_ppm)
     candidates = _dedupe_by_mass(candidates)
-    candidates = suppress_harmonics(candidates)
+    candidates = suppress_harmonics(candidates, suppress_multimers=params.suppress_multimers)
     candidates = dedupe_adduct_candidates(candidates, library.deltas())
     if candidates:
         floor = params.min_relative_abundance * max(c.score for c in candidates)
