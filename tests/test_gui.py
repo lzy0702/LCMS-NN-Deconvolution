@@ -90,3 +90,35 @@ def test_table_models_format_values(qtbot):
 
     assert m.data(m.index(0, 0), Qt.DisplayRole) == "12,345.68"
     assert "base 90.0%" in m.data(m.index(0, 1), Qt.DisplayRole)
+
+
+def test_gui_displays_processed_result(qtbot):
+    """The window must render a real ProcessResult: tables, plots and warnings."""
+    import numpy as np
+
+    from lcmsdeconv.core.method import Method
+    from lcmsdeconv.gui.app import MainWindow
+    from lcmsdeconv.process import process_run
+    from lcmsdeconv.synth.chromatography import generate_run
+    from lcmsdeconv.synth.compounds import ClassConfig
+    from lcmsdeconv.synth.config import SynthConfig
+
+    cfg = SynthConfig(classes=[ClassConfig("peptide", (12000.0, 20000.0))], mode="rplc",
+                      polarity=1, adduct_max_lambda=0.03)
+    run, _ = generate_run(cfg, np.random.default_rng(5), n_peaks=1, rt_range=(0.5, 1.3),
+                          scan_rate_hz=1.0)
+    method = Method.load("rplc_pos_protein")
+    method.deconvolution.max_components = 8
+    result = process_run(run, method, model_path="comb")
+
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.run = run
+    win.on_processed(result)
+    assert win.species_model.rowCount() > 0
+    assert win.signal_box.count() > 0
+    assert win.peaks_model.rowCount() >= 0
+    assert win.report_btn.isEnabled()
+    # selecting a species draws its deconvolved chromatogram
+    win.on_species_clicked(win.species_model.index(0, 0))
+    assert "Deconvolved EIC" in win.mass_plot.plotItem.titleLabel.text

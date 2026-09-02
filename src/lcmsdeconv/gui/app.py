@@ -289,9 +289,16 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(lambda m: self.statusBar().showMessage(m))
         self._thread.start()
 
+    def _stop_worker(self):
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait(2000)
+            self._thread = None
+            self._worker = None
+
     def on_processed(self, result):
         self.result = result
-        self._thread.quit()
+        self._stop_worker()
         self.process_btn.setEnabled(True)
         self.report_btn.setEnabled(True)
         self.species_model.set_rows(result.impurities)
@@ -307,7 +314,7 @@ class MainWindow(QMainWindow):
             f"{len(result.species)} species in {result.timings.get('total_s', 0):.1f} s")
 
     def on_failed(self, message: str):
-        self._thread.quit()
+        self._stop_worker()
         self.process_btn.setEnabled(True)
         QMessageBox.critical(self, "Processing failed", message)
         self.statusBar().showMessage("processing failed")
