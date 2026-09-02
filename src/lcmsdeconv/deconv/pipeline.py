@@ -106,7 +106,8 @@ def deconvolve_spectrum(
     candidates = candidates[: params.max_components]
 
     cls = params.compound_class
-    if cls == "auto":
+    auto_selected = cls == "auto"
+    if auto_selected:
         cls = _auto_class(candidates, grid, observed, noise_sigma, instrument, library,
                           params.class_candidates)
 
@@ -119,6 +120,10 @@ def deconvolve_spectrum(
     )
     for c in components:
         c.compound_class = cls
+        if auto_selected:
+            # at time-of-flight resolving power the isotope envelopes of different compound
+            # classes are nearly identical, so an automatic choice is a hint, not a finding
+            c.flags.append(f"compound class {cls} chosen automatically")
     return FrameResult(spectrum.rt, polarity, components, noise_sigma, residual_fraction,
                        meta={"resolution": instrument.resolution, "grid": grid})
 
@@ -141,7 +146,12 @@ def _dedupe_by_mass(candidates, tol_ppm: float = 100.0, tol_da: float = 0.3):
 
 
 def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, class_candidates) -> str:
-    """Choose the class whose templates best explain the strongest candidate (weighted R^2)."""
+    """Choose the class whose templates best explain the strongest candidate (weighted R^2).
+
+    This discriminates poorly below about 60 000 resolving power, where the isotope envelopes of
+    a peptide, an oligonucleotide and a polymer of the same mass differ by less than the peak
+    width. Name the class in the method whenever it is known; every bundled method does.
+    """
     from .refine import _fit_candidate
 
     cand = max(candidates, key=lambda c: c.score)

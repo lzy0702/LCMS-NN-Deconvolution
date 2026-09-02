@@ -58,6 +58,19 @@ saturation:
   esi_ratio_drop: 0.25     # apex-versus-flank response drop that raises a warning
 ```
 
+### Compound class
+
+Set `compound_class` to the class you are running: it selects the average composition used to
+build isotope envelopes. `auto` compares how well each candidate class explains the strongest
+envelope, but at time-of-flight resolving power the envelopes of a peptide, an oligonucleotide
+and a polymer of the same mass differ by less than the peak width, so the choice is unreliable:
+in a three-way test it picked the right class once. Components carry a flag when the class was
+chosen automatically. Every bundled method names its class explicitly, and so should yours.
+
+The class affects envelope shape and therefore the fit quality and the impurity annotations; it
+has only a small effect on the reported mass, which came out within 65 parts per million even
+when the wrong class was chosen.
+
 ### Adducts
 
 The adduct library decides which mass differences are merged into a base species rather than
