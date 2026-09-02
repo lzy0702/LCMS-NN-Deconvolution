@@ -165,7 +165,11 @@ def refine_frame(
                     compound_class, states_full, library, mz_range,
                     raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
                 )
-                comp.mass = cand.mass
+                if abs(cand.mass - comp.mass) > 1e-6:
+                    # re-centred: measure the mass again from the raw apexes at the new centre
+                    comp.mass = cand.mass
+                    if raw_mz is not None:
+                        _refine_mass(comp, raw_mz, raw_int, grid.polarity)
             if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
                 coeffs_full, used_full, explained_full = _fit_candidate(
                     cand, residual, weights, grid, instrument, compound_class, states_full,
