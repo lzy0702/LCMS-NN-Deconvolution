@@ -23,6 +23,7 @@ Component-level checks that run in the test suite:
 | ONNX export | outputs match PyTorch to about 1e-6 |
 | Ionisation saturation | detected on a compressed response, not raised on a linear one |
 | Charge estimation without a model | the comb estimator names at least six of eleven charge states of a 20 kDa envelope |
+| Impurity recovery, whole run, no trained model | main species exact; three of seven true components recovered, including a 4 % impurity 438 Da below the main |
 
 ## Defects this validation found
 
@@ -61,7 +62,9 @@ package could not reach:
 
 ## Known limitations
 
-- No model is bundled by default; the deterministic comb estimator is used until one is trained.
+- No model is loaded by default; the deterministic comb estimator is used until one is trained
+  and installed as `charge_unet.onnx`. The bundled CPU-trained proof model did not beat the
+  estimator (two of seven components against three) and is therefore opt-in.
   A CPU-trained model is a proof of the pipeline, not a production model. Retrain on a GPU (see
   `training.md`) before using the software for decisions: the deconvolution mathematics is
   independent of model quality, but candidate generation is not.

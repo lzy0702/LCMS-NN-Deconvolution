@@ -26,12 +26,15 @@ class ChargePrediction:
 
 
 def bundled_model_path() -> Path | None:
+    """The model loaded automatically, if one is installed.
+
+    Only ``charge_unet.onnx`` is picked up. Other models in the directory (such as the small
+    CPU-trained proof model) must be named explicitly, so a model is never used by default
+    until it has been shown to beat the deterministic estimator it would replace.
+    """
     d = Path(__file__).resolve().parent.parent / "models"
-    for name in ("charge_unet.onnx", "charge_unet_proof.onnx"):
-        if (d / name).exists():
-            return d / name
-    onnxs = sorted(d.glob("*.onnx")) if d.exists() else []
-    return onnxs[0] if onnxs else None
+    path = d / "charge_unet.onnx"
+    return path if path.exists() else None
 
 
 class ChargePredictor:

@@ -1,7 +1,12 @@
 # Training
 
-The bundled model (`src/lcmsdeconv/models/charge_unet_proof.onnx`) is a small model trained on
-CPU as a working default. For production accuracy, retrain the full model on a GPU.
+`src/lcmsdeconv/models/charge_unet_proof.onnx` is a 1.05 M parameter model trained on CPU for
+two hours. It is **not** loaded by default: on a like-for-like test it recovered two of seven
+true components against the deterministic comb estimator's three, so making it the default
+would have made the software worse. Only `charge_unet.onnx` is picked up automatically, so a
+model replaces the estimator only once it has been shown to beat it.
+
+Two hours of CPU is not enough training for this task. Retrain on a GPU.
 
 ## On an NVIDIA GPU (for example an RTX 4080 Super)
 
@@ -35,6 +40,19 @@ is an intensity-weighted cross-entropy — bins are weighted by `clip(log10(1 + 
 plus a small floor, and bins dominated by low-abundance components are weighted more heavily, so
 the network is not rewarded for simply predicting "not an ion" everywhere — plus a CenterNet
 focal loss on the heatmap.
+
+## What two hours of CPU buys
+
+| | Value |
+| --- | --- |
+| Epochs completed | 18 |
+| Synthetic crops seen | about 11 000 |
+| Validation loss | 0.74 |
+| Intensity-weighted charge accuracy | 52.9 % |
+| Against the comb estimator | two of seven components recovered, against three |
+
+The loss was still falling when the time budget ended. A GPU run sees roughly five hundred
+times as many crops in a few hours, which is the regime the architecture was designed for.
 
 ## Choosing a model size
 
