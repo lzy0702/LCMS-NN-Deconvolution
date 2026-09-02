@@ -16,7 +16,7 @@ from .features.link import link_species, merge_species_across_polarity
 from .features.quantify import TemplateBank
 from .features.regions import Region, find_regions
 from .nn.grid import LogMzGrid
-from .nn.infer import ChargePredictor
+from .nn.infer import ChargePredictor  # noqa: F401  (public re-export)
 from .quant.purity import (
     Calibration,
     area_percent_purity,
@@ -100,8 +100,11 @@ def process_run(
     params = _deconv_params(method)
 
     if predictor is None:
-        predictor = ChargePredictor(model_path or method.deconvolution.model,
-                                    providers=list(method.deconvolution.providers))
+        from .deconv.classical import make_predictor
+
+        predictor = make_predictor(model_path or method.deconvolution.model,
+                                   providers=list(method.deconvolution.providers),
+                                   z_max=min(int(method.deconvolution.charge_range[1]), 60))
 
     polarities = run.polarities
     if method.acquisition.polarity == "positive":

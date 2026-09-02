@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import nnls
 
-from ..chem.adducts import AdductLibrary, AdductState, mass_from_mz
+from ..chem.adducts import AdductLibrary, AdductState, carrier_mass, mass_from_mz
 from ..chem.instrument import InstrumentModel
 from ..core.model import Component
 from .decode import Candidate
@@ -22,8 +22,17 @@ def _fit_candidate(
     adduct_states: list[AdductState],
     z_extend: int = 1,
     min_coef_frac: float = 1e-3,
+    mz_range: tuple[float, float] | None = None,
+    max_charges: int = 45,
+    max_columns: int = 300,
 ) -> tuple[dict[tuple[int, str], float], list, float]:
-    """Weighted NNLS of one candidate (all charges x adduct states) against the residual.
+    """Weighted NNLS of one candidate (charges x adduct states) against the residual.
+
+    The charge range is bounded by what the spectrum could actually show: a charge whose m/z
+    falls outside the measured range contributes no observable peak, so including it only adds
+    a column that the solver must work through. Charge assignments are noisy enough that
+    without this bound a single candidate can pull in sixty charge states spanning the whole
+    grid, which makes the non-negative least-squares solve orders of magnitude slower.
 
     Returns (coefficients keyed by (z, adduct_label), templates used, explained_intensity).
     """
@@ -33,6 +42,22 @@ def _fit_candidate(
         zhi = max(charges) + z_extend
     else:
         zlo, zhi = 1, 1
+    if mz_range is not None and cand.mass > 0:
+        mz_lo, mz_hi = mz_range
+        carrier = abs(carrier_mass(grid.polarity))
+        z_from_hi = max(1, int(np.floor(cand.mass / max(mz_hi - carrier, 1e-6))))
+        z_from_lo = max(1, int(np.ceil(cand.mass / max(mz_lo - carrier, 1e-6))))
+        zlo = max(zlo, z_from_hi)
+        zhi = min(zhi, z_from_lo)
+    if zhi < zlo:
+        zlo = zhi = max(1, min(charges) if charges else 1)
+    # Keep the problem small enough to solve quickly: with many adduct states the column count
+    # is charges x states, and the charges carrying most of the envelope are the central band.
+    allowed = max(3, min(max_charges, max_columns // max(1, len(adduct_states))))
+    if zhi - zlo + 1 > allowed:
+        centre = int(np.median(charges)) if charges else (zlo + zhi) // 2
+        half = allowed // 2
+        zlo, zhi = max(zlo, centre - half), min(zhi, centre + half)
     zrange = range(zlo, zhi + 1)
 
     columns = []
@@ -97,6 +122,7 @@ def refine_frame(
     # without paying for every adduct combination on candidates that will be rejected anyway.
     states_fast = [AdductState()]
     states_full = library.states()
+    mz_range = (float(raw_mz.min()), float(raw_mz.max())) if raw_mz is not None and raw_mz.size else None
     total_obs = observed.sum() + 1e-9
 
     components: list[Component] = []
@@ -108,6 +134,7 @@ def refine_frame(
         for cand in remaining:
             coeffs, used, explained = _fit_candidate(
                 cand, residual, weights, grid, instrument, compound_class, states_fast,
+                mz_range=mz_range,
             )
             if explained <= 0:
                 continue
@@ -132,10 +159,20 @@ def refine_frame(
             if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
                 # charge states disagree on the mass: a degenerate fit, not a real species
                 continue
-            # accepted: now resolve its adduct pattern with the full state set
+            # An adduct only ever adds mass, so if the fit is centred on an adducted form the
+            # lighter base form cannot be represented at all. Trying the centre one adduct
+            # lower and keeping it when it explains more recovers the true neutral mass.
+            if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
+                cand, coeffs, used, explained = _recenter_base(
+                    cand, coeffs, used, explained, residual, weights, grid, instrument,
+                    compound_class, states_full, library, mz_range,
+                    raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
+                )
+                comp.mass = cand.mass
             if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
                 coeffs_full, used_full, explained_full = _fit_candidate(
                     cand, residual, weights, grid, instrument, compound_class, states_full,
+                    mz_range=mz_range,
                 )
                 if explained_full >= 0.8 * explained:
                     coeffs, used, explained = coeffs_full, used_full, explained_full
@@ -170,6 +207,65 @@ def refine_frame(
     _flag_harmonics(components)
     _flag_adduct_ambiguity(components, library)
     return components, residual_fraction
+
+
+def _recenter_base(cand, coeffs, used, explained, residual, weights, grid, instrument,
+                   compound_class, states_full, library, mz_range, raw_mz=None, raw_int=None,
+                   noise_sigma: float = 0.0, max_steps: int = 3):
+    """Walk the candidate centre down the adduct ladder while observed peaks support it.
+
+    Rather than refitting at every trial mass, this asks the cheap question directly: are there
+    observed peaks where the lighter form's charge states would be? Adducts only add mass, so a
+    centre that is one adduct too heavy leaves the base form unrepresentable, and the base form
+    is exactly what those peaks would show.
+    """
+    if raw_mz is None or raw_mz.size == 0 or not cand.charges:
+        return cand, coeffs, used, explained
+    deltas = sorted({d for d in library.deltas().values() if d > 0})
+    if not deltas:
+        return cand, coeffs, used, explained
+    carrier = carrier_mass(grid.polarity)
+    charges = sorted(cand.charges)[:12]
+    thr = 3.0 * noise_sigma
+
+    def support(mass: float) -> int:
+        hits = 0
+        for z in charges:
+            mz_pred = (mass + z * carrier) / z
+            tol = mz_pred * 3e-4
+            lo = int(np.searchsorted(raw_mz, mz_pred - tol))
+            hi = int(np.searchsorted(raw_mz, mz_pred + tol))
+            if hi - lo < 3:
+                continue
+            if raw_int[lo:hi].max() > thr:
+                hits += 1
+        return hits
+
+    base_hits = support(cand.mass)
+    mass = cand.mass
+    moved = False
+    for _ in range(max_steps):
+        best_d, best_hits = None, base_hits
+        for d in deltas:
+            if mass - d <= 0:
+                continue
+            h = support(mass - d)
+            if h > best_hits:
+                best_d, best_hits = d, h
+        if best_d is None:
+            break
+        mass -= best_d
+        base_hits = best_hits
+        moved = True
+    if not moved:
+        return cand, coeffs, used, explained
+    trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
+                      intensity=cand.intensity)
+    c2, u2, e2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
+                                states_full, mz_range=mz_range)
+    if e2 >= explained:
+        return trial, c2, u2, e2
+    return cand, coeffs, used, explained
 
 
 def _redetect(residual, grid, noise_sigma, existing) -> list[Candidate]:

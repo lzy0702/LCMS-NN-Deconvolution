@@ -158,22 +158,27 @@ def dedupe_adduct_candidates(
     """
     kept: list[Candidate] = []
     for c in sorted(candidates, key=lambda x: -x.score):
-        is_adduct = False
+        merged = False
         for base in kept:
             dm = c.mass - base.mass
-            if dm <= 0:
+            if abs(dm) <= tol_da:
                 continue
             for d in deltas.values():
                 for n in range(1, max_n + 1):
-                    if abs(dm - n * d) <= tol_da:
-                        base.charges |= c.charges
-                        is_adduct = True
-                        break
-                if is_adduct:
+                    if abs(abs(dm) - n * d) > tol_da:
+                        continue
+                    base.charges |= c.charges
+                    if dm < 0:
+                        # the lighter form is the base species: the stronger candidate we kept
+                        # is its adduct, so the base identity moves down to this mass
+                        base.mass = c.mass
+                    merged = True
                     break
-            if is_adduct:
+                if merged:
+                    break
+            if merged:
                 break
-        if not is_adduct:
+        if not merged:
             kept.append(c)
     return kept
 
@@ -244,3 +249,30 @@ def refine_candidate_masses(
         c.charges = set(matched_z) | c.charges
         out.append(c)
     return out
+
+
+def suppress_harmonics(candidates: list[Candidate], tol_ppm: float = 150.0,
+                       max_order: int = 6, score_ratio: float = 0.6) -> list[Candidate]:
+    """Drop candidates that are a charge harmonic of a stronger one.
+
+    Reading an envelope's charges as z/n puts a spurious candidate at M/n carrying the same
+    ions, so a weak candidate sitting at an integer fraction of a much stronger mass is almost
+    always an artefact. A candidate of comparable strength is kept: a monomer really can appear
+    at half the mass of its dimer, and the residual fit is left to decide between them.
+    """
+    kept: list[Candidate] = []
+    for c in sorted(candidates, key=lambda x: -x.score):
+        harmonic = False
+        for s in kept:
+            if c.score >= score_ratio * s.score:
+                continue
+            tol = max(c.mass * tol_ppm * 1e-6, 0.5)
+            for n in range(2, max_order + 1):
+                if abs(c.mass - s.mass / n) <= tol:
+                    harmonic = True
+                    break
+            if harmonic:
+                break
+        if not harmonic:
+            kept.append(c)
+    return kept

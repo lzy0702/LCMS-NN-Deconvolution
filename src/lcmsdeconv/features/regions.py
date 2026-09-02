@@ -33,8 +33,9 @@ def find_regions(
     margin_min: float = 0.05,
     min_frames: int = 2,
     integration=None,
-    min_rel_height: float = 0.01,
-    min_rel_area: float = 0.001,
+    min_rel_height: float = 0.05,
+    min_rel_area: float = 0.005,
+    min_rel_tic: float = 0.02,
 ) -> list[Region]:
     """Split a run into regions around detected chromatographic peaks.
 
@@ -75,6 +76,16 @@ def find_regions(
             continue
         pol = sel[0].polarity
         regions.append(Region(i, float(a), float(b), pol, sel))
+
+    # Deconvolving a stretch of baseline only produces envelopes fitted to noise, so regions
+    # that carry a negligible share of the run's ion current are dropped.
+    if regions and min_rel_tic > 0:
+        totals = np.array([sum(f.tic for f in r.frames) for r in regions], dtype=float)
+        if totals.max() > 0:
+            keep = totals >= min_rel_tic * totals.max()
+            regions = [r for r, k in zip(regions, keep) if k]
+    for i, r in enumerate(regions):
+        r.id = i
     return regions
 
 
