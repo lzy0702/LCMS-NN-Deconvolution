@@ -48,16 +48,14 @@ def _fit_candidate(
     if not columns:
         return {}, [], 0.0
 
-    support = np.unique(np.concatenate([t.bins for t in columns]))
+    support = np.unique(np.concatenate([c.bins for c in columns]))
     support = support[(support >= 0) & (support < grid.size)]
     if support.size == 0:
         return {}, [], 0.0
-    pos = {b: i for i, b in enumerate(support)}
     A = np.zeros((support.size, len(columns)), dtype=np.float64)
-    for j, t in enumerate(columns):
-        rows = np.array([pos[b] for b in t.bins if b in pos])
-        vals = t.values[np.isin(t.bins, support)]
-        A[rows, j] = vals
+    for j, col in enumerate(columns):
+        # every template bin is in the support by construction, so a sorted lookup suffices
+        A[np.searchsorted(support, col.bins), j] = col.values
     w = weights[support]
     b = residual[support] * w
     Aw = A * w[:, None]
@@ -90,11 +88,15 @@ def refine_frame(
     min_charge_support: int = 2,
     min_component_frac: float = 1e-4,
     max_mass_spread_ppm: float = 150.0,
+    adduct_refit_frac: float = 1e-3,
 ) -> list[Component]:
     """Greedy weighted-NNLS fit of candidates on the residual, strongest first."""
     residual = observed.astype(np.float64).copy()
     weights = 1.0 / np.sqrt(np.clip(observed, 0, None) + noise_sigma**2 + 1e-9)
-    adduct_states = library.states()
+    # Detection uses only the base state and one of each adduct: enough to recognise a species
+    # without paying for every adduct combination on candidates that will be rejected anyway.
+    states_fast = [AdductState()]
+    states_full = library.states()
     total_obs = observed.sum() + 1e-9
 
     components: list[Component] = []
@@ -105,7 +107,7 @@ def refine_frame(
         progressed = False
         for cand in remaining:
             coeffs, used, explained = _fit_candidate(
-                cand, residual, weights, grid, instrument, compound_class, adduct_states,
+                cand, residual, weights, grid, instrument, compound_class, states_fast,
             )
             if explained <= 0:
                 continue
@@ -130,11 +132,24 @@ def refine_frame(
             if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
                 # charge states disagree on the mass: a degenerate fit, not a real species
                 continue
+            # accepted: now resolve its adduct pattern with the full state set
+            if len(states_full) > 1 and explained >= adduct_refit_frac * total_obs:
+                coeffs_full, used_full, explained_full = _fit_candidate(
+                    cand, residual, weights, grid, instrument, compound_class, states_full,
+                )
+                if explained_full >= 0.8 * explained:
+                    coeffs, used, explained = coeffs_full, used_full, explained_full
+                    adduct_int = {}
+                    charge_int = {}
+                    for (z, lab), v in coeffs.items():
+                        charge_int[z] = charge_int.get(z, 0.0) + v
+                        adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
+                    comp.charges, comp.adducts, comp.intensity = charge_int, adduct_int, explained
             components.append(comp)
             cid += 1
             # subtract fitted envelope
-            for t, coef in used:
-                np.subtract.at(residual, t.bins, t.values * coef)
+            for tpl, coef in used:
+                np.subtract.at(residual, tpl.bins, tpl.values * coef)
             residual = np.clip(residual, 0, None)
             progressed = True
         # re-detect on residual for the next iteration

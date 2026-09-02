@@ -23,16 +23,23 @@ def soft_charge_ce(
 
 
 def centernet_focal(apex_logit: torch.Tensor, heat: torch.Tensor, alpha: float = 2.0, beta: float = 4.0) -> torch.Tensor:
+    """CenterNet focal loss, normalized per positive.
+
+    Crops that contain no peak at all have no positives; normalizing those by 1 would make the
+    negative term explode with the crop length, so they are normalized per bin instead.
+    """
     p = torch.sigmoid(apex_logit).squeeze(1).clamp(1e-4, 1 - 1e-4)  # [N, L]
     pos = (heat >= 1.0 - 1e-6).float()
     pos_loss = -((1 - p) ** alpha) * torch.log(p) * pos
     neg_loss = -((1 - heat) ** beta) * (p ** alpha) * torch.log(1 - p) * (1 - pos)
-    n_pos = pos.sum().clamp(min=1.0)
+    n_pos = pos.sum()
+    if float(n_pos) < 1.0:
+        return neg_loss.sum() / max(heat.numel(), 1)
     return (pos_loss.sum() + neg_loss.sum()) / n_pos
 
 
 class ChargeLoss(nn.Module):
-    def __init__(self, heat_weight: float = 1.0, weight_floor: float = 0.1, weight_cap: float = 4.0):
+    def __init__(self, heat_weight: float = 0.1, weight_floor: float = 0.02, weight_cap: float = 4.0):
         super().__init__()
         self.heat_weight = heat_weight
         self.weight_floor = weight_floor

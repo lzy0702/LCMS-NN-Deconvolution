@@ -81,6 +81,7 @@ def generate_run(
     scan_rate_hz: float = 3.0,
     polarity_switching: bool = False,
     esi_saturation: bool = False,
+    sparse_threshold: float = 8.0,
 ) -> tuple[Run, RunTruth]:
     library = AdductLibrary.from_mode(cfg.mode, 0, max_per_type=cfg.adduct_max_per_type,
                                       max_total=cfg.adduct_max_total)
@@ -151,7 +152,7 @@ def generate_run(
                 components.append(ComponentInstance(comp, inten, cd, adducts))
             uv[fi] += p.intensity * prof * _uv_response(p.compound.compound_class)
         if not components:
-            spectra.append(Spectrum(axis.copy(), np.zeros(axis.size, np.float32), float(t), pol, 1,
+            spectra.append(Spectrum(axis[:2].copy(), np.zeros(2, np.float32), float(t), pol, 1,
                                     f"scan={fi+1}", fi, True))
             continue
         scene = Scene(components, pol, library)
@@ -167,7 +168,8 @@ def generate_run(
         lam = np.clip(prof_spec / gain, 0, None)
         prof_spec = rng.poisson(lam).astype(np.float64) * gain
         prof_spec += np.abs(rng.normal(0, 1.5, axis.size))
-        spectra.append(Spectrum(axis.copy(), prof_spec.astype(np.float32), float(t), pol, 1,
+        mz_out, int_out = _threshold_profile(axis, prof_spec, sparse_threshold)
+        spectra.append(Spectrum(mz_out, int_out.astype(np.float32), float(t), pol, 1,
                                 f"scan={fi+1}", fi, True))
 
     # UV trace with a small delay
@@ -179,6 +181,27 @@ def generate_run(
               meta={"mode": cfg.mode, "esi_mode": cfg.esi_mode})
     truth = RunTruth(peaks, pol_sched, cfg.mode, cfg.esi_mode)
     return run, truth
+
+
+def _threshold_profile(axis: np.ndarray, intensity: np.ndarray, threshold: float,
+                       pad: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    """Keep only profile points near real signal, the way vendor software thresholds data.
+
+    A full profile axis for every frame makes files enormous without adding information; real
+    instruments write the points around each peak and drop the empty baseline between them.
+    """
+    if threshold <= 0:
+        return axis.copy(), intensity.copy()
+    keep = intensity > threshold
+    if not keep.any():
+        return axis[:2].copy(), intensity[:2].copy()
+    idx = np.flatnonzero(keep)
+    lo = np.maximum(idx - pad, 0)
+    hi = np.minimum(idx + pad + 1, axis.size)
+    mask = np.zeros(axis.size, dtype=bool)
+    for a, b in zip(lo, hi):
+        mask[a:b] = True
+    return axis[mask].copy(), intensity[mask].copy()
 
 
 def _uv_response(cls: str) -> float:

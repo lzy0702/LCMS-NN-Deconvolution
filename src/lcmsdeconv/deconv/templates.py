@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -13,8 +14,8 @@ from ..chem.instrument import InstrumentModel
 
 @dataclass
 class Template:
-    bins: np.ndarray  # int grid-bin indices
-    values: np.ndarray  # area-normalized weights (sum ~ 1)
+    bins: np.ndarray  # int grid-bin indices (sorted, unique)
+    values: np.ndarray  # area-normalized weights (sum == 1)
     z: int
     adduct_mass: float
     adduct_label: str
@@ -34,8 +35,39 @@ def build_template(
     adduct_mass: float = 0.0,
     adduct_label: str = "",
     threshold: float = 1e-3,
+    max_half_width: int = 4000,
 ) -> Template | None:
-    """Area-normalized envelope of a class-average composition of ``mass`` at charge ``z``."""
+    """Area-normalized envelope of a class-average composition of ``mass`` at charge ``z``.
+
+    Results are cached on the mass quantized to 0.1 mDa, so the detection pass and the
+    adduct-resolution pass over the same candidate reuse their templates.
+    """
+    return _cached_template(
+        int(round(mass * 1e4)), int(z), grid,
+        (instrument.kind, instrument.resolution, instrument.mz_ref, instrument.mz_exponent,
+         instrument.shape, instrument.eta),
+        compound_class, int(round(adduct_mass * 1e4)), adduct_label,
+        float(threshold), int(max_half_width),
+    )
+
+
+@lru_cache(maxsize=20000)
+def _cached_template(mass_key, z, grid, instrument_key, compound_class, adduct_key,
+                     adduct_label, threshold, max_half_width):
+    kind, resolution, mz_ref, mz_exponent, shape, eta = instrument_key
+    instrument = InstrumentModel(kind=kind, resolution=resolution, mz_ref=mz_ref,
+                                 mz_exponent=mz_exponent, shape=shape, eta=eta)
+    return _build_template_impl(mass_key * 1e-4, z, grid, instrument, compound_class,
+                                adduct_key * 1e-4, adduct_label, threshold, max_half_width)
+
+
+def _build_template_impl(mass, z, grid, instrument, compound_class, adduct_mass, adduct_label,
+                         threshold, max_half_width) -> Template | None:
+    """Vectorized construction: every isotopologue is splatted over a shared window.
+
+    The per-isotopologue windows are flattened and reduced with ``np.bincount``, which avoids a
+    Python loop over grid bins; the whole envelope costs a few tens of microseconds.
+    """
     carrier = carrier_mass(grid.polarity)
     pat = class_isotope_pattern(mass, compound_class, threshold=threshold)
     offset = mass - pat.average_mass
@@ -46,29 +78,38 @@ def build_template(
         return None
     mz = mz[valid]
     abund = pat.abundances[valid]
-    u = grid.mz_to_u(mz)
-    centers = (u - grid.u_min) / grid.step
-    sigma_mz = instrument.sigma_mz(mz)
-    sigma_bins = np.maximum(sigma_mz / (mz - carrier) / grid.step, 0.4)
-    kf = 4.0 if instrument.shape == "gaussian" else 10.0
-    acc: dict[int, float] = {}
-    for c, s, a in zip(centers, sigma_bins, abund):
-        amp = a / (np.sqrt(2 * np.pi) * s)
-        hw = int(kf * s) + 1
-        lo, hi = int(c) - hw, int(c) + hw + 1
-        for b in range(max(0, lo), min(grid.size, hi)):
-            acc[b] = acc.get(b, 0.0) + amp * np.exp(-0.5 * ((b - c) / s) ** 2)
-    if not acc:
+    if abund.sum() <= 0:
         return None
-    bins = np.fromiter(acc.keys(), dtype=np.int64)
-    vals = np.fromiter(acc.values(), dtype=np.float64)
-    order = np.argsort(bins)
-    bins, vals = bins[order], vals[order]
-    total = vals.sum()
+
+    centers = (grid.mz_to_u(mz) - grid.u_min) / grid.step
+    sigma_bins = np.maximum(instrument.sigma_mz(mz) / (mz - carrier) / grid.step, 0.4)
+    kf = 4.0 if instrument.shape == "gaussian" else 10.0
+    hw = int(min(max_half_width, np.ceil(kf * sigma_bins.max()) + 1))
+
+    offsets = np.arange(-hw, hw + 1)
+    ic = np.floor(centers).astype(np.int64)
+    bins = ic[:, None] + offsets[None, :]
+    frac = centers[:, None] - bins
+    amp = (abund / (np.sqrt(2 * np.pi) * sigma_bins))[:, None]
+    vals = amp * np.exp(-0.5 * (frac / sigma_bins[:, None]) ** 2)
+
+    bins = bins.ravel()
+    vals = vals.ravel()
+    keep = (bins >= 0) & (bins < grid.size) & (vals > 0)
+    if not np.any(keep):
+        return None
+    bins, vals = bins[keep], vals[keep]
+    lo = int(bins.min())
+    acc = np.bincount(bins - lo, weights=vals)
+    nz = np.nonzero(acc > 0)[0]
+    if nz.size == 0:
+        return None
+    out_bins = (nz + lo).astype(np.int64)
+    out_vals = acc[nz]
+    total = out_vals.sum()
     if total <= 0:
         return None
-    vals = vals / total
-    return Template(bins, vals, z, adduct_mass, adduct_label, mass)
+    return Template(out_bins, out_vals / total, z, adduct_mass, adduct_label, mass)
 
 
 def template_mz(mass: float, z: int, polarity: int, adduct_mass: float = 0.0) -> float:

@@ -9,6 +9,30 @@ import numpy as np
 from ..nn.grid import LogMzGrid
 
 
+class ChargeSupport:
+    """Which charges contributed to each mass-histogram bin, without a per-bin Python set.
+
+    Contributions are kept as flat (bin, charge) arrays sorted by bin; the charges supporting a
+    bin range are then a slice, which keeps histogram accumulation vectorized.
+    """
+
+    __slots__ = ("bins", "charges", "n", "_starts")
+
+    def __init__(self, bins: np.ndarray, charges: np.ndarray, n: int):
+        order = np.argsort(bins, kind="stable")
+        self.bins = bins[order]
+        self.charges = charges[order]
+        self.n = n
+        self._starts = np.searchsorted(self.bins, np.arange(n + 1))
+
+    def charges_in(self, lo: int, hi: int) -> set[int]:
+        a = int(self._starts[max(0, min(lo, self.n))])
+        b = int(self._starts[max(0, min(hi, self.n))])
+        if b <= a:
+            return set()
+        return set(np.unique(self.charges[a:b]).tolist())
+
+
 @dataclass
 class Candidate:
     mass: float
@@ -30,7 +54,7 @@ def accumulate_mass_histogram(
     z_min: int = 1,
     z_max: int = 100,
     apex_floor: float = 0.2,
-) -> tuple[np.ndarray, np.ndarray, list[set[int]]]:
+) -> tuple[np.ndarray, np.ndarray, ChargeSupport]:
     """Accumulate charge-weighted intensity into a log-mass histogram.
 
     Returns (log_mass_axis, weighted_intensity, charge_support_sets).
@@ -39,7 +63,8 @@ def accumulate_mass_histogram(
     lm_min, lm_max = np.log(mass_min), np.log(mass_max)
     n = int((lm_max - lm_min) / mass_step) + 1
     hist = np.zeros(n, dtype=np.float64)
-    charge_sets: list[set[int]] = [set() for _ in range(n)]
+    pair_bins: list[np.ndarray] = []
+    pair_z: list[np.ndarray] = []
 
     u = grid.u
     for zarr, parr in ((prediction.top1_z, prediction.top1_p), (prediction.top2_z, prediction.top2_p)):
@@ -56,20 +81,25 @@ def accumulate_mass_histogram(
         hb = ((np.log(mass) - lm_min) / mass_step).astype(np.int64)
         hb = np.clip(hb, 0, n - 1)
         np.add.at(hist, hb, w)
-        for b, zi in zip(hb, z.astype(int)):
-            charge_sets[b].add(int(zi))
+        pair_bins.append(hb)
+        pair_z.append(z.astype(np.int32))
     lm_axis = lm_min + np.arange(n) * mass_step
-    return lm_axis, hist, charge_sets
+    if pair_bins:
+        support = ChargeSupport(np.concatenate(pair_bins), np.concatenate(pair_z), n)
+    else:
+        support = ChargeSupport(np.array([], dtype=np.int64), np.array([], dtype=np.int32), n)
+    return lm_axis, hist, support
 
 
 def pick_candidates(
     lm_axis: np.ndarray,
     hist: np.ndarray,
-    charge_sets: list[set[int]],
+    charge_support: ChargeSupport,
     min_charge_support: int = 2,
     rel_height: float = 1e-4,
     smooth_bins: int = 5,
     merge_ppm: float = 200.0,
+    max_candidates: int = 200,
 ) -> list[Candidate]:
     """Peak-pick the mass histogram into candidate masses."""
     if hist.max() <= 0:
@@ -84,9 +114,7 @@ def pick_candidates(
     win = smooth_bins * 3
     for p in peaks:
         lo, hi = max(0, p - win), min(len(hist), p + win + 1)
-        support: set[int] = set()
-        for b in range(lo, hi):
-            support |= charge_sets[b]
+        support = charge_support.charges_in(lo, hi)
         if len(support) < min_charge_support and 1 not in support:
             # allow singly-charged species (small molecules) with strong evidence
             if not (support == {1} and sm[p] > 0.01 * sm.max()):
@@ -104,6 +132,7 @@ def pick_candidates(
         cands.append(Candidate(mass=mass, score=float(sm[p]), charges=support,
                                intensity=float(hist[lo:hi].sum())))
     cands.sort(key=lambda c: -c.score)
+    cands = cands[:max_candidates]
     # merge near-duplicate masses
     merged: list[Candidate] = []
     for c in cands:

@@ -103,8 +103,11 @@ class ChargePredictor:
         ramp = 0.5 - 0.5 * np.cos(2 * np.pi * (np.arange(W) + 0.5) / W)
         ramp = ramp.astype(np.float32) + 1e-3
 
+        thr = 3.0 * max(noise_sigma, 1e-9)
         for s0 in starts:
             s1 = min(B, s0 + W)
+            if intensity[s0:s1].max(initial=0.0) <= thr:
+                continue  # nothing above noise: every bin is class 0 anyway
             seg = np.zeros(W, dtype=np.float64)
             seg[: s1 - s0] = intensity[s0:s1]
             pad = (-W) % DOWNSAMPLE

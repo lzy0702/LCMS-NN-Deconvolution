@@ -20,7 +20,7 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     heat_weight: float = 0.2
-    ema_decay: float = 0.999
+    ema_decay: float = 0.99
     grad_clip: float = 5.0
     base_seed: int = 0
     device: str = "auto"
@@ -89,6 +89,8 @@ def train(config: TrainConfig, synth_config=None):
     ema = EMA(model, config.ema_decay)
 
     history = []
+    best_state = None
+    best_loss = float("inf")
     start = time.time()
     stop = False
     for epoch in range(config.epochs):
@@ -114,19 +116,29 @@ def train(config: TrainConfig, synth_config=None):
                 print("  reached time budget; stopping")
                 stop = True
                 break
-        val = evaluate(ema.shadow, vl, loss_fn, device)
-        history.append({"epoch": epoch, "train_loss": running / max(1, i + 1), **val})
-        print(f"epoch {epoch}: val {val}")
+        val_ema = evaluate(ema.shadow, vl, loss_fn, device)
+        val_live = evaluate(model, vl, loss_fn, device)
+        best = "ema" if val_ema["val_loss"] <= val_live["val_loss"] else "live"
+        val = val_ema if best == "ema" else val_live
+        history.append({"epoch": epoch, "train_loss": running / max(1, i + 1),
+                        "ema": val_ema, "live": val_live, "best": best})
+        print(f"epoch {epoch}: ema={val_ema} live={val_live} -> keeping {best}")
+        if best_state is None or val["val_loss"] < best_loss:
+            best_loss = val["val_loss"]
+            best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
         if stop:
             break
 
     out_path = Path(config.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": ema.shadow.state_dict(), "config": asdict(config),
+    if best_state is None:
+        best_state = model.state_dict()
+    torch.save({"state_dict": best_state, "config": asdict(config),
                 "synth_config_z_max": config.z_max, "model_size": config.model_size,
                 "z_max": config.z_max}, out_path)
-    print(f"saved {out_path}")
-    return ema.shadow, history
+    print(f"saved {out_path} (best val_loss {best_loss:.4f})")
+    model.load_state_dict(best_state)
+    return model, history
 
 
 def evaluate(model, loader, loss_fn, device) -> dict:

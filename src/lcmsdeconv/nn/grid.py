@@ -18,12 +18,20 @@ import numpy as np
 from ..chem.adducts import carrier_mass
 
 
-@dataclass
+@dataclass(frozen=False, eq=False)
 class LogMzGrid:
     mz_min: float = 50.0
     mz_max: float = 10000.0
     step: float = 2e-5
     polarity: int = 1
+
+    def __hash__(self):
+        return hash((self.mz_min, self.mz_max, self.step, self.polarity))
+
+    def __eq__(self, other):
+        return isinstance(other, LogMzGrid) and (
+            self.mz_min, self.mz_max, self.step, self.polarity
+        ) == (other.mz_min, other.mz_max, other.step, other.polarity)
 
     def __post_init__(self) -> None:
         self.carrier = carrier_mass(self.polarity)

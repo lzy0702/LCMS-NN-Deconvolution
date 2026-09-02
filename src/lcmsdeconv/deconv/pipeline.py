@@ -55,7 +55,15 @@ def deconvolve_spectrum(
     instrument: InstrumentModel | None = None,
 ) -> FrameResult:
     polarity = spectrum.polarity
-    grid = LogMzGrid(50.0, params.grid_mz_max, params.grid_step, polarity)
+    # restrict the grid to the measured m/z range: empty grid costs inference time for nothing
+    if spectrum.mz.size:
+        lo = max(50.0, float(spectrum.mz.min()) * 0.995)
+        hi = min(params.grid_mz_max, float(spectrum.mz.max()) * 1.005)
+    else:
+        lo, hi = 50.0, params.grid_mz_max
+    if hi <= lo * 1.01:
+        lo, hi = 50.0, params.grid_mz_max
+    grid = LogMzGrid(lo, hi, params.grid_step, polarity)
     if instrument is None:
         instrument = InstrumentModel("tof", 30000.0)
 
@@ -65,7 +73,7 @@ def deconvolve_spectrum(
         observed = grid.resample_profile(spectrum.mz, spectrum.intensity)
     noise_sigma = estimate_noise_sigma(observed)
     if observed.max() <= 0:
-        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0)
+        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0, meta={"grid": grid})
 
     prediction = predictor.predict_grid(grid, observed, noise_sigma)
     lm_axis, hist, charge_sets = accumulate_mass_histogram(
@@ -77,7 +85,7 @@ def deconvolve_spectrum(
                                  min_charge_support=params.min_charge_support,
                                  rel_height=params.min_relative_abundance)
     if not candidates:
-        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0)
+        return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0, meta={"grid": grid})
     library = AdductLibrary.from_mode(params.adduct_mode, polarity,
                                       include=params.adduct_include, exclude=params.adduct_exclude,
                                       max_per_type=params.adduct_max_per_type,
@@ -109,7 +117,7 @@ def deconvolve_spectrum(
     for c in components:
         c.compound_class = cls
     return FrameResult(spectrum.rt, polarity, components, noise_sigma, residual_fraction,
-                       meta={"resolution": instrument.resolution})
+                       meta={"resolution": instrument.resolution, "grid": grid})
 
 
 def _dedupe_by_mass(candidates, tol_ppm: float = 100.0, tol_da: float = 0.3):

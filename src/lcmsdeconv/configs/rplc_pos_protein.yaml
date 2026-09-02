@@ -1,0 +1,140 @@
+name: rplc_pos_protein
+description: Reversed-phase LC, positive ESI-ToF, intact protein or peptide
+instrument:
+  kind: tof
+  resolution: 30000.0
+  mz_ref: 1000.0
+  mz_exponent: 0.0
+  shape: gaussian
+  eta: 0.0
+  saturation_level: null
+  saturation_kind: clip
+  points_per_fwhm: 5.0
+acquisition:
+  polarity: positive
+  uv_channel: null
+deconvolution:
+  mass_range:
+  - 2000.0
+  - 200000.0
+  charge_range:
+  - 3
+  - 80
+  mz_range:
+  - null
+  - null
+  compound_class: peptide
+  class_candidates:
+  - peptide
+  - dna
+  - rna
+  - glycan
+  - peg
+  mass_type: auto
+  adducts:
+    mode: rplc
+    include: []
+    exclude: []
+    max_per_type: 2
+    max_total: 3
+    max_types_mixed: 2
+    min_fraction_report: 0.005
+  min_relative_abundance: 0.0001
+  snr_threshold: 3.0
+  model: null
+  providers:
+  - CPUExecutionProvider
+  per_frame_nn: false
+  refine_iterations: 2
+  nn_probability_min: 0.05
+  min_charge_support: 2
+  grid_step: 2.0e-05
+  max_components: 200
+  quantify_frames: true
+regions:
+  source: tic
+  window_min: 0.5
+  margin_min: 0.05
+  min_frames: 2
+linking:
+  mass_tolerance_ppm: 30.0
+  mass_tolerance_da: 0.5
+  min_frames: 2
+  max_gap_frames: 2
+  noise_peak_ratio: 3.0
+integration:
+  tic:
+    slope_sensitivity: 1.0
+    peak_width: 0.15
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+  uv:
+    slope_sensitivity: 1.0
+    peak_width: 0.15
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+  deic:
+    slope_sensitivity: 1.0
+    peak_width: 0.15
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+quant:
+  purity_signal: uv
+  impurity_floor_pct: 0.01
+  main_species: largest
+  calibration:
+    mode: none
+    levels: []
+    weighting: none
+    force_zero: false
+    response_factor: 1.0
+    amount_unit: mg/mL
+  sample_amount: null
+saturation:
+  esi_ratio_drop: 0.25
+  flat_top_fraction: 0.2
+  detector_level: null
+  uv_delay_min: null
+report:
+  title: null
+  plots: true
+  max_species_plots: 12
