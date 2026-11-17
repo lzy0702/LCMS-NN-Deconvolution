@@ -22,9 +22,12 @@ altogether.
 
 ## Requirements
 
-- An NVIDIA GPU with 4 GB or more and a recent driver (an RTX 4080 Super is plenty).
+- An NVIDIA GPU with 6 GB or more and a recent driver (an RTX 4080 Super is plenty). A
+  `full`-size training step with a batch of 8 needs about 4 GB; with less, add
+  `--batch-size 4`.
 - Python 3.10, 3.11 or 3.12.
-- As many CPU cores as possible: spectrum generation, not the GPU, sets the pace.
+- As many CPU cores as possible: spectrum generation, not the GPU, sets the pace. Each
+  spectrum-generating worker needs about 1 GB of memory; the scripts start up to 8.
 - About 2 GB of disk for the Python environment.
 
 ## 1. Unpack and open a terminal in this repository's top folder
@@ -76,7 +79,7 @@ end to end and should finish with `saved runs/smoke.pt`. If either fails, see
 ## 6. Stage 1: train without singly charged ions in the loss (2-4 hours)
 
 Windows: `gpu_training\run_stage1.bat`. Linux or macOS: `bash gpu_training/run_stage1.sh`.
-Both run:
+Any option you add is passed on (for example `--workers 6` or `--batch-size 4`). Both run:
 
 ```bash
 python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
@@ -84,7 +87,8 @@ python scripts/train_charge_net.py --device cuda --arch ladder --model-size full
     --workers 8 --out runs/ladder_full_ignore.pt
 ```
 
-Set `--workers` to the number of CPU cores minus one or two. Every epoch prints a line such as
+`--workers` is the number of processes generating spectra: the scripts use the number of
+CPU cores minus two, at most 8. Every epoch prints a line such as
 
 ```text
 epoch 3: charge_acc_given_ion_z2 ema 0.612 live 0.598 (comb 0.574) -> keeping ema; bands {...}
@@ -100,14 +104,18 @@ The best checkpoint is saved whenever it improves, so you can stop the run at an
 You can stop a run at any time and continue later, even in the middle of an epoch:
 
 - **Pause:** press **Ctrl+C once** in the training window, or create an empty file named
-  `PAUSE` in the `runs` folder (useful if the window is hidden). The current step finishes,
+  `PAUSE` (or `PAUSE.txt`, as Windows Explorer names a new text file) in the `runs` folder,
+  useful if the window is hidden. The current step finishes,
   the complete training state is saved to `runs/ladder_full_ignore.resume.pt`, and the
   program ends with `paused: state saved ...`. Pressing Ctrl+C a second time aborts at once
   without saving.
 - **Resume:** run exactly the same command again with `--resume` added, for example
   `gpu_training\run_stage1.bat --resume` on Windows or `bash gpu_training/run_stage1.sh --resume`
-  on Linux. It continues from the saved epoch and step with the same learning-rate schedule.
-  A leftover `PAUSE` file is removed automatically.
+  on Linux. It continues from the saved epoch and step with the same learning-rate schedule,
+  and refuses to resume if you changed a setting that would alter the run (epochs, batch size,
+  spectra per epoch, learning rate, model). A leftover `PAUSE` file is removed automatically.
+- If you start the command **without** `--resume` while a paused run's state exists, it stops
+  with a message instead of overwriting it; add `--restart` to deliberately start over.
 - The state is also saved every 10 minutes (`--save-every` changes that) and after every
   epoch, so a crash, a reboot or a power cut loses at most a few minutes of training: resume
   the same way.
