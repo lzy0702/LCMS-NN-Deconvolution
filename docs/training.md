@@ -1,14 +1,66 @@
 # Training
 
-`src/lcmsdeconv/models/charge_unet_proof.onnx` is a 1.05 M parameter model trained on CPU for
-two hours. It is **not** loaded by default: on a like-for-like test it recovered two of seven
-true components against the deterministic comb estimator's three, so making it the default
-would have made the software worse. Only `charge_unet.onnx` is picked up automatically, so a
-model replaces the estimator only once it has been shown to beat it.
+Two charge networks can be trained: **LadderNet** (`--arch ladder`, the recommended one) and the
+1D U-Net used so far (`--arch unet`). `src/lcmsdeconv/models/charge_unet_proof.onnx`, a U-Net
+trained on CPU for two hours, is **not** loaded by default: on a like-for-like test it recovered
+two of seven true components against the deterministic comb estimator's three. Only
+`charge_unet.onnx` is picked up automatically, so a model replaces the estimator only once it
+has been shown to beat it.
 
-Two hours of CPU is not enough training for this task. Retrain on a GPU.
+## LadderNet
 
-## On an NVIDIA GPU (for example an RTX 4080 Super)
+On the grid u = ln(m/z ∓ m_p) all charge states of one species lie at u = ln M − ln z, so if a
+bin carries charge z the same species' charge z + k sits at u + ln(z/(z + k)), whatever its mass:
+offsets of thousands of bins, different for every z, which a convolutional network has to
+discover from data (CPU probes of the U-Net never got there, see `lessons.md`, section 13).
+LadderNet is given them. For each candidate charge it reads a learned local description of the
+spectrum (peak shape, isotope spacing; a four-layer dilated convolution) at the bin itself, at
+the neighbours z ± 1..3, and at the two positions that only a reading at 2z would fill, halfway
+between the z ladder's rungs; a small network shared by all charges, with a learned bias per
+charge, scores that reading. The comb estimator's score is added with a learnable weight and the
+learned part starts at zero, so the untrained network assigns charges exactly as the comb does
+(a test checks this) and training learns corrections. A depthwise convolution over neighbouring
+bins lets the bins of one peak agree.
+
+It has 9 500 (`proof`) to 22 000 (`full`) parameters. Ladders are read at the 6 144 strongest
+bins of a window (ions occupy a few percent of the bins), which a sparse gather makes cheap in
+training; the ONNX export computes the same function densely with static shifts, for a fixed
+32 768-bin window, which is what inference uses.
+
+### Singly charged ions
+
+Singly charged ions (chemical background, small molecules) are the most common ions per bin, and
+a network learns them first. `--singly-charged` controls them:
+
+- `ignore`: they stay in the spectra, so the input is realistic, but bins carrying them get no
+  weight in the loss: predicting them is neither rewarded nor penalised.
+- `drop`: the generator produces none.
+- `keep`: everything is trained on (a fine-tuning stage after either of the above).
+
+With `ignore` or `drop` the checkpoint is selected by the charge accuracy on ion bins of charge
+two or more (`charge_acc_given_ion_z2`), which every epoch prints next to the comb estimator's
+accuracy on the same validation spectra: the bar to clear.
+
+### Running it
+
+```bash
+python scripts/train_charge_net.py --smoke                    # a two-minute installation check
+python scripts/train_charge_net.py --device cuda --model-size full --singly-charged ignore \
+    --epochs 30 --train-len 4000 --batch-size 8 --workers 8 --out runs/ladder_full_ignore.pt
+lcmsdeconv export-onnx runs/ladder_full_ignore.pt -o runs/ladder_full_ignore.onnx
+```
+
+`gpu_training/README.md` is a step-by-step guide for training on your own GPU (installation,
+a check script, run scripts for Windows and Linux, what to send back).
+
+**Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
+the run after the current step and saves the whole training state (model, moving average,
+optimiser, learning-rate schedule, position in the epoch, best checkpoint so far) to
+`<out>.resume.pt`. The same command with `--resume` continues exactly there. The state is also
+saved every `--save-every` minutes (10) and after every epoch, so an interrupted run loses at
+most that much. `--minutes` ends a session at a time budget the same way.
+
+## The U-Net on a GPU
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu124
@@ -19,18 +71,9 @@ lcmsdeconv train --model-size full --epochs 100 --train-len 50000 --val-len 2000
 lcmsdeconv export-onnx models/charge_unet.pt -o src/lcmsdeconv/models/charge_unet.onnx
 ```
 
-The full model has about 4.2 million parameters. Data is synthesized on the fly, so there is no
-dataset to download and no epoch repeats the same spectra. With eight loader workers the
-generator keeps a 4080-class GPU busy; expect a few hours for the schedule above. Training keeps
-whichever of the exponential moving average and the live weights validates better, and saves the
-best epoch.
-
-`--max-seconds` stops training at a wall-clock budget and still saves the best checkpoint, which
-is how the bundled CPU model is produced:
-
-```bash
-python scripts/train_proof.py --epochs 30 --train-len 600 --max-seconds 7200
-```
+The full U-Net has about 4.2 million parameters. Data is synthesized on the fly, so there is no
+dataset to download. Training keeps whichever of the exponential moving average and the live
+weights validates better, and saves the best epoch.
 
 ## Training on the input inference sees
 

@@ -55,18 +55,31 @@ def bin_weights(features: torch.Tensor, topk_z: torch.Tensor, topk_w: torch.Tens
 
 
 class ChargeLoss(nn.Module):
+    """Soft charge cross-entropy plus the apex heatmap loss.
+
+    ``ignore_charges`` removes bins carrying those charges from the charge loss in proportion
+    to their share: with ``(1,)``, singly charged ions are neither rewarded nor penalised, so the
+    network spends nothing on them while still seeing them in its input.
+    """
+
     def __init__(self, heat_weight: float = 0.1, weight_floor: float = 0.02, weight_cap: float = 4.0,
-                 background_scale: float = 0.1):
+                 background_scale: float = 0.1, ignore_charges: tuple[int, ...] = ()):
         super().__init__()
         self.heat_weight = heat_weight
         self.weight_floor = weight_floor
         self.weight_cap = weight_cap
         self.background_scale = background_scale
+        self.ignore_charges = tuple(int(z) for z in ignore_charges)
 
     def forward(self, outputs: dict, batch: dict) -> dict:
         logits = outputs["charge_logits"]
         w = bin_weights(batch["features"], batch["topk_z"], batch["topk_w"], self.weight_floor,
                         self.weight_cap, self.background_scale)
+        if self.ignore_charges:
+            ign = torch.zeros_like(batch["topk_w"])
+            for z in self.ignore_charges:
+                ign = ign + batch["topk_w"] * (batch["topk_z"] == z).to(ign.dtype)
+            w = w * (1.0 - ign.sum(dim=2).clamp(0.0, 1.0))
         ce = soft_charge_ce(logits, batch["topk_z"], batch["topk_w"], w)
         hl = centernet_focal(outputs["apex_logit"], batch["heat"])
         total = ce + self.heat_weight * hl
