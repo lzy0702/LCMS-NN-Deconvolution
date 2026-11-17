@@ -27,13 +27,21 @@ an unrelated co-eluting compound.
 
 **Charge states** (`synth/charge.py`) follow `z_apex = a · M^b` with class- and mode-dependent
 coefficients — wide distributions for denatured protein, narrow ones near `0.078 · M^0.5` for
-native, length-scaled negative charging for oligonucleotides — with skewed and occasionally
-bimodal shapes.
+native, and `0.00664 · M^0.8` for oligonucleotides under ion pairing — with skewed and
+occasionally bimodal shapes. A
+product-related impurity inherits its parent's envelope, with the apex moved by the mass ratio
+and a few percent of jitter: an oxidised or clipped form charges like its parent, and drawing
+its envelope independently gave impurities charge states their parent never showed.
 
-**Adducts** (`synth/adduct_sampler.py`) get a per-run propensity for each type in the active
-library; the count on an ion is binomial in its charge, so higher charge states carry more
-adducts, as they do in practice. Each adduct state is rendered as its own partial spectrum, so
-the truth table records exact adduct fractions.
+**Adducts** (`synth/adduct_sampler.py`) get a per-run load for each type in the active library:
+the mean number of that adduct an ion carries at the envelope's apex charge, up to
+`adduct_max_per_ion` (0.3 by default; 30 % of runs have none of a given type). The count on an
+ion is binomial in its charge with that mean at the apex, so higher charge states carry more
+adducts, as they do in practice, while the un-adducted form stays visible. Each adduct state is
+rendered as its own partial spectrum, so the truth table records exact adduct fractions. The
+older per-charge propensity (`adduct_max_lambda`) is kept for reproducing old benchmarks and as
+a stress test: at 0.15 per charge a z = 40 protein ion carries about six adducts and its
+un-adducted form is a few percent of its signal.
 
 **Instrument** (`chem/instrument.py`, `synth/noise.py`): time-of-flight with constant resolving
 power between 8 000 and 60 000, Orbitrap with resolving power falling as the square root of m/z,
@@ -41,7 +49,9 @@ or FT-ICR; Gaussian to Gaussian-Lorentzian line shapes; calibration offsets of u
 per million; Poisson shot noise with a variable gain; electronic noise; sparse singly-charged
 chemical noise; and detector saturation as either hard clipping or dead-time compression.
 
-**Chromatography** (`synth/chromatography.py`): exponentially modified Gaussian peaks, impurities
+**Chromatography** (`synth/chromatography.py`): exponentially modified Gaussian peaks (computed
+with the scaled complementary error function; the textbook form underflowed to zero when the
+tail was short against the width and silently removed about 2 % of peaks from the data), impurities
 offset slightly in retention time, a UV trace with class-dependent response and a realistic
 detector delay, polarity switching, and ionisation saturation applied to the frame's total ion
 current so the TIC flat-tops while the UV trace stays linear — exactly the situation the software
@@ -52,8 +62,19 @@ is asked to detect.
 **Frame tier** (`synth/frames.py`) produces one training sample: a 32 768-bin crop of the
 logarithmic grid with its four feature channels, soft charge-share labels (top three classes per
 bin), and an apex heatmap. Crops are centred on a component 70 % of the time and placed at random
-otherwise, so the network also learns what empty spectrum looks like. Generation takes about
-60 ms, so one or two loader workers keep a CPU training run fed.
+otherwise, so the network also learns what empty spectrum looks like.
+
+By default (`render_path = "profile"`) a frame follows the path inference takes: the scene,
+with up to 40 singly charged background ions, is rendered as profile scans on the instrument's
+own m/z axis; one to eight scans are drawn with shot noise at a random gain, electronic noise
+and a vendor-style threshold, and summed (inference deconvolves the summed spectrum of a
+chromatographic region); the sum is resampled onto a grid restricted to the measured range, and
+the noise level is estimated from it by `estimate_noise_sigma`, exactly as
+`deconvolve_spectrum` does. Labels are the shares `y · c_z / max(y, Σ c_z)` of the observed
+intensity `y`, with each charge's noise-free contribution `c_z` rendered and resampled the same
+way. Generation takes about 0.35 s per frame. `render_path = "grid"` renders straight onto the
+grid with the generator's own noise level, as earlier versions did, which is faster but describes
+a different input from the one inference sees.
 
 **Run tier** (`synth/chromatography.py`) produces a whole LC-MS run as mzML plus a `truth.json`
 listing every peak, its members, their masses and relative abundances. This is what
@@ -62,8 +83,8 @@ listing every peak, its members, their masses and relative abundances. This is w
 ## Why labels cannot drift from features
 
 Every ion is rendered once, as a set of isotopologue sticks, by `synth/render.py`. The same
-render produces the per-charge contributions used to build labels and the observed spectrum the
-features are computed from. A bin's label is literally the fraction of that bin's rendered
+sticks produce the per-charge contributions used to build labels and the observed spectrum the
+features are computed from, through the same rendering and resampling. A bin's label is literally the fraction of that bin's rendered
 intensity belonging to each charge, so a change to the peak shape, the resolution model or the
 noise automatically appears in both.
 
