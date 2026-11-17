@@ -19,6 +19,29 @@ def sample_run_propensities(
     return props
 
 
+def sample_run_adduct_load(
+    rng: np.random.Generator, library: AdductLibrary, max_per_ion: float = 0.3
+) -> dict[str, float]:
+    """Mean number of each adduct type per ion at the apex charge, in [0, max_per_ion].
+
+    This is the quantity a spectrum shows directly: a load of 0.1 sodium means the +Na peak is
+    about a tenth of the base peak at the envelope apex. It replaces a per-charge propensity,
+    which made the load grow with charge without bound: at 0.1 per charge a z = 40 protein ion
+    carries four sodium ions on average and its un-adducted form all but disappears, which is
+    not what intact-protein spectra look like.
+    """
+    return sample_run_propensities(rng, library, max_per_ion)
+
+
+def propensities_for_component(load: dict[str, float], charges: dict[int, float],
+                               cap: float = 0.5) -> dict[str, float]:
+    """Per-charge propensities that give ``load`` adducts per ion at the mean charge."""
+    from .charge import mean_charge
+
+    zbar = max(mean_charge(charges), 1.0)
+    return {name: float(min(cap, mu / zbar)) for name, mu in load.items()}
+
+
 def adduct_fractions_for_charge(
     z: int,
     propensities: dict[str, float],
@@ -67,3 +90,39 @@ def adduct_fractions_for_charge(
     if total <= 0:
         return {AdductState(): 1.0}
     return {k: v / total for k, v in states.items() if v / total > 1e-4}
+
+
+def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict[str, float],
+                         rng: np.random.Generator) -> list[tuple[dict[int, float], dict]]:
+    """Charge and adduct distributions for a main compound followed by its impurities.
+
+    ``run_adducts`` is either a per-ion adduct load (default) or, when ``cfg.adduct_max_lambda``
+    is set, the legacy per-charge propensities. Impurities inherit their parent's charge
+    envelope unless ``cfg.impurity_charge_from_parent`` is off.
+    """
+    from .charge import distribution_from_shape, related_shape, sample_charge_shape
+
+    legacy_adducts = cfg.adduct_max_lambda is not None
+    out = []
+    parent_shape = None
+    parent_mass = 0.0
+    for idx, (comp, _rel) in enumerate(members):
+        if (idx > 0 and parent_shape is not None and cfg.impurity_charge_from_parent
+                and comp.kind == "impurity"):
+            shape = related_shape(parent_shape, parent_mass, comp.mass, comp.compound_class, rng)
+        else:
+            shape = sample_charge_shape(comp.mass, comp.compound_class, cfg.esi_mode, rng)
+            if idx == 0:
+                parent_shape, parent_mass = shape, comp.mass
+        cd = distribution_from_shape(shape, cfg.z_max)
+        props = run_adducts if legacy_adducts else propensities_for_component(run_adducts, cd)
+        adducts = {z: adduct_fractions_for_charge(z, props, library, rng) for z in cd}
+        out.append((cd, adducts))
+    return out
+
+
+def run_adduct_draw(cfg, library: AdductLibrary, rng: np.random.Generator) -> dict[str, float]:
+    """Per-run adduct load (default) or legacy per-charge propensities."""
+    if cfg.adduct_max_lambda is not None:
+        return sample_run_propensities(rng, library, cfg.adduct_max_lambda)
+    return sample_run_adduct_load(rng, library, cfg.adduct_max_per_ion)
