@@ -19,7 +19,7 @@ below that, two charge states cannot be confirmed above shot noise by any method
 | --- | --- | --- | --- | --- | --- | --- |
 | comb estimator | protein_tof | 34 % (10/29) | 100 % (8/8) | 25 % (1/4) | 0 % (0/2) | 6.7 |
 | comb estimator | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
-| comb estimator | polymer | 39 % (12/31) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| comb estimator | polymer | 40 % (12/30) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
 | oracle (perfect) | protein_tof | 75 % (12/16) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 7.2 |
 | oracle (perfect) | oligo_iprp | 71 % (12/17) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 1.8 |
 | oracle (perfect) | polymer | 60 % (12/20) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
@@ -59,10 +59,10 @@ charges are also read from resolved isotope spacing.
 | Code | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | 0.01-0.1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
 | before the truth table | 13 % (12/94) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 0 % (0/2) | 4.1 |
-| now | 13 % (14/104) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 50 % (1/2) | 8.0 |
+| now | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 50 % (1/2) | 8.0 |
 
-Precision in this regime is far below the time-of-flight presets: of 90 false species, 17 are
-adduct-shifted copies and 70 unexplained. `single_charge: true` changes nothing here: the
+Precision in this regime is far below the time-of-flight presets: of 85 false species, 16 are
+adduct-shifted copies and 67 unexplained. `single_charge: true` changes nothing here: the
 generator gives every species several charge states, unlike ion-pairing HILIC on the real runs.
 
 ### Charge network (LadderNet)
@@ -80,15 +80,25 @@ at z = 2-5). The same benchmark as above, with the network in place of the comb
 | comb estimator | protein_tof | 34 % (10/29) | 100 % (8/8) | 25 % (1/4) | 0 % (0/2) | 6.7 |
 | LadderNet, z = 1 ignored | protein_tof | 52 % (11/21) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
 | LadderNet, z = 1 dropped | protein_tof | 52 % (11/21) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 9.0 |
+| LadderNet, stage 2, dense background | protein_tof | 65 % (11/17) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
 | comb estimator | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
 | LadderNet, z = 1 ignored | oligo_iprp | 39 % (13/33) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 3.7 |
-| LadderNet, z = 1 dropped | oligo_iprp | 30 % (12/40) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 2.3 |
-| comb estimator | polymer | 39 % (12/31) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
-| LadderNet, z = 1 ignored | polymer | 31 % (13/42) | 100 % (8/8) | 80 % (4/5) | 33 % (1/3) | 1.8 |
+| LadderNet, z = 1 dropped | oligo_iprp | 32 % (12/37) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 2.3 |
+| LadderNet, stage 2, dense background | oligo_iprp | 39 % (11/28) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.4 |
+| comb estimator | polymer | 40 % (12/30) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| LadderNet, z = 1 ignored | polymer | 32 % (13/41) | 100 % (8/8) | 80 % (4/5) | 33 % (1/3) | 1.8 |
 | LadderNet, z = 1 dropped | polymer | 55 % (12/22) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
-| comb estimator | oligo_orbitrap | 13 % (14/104) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 8.0 |
-| LadderNet, z = 1 ignored | oligo_orbitrap | 44 % (17/39) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 10.6 |
-| LadderNet, z = 1 dropped | oligo_orbitrap | 42 % (16/38) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
+| LadderNet, stage 2, dense background | polymer | 20 % (12/59) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 1.1 |
+| comb estimator | oligo_orbitrap | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 8.0 |
+| LadderNet, z = 1 ignored | oligo_orbitrap | 47 % (17/36) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 10.6 |
+| LadderNet, z = 1 dropped | oligo_orbitrap | 43 % (16/37) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
+| LadderNet, stage 2, dense background | oligo_orbitrap | 55 % (16/29) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 8.1 |
+
+"Stage 2, dense background" continues the "ignored" model for six epochs with singly charged
+ions trained on and up to 200 background ions per spectrum. It is the best model so far for
+proteins and Orbitrap oligonucleotides and the worst for polymers, where it reads the small
+oligomers' low charges as background-like (32 unexplained false species against 6 for the comb):
+these CPU runs are short, and the variants trade off differently per preset.
 
 Charge-harmonic false species, the comb's characteristic error, fell from 6, 5 and 4 (protein,
 oligo, polymer) to 0-3. The synthetic runs contain no singly charged background, so these
@@ -149,22 +159,23 @@ check, not truth: a false charge ladder made of co-eluting background can pass i
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | original, comb | 2 / 20 | 0 / 29 | 87 | 0 | 0 | 47 | 38 |
 | before the truth table, comb | 9 / 20 | 4 / 29 | 27 | 2 | 3 | 8 | 1 |
-| now, comb | 13 / 20 | 5 / 29 | 41 | 4 | 3 | 9 | 7 |
+| now, comb | 13 / 20 | 5 / 29 | 39 | 4 | 3 | 9 | 5 |
 | now, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 8 | 5 | 17 | 22 |
-| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 67 | 5 | 3 | 13 | 30 |
+| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 3 | 13 | 27 |
 | now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 3 | 13 | 22 |
-| now, LadderNet stage 2 (z = 1 kept) | 12 / 20 | 3 / 29 | 65 | 5 | 3 | 13 | 29 |
-| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 58 | 5 | 3 | 12 | 22 |
+| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 3 | 12 | 19 |
 
 The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the
 same species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity
 under NC at 10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion chromatogram),
-but they add 15-23 unconfirmed reports, nearly all below 0.13 % of the strongest species,
+but they add 14-22 unconfirmed reports, nearly all below 0.13 % of the strongest species,
 1.3-3.9 kDa, in the IP-RPLC column wash: singly charged background read as z = 2-3. Stage 1
 never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200 background ions per
-spectrum, `--background-ions 200`) brings the number down from 29-30 to 22, the remedy is in
-the right direction, and 45 CPU minutes are far from enough of it; `gpu_training/README.md`
-runs both stages on a GPU. Most of the SI-listed impurities missed by every variant are small
+spectrum, `--background-ions 200`) brings the number down from 27 to 19: the remedy is in the
+right direction, and six CPU epochs are far from enough of it; `gpu_training/README.md` runs
+both stages on a GPU. (These tables are after a fix to species linking that had shrunk the masses
+of tracks with vanishingly weak frames toward zero; it removed two to three junk reports from
+every variant.) Most of the SI-listed impurities missed by every variant are small
 fragments (1.2-3.8 kDa) eluting at 3-15 min.
 
 66 of the original code's 87 reports were heavier than 8 kDa, which nothing in these samples is

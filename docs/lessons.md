@@ -300,8 +300,9 @@ What remains open:
   exchanges by 0.06 Da, so adduct merging and oligomer series remain ambiguous by mass alone.
 - The charge network: LadderNet beats the comb on synthetic data but not yet on the real runs;
   see section 13 and `gpu_training/README.md`.
-- Reported species can fall below a method's mass range (a 667 Da report under the comb, 284-392
-  Da under a network, in an oligonucleotide method whose range starts at 1 000 Da).
+- Tiny per-frame intensities shrank linked species' masses toward zero (a 667 Da report in an
+  oligonucleotide method whose range starts at 1 000 Da); fixed in `link_species`, found only
+  because a network produced many more such frames than the comb.
 
 ## 13. The charge network: what CPU probes can and cannot show
 
@@ -342,10 +343,10 @@ charged ions either ignored by the loss or absent from the spectra, it assigned 
 to 0.92 and 0.90 of the ion intensity of held-out spectra (charges two and up), against 0.57 and
 0.54 for the comb on the same spectra; at z = 2-5, where the comb's ladders are short, 0.84
 against 0.25. In the synthetic benchmark that became species: precision 34 → 52 % (protein),
-28 → 39 % (oligo), 13 → 44 % (Orbitrap oligo), impurity recall up, charge-harmonic false species
+28 → 39 % (oligo), 14 → 47 % (Orbitrap oligo), impurity recall up, charge-harmonic false species
 almost gone (`benchmarks.md`).
 
-On the four real runs it was not better than the comb: one known species fewer and 15-23 more
+On the four real runs it was not better than the comb: one known species fewer and 14-22 more
 unconfirmed reports, almost all tiny, 1.3-3.9 kDa, in the IP-RPLC column wash - singly charged
 background read as z = 2-3. What it shows:
 
@@ -360,8 +361,8 @@ background read as z = 2-3. What it shows:
    for z = 1" is a good first stage - it removed the collapse onto z = 1 that the U-Net probes
    showed - but it needs a second stage that trains on z = 1 among dense background. A short
    CPU version of that stage (`--singly-charged keep --background-ions 200`) cut the unconfirmed
-   reports from 29-30 to 22, the right direction; the full version is the GPU run in
-   `gpu_training/`.
+   reports from 27 to 19 and lifted synthetic precision further (protein 65 %, Orbitrap oligo
+   55 %), the right direction; the full version is the GPU run in `gpu_training/`.
 
 No model is shipped and the comb remains the default. A trained network replaces it only when
 it finds at least what the comb finds on the four real runs without adding reports.
