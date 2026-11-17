@@ -163,3 +163,17 @@ def test_gate_pulls_a_candidate_from_the_edge_of_its_envelope():
     out = refine_candidate_masses([Candidate(6444.3, 1.0, {3, 4})], x, y, -1,
                                   envelope_move=True, **kw)
     assert len(out) == 1 and abs(out[0].mass - 6448.7) < 0.3
+
+
+def test_linking_keeps_the_mass_of_vanishingly_weak_components():
+    """Tiny per-frame intensities must not drag a track's mass toward zero."""
+    from lcmsdeconv.core.model import Component, FrameResult
+    from lcmsdeconv.features.link import link_species
+
+    frames = [FrameResult(1.0 + 0.01 * i, -1,
+                          [Component(mass=6578.66, intensity=1e-14, charges={4: 1e-14},
+                                     adducts={"base": 1e-14}, compound_class="dna")])
+              for i in range(12)]
+    species = link_species(frames, min_frames=1, flat_test=False)
+    assert len(species) == 1
+    assert abs(species[0].mass - 6578.66) < 1e-6
