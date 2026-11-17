@@ -69,16 +69,23 @@ for s in result.species[:5]:
 
 ## Training
 
-The bundled model is small and CPU-trained. For production accuracy, retrain on a GPU:
+The recommended charge network is **LadderNet**, which reads every candidate charge's ladder at
+its exact offsets on the log m/z grid and starts as the comb estimator. To train it on your own
+NVIDIA GPU, follow **`gpu_training/README.md`**: installation, a GPU check, two training stages
+as run scripts for Windows and Linux, pausing and resuming at any time, and what to send back.
 
 ```bash
-lcmsdeconv train --model-size full --epochs 100 --train-len 50000 --batch-size 16 --workers 8
-lcmsdeconv export-onnx models/charge_unet.pt -o src/lcmsdeconv/models/charge_unet.onnx
+python scripts/train_charge_net.py --smoke                      # installation check
+bash gpu_training/run_stage1.sh                                 # Windows: gpu_training\run_stage1.bat
+bash gpu_training/run_stage2.sh
+lcmsdeconv export-onnx runs/ladder_full_stage2.pt -o runs/ladder_full_stage2.onnx
+python scripts/eval_charge_bins.py runs/ladder_full_stage2.onnx  # against the comb, same spectra
 ```
 
 Training data is synthesized on the fly, so there is no dataset to obtain and no epoch repeats.
-See `docs/training.md`, including how to target an integrated GPU or NPU through the OpenVINO
-and DirectML execution providers.
+See `docs/training.md` for both networks (LadderNet and the original U-Net), the checks run
+before long trainings, and how to target an integrated GPU or NPU through the OpenVINO and
+DirectML execution providers.
 
 Setting `model: comb` in a method selects a deterministic charge estimator that needs no model
 at all. It is weaker than a trained network but makes the package usable immediately and is the
