@@ -17,6 +17,8 @@ class CompoundClass:
     description: str = ""
     default_polarity: int = 1
     #: Typical apex charge model z = a * M**b for denaturing ESI (used as a prior only).
+    #: Nucleic acids use a = 0.00664, b = 0.8 (ion-pairing LC-MS): the apex charge grows nearly in
+    #: proportion to length rather than with the square root of mass.
     charge_a: float = 0.17
     charge_b: float = 0.5
 
@@ -64,8 +66,8 @@ register_class(
         Formula({"C": 9.75, "H": 12.25, "N": 3.75, "O": 6.0, "P": 1.0}),
         "Average DNA nucleotide residue (phosphodiester)",
         -1,
-        0.02,
-        0.63,
+        0.00664,
+        0.8,
     )
 )
 register_class(
@@ -74,8 +76,8 @@ register_class(
         Formula({"C": 9.5, "H": 11.75, "N": 3.75, "O": 7.0, "P": 1.0}),
         "Average RNA nucleotide residue (phosphodiester)",
         -1,
-        0.02,
-        0.63,
+        0.00664,
+        0.8,
     )
 )
 register_class(
@@ -84,8 +86,8 @@ register_class(
         Formula({"C": 9.75, "H": 12.25, "N": 3.75, "O": 5.0, "P": 1.0, "S": 1.0}),
         "Phosphorothioate DNA residue",
         -1,
-        0.02,
-        0.63,
+        0.00664,
+        0.8,
     )
 )
 register_class(
@@ -94,8 +96,8 @@ register_class(
         Formula({"C": 9.5, "H": 11.75, "N": 3.75, "O": 6.0, "P": 1.0, "S": 1.0}),
         "Phosphorothioate RNA residue",
         -1,
-        0.02,
-        0.63,
+        0.00664,
+        0.8,
     )
 )
 register_class(

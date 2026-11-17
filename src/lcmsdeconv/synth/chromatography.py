@@ -9,8 +9,7 @@ import numpy as np
 from ..chem.adducts import AdductLibrary
 from ..chem.instrument import InstrumentModel
 from ..core.model import Chromatogram, Run, Spectrum
-from .adduct_sampler import adduct_fractions_for_charge, sample_run_propensities
-from .charge import charge_distribution
+from .adduct_sampler import member_distributions, run_adduct_draw
 from .compounds import choose_class, sample_compound
 from .config import SynthConfig
 from .impurities import sample_impurities
@@ -34,14 +33,30 @@ def emg(t: np.ndarray, center: float, sigma: float, tau: float) -> np.ndarray:
 
 
 def _emg_raw(t: np.ndarray, center: float, sigma: float, tau: float) -> np.ndarray:
-    if tau < 1e-4:
-        return np.exp(-0.5 * ((t - center) / sigma) ** 2)
-    from scipy.special import erfc
+    """Exponentially modified Gaussian, up to a constant factor, without overflow or underflow.
 
-    arg = (sigma / tau - (t - center) / sigma) / np.sqrt(2)
-    z = 0.5 * (sigma / tau) ** 2 - (t - center) / tau
-    z = np.clip(z, -700, 700)
-    y = np.exp(z) * erfc(arg)
+    The textbook form ``exp(s**2/2 - d*s) * erfc((s - d)/sqrt(2))`` (``d = (t - center)/sigma``,
+    ``s = sigma/tau``) multiplies a huge exponential by a vanishing erfc once the tail is short
+    compared with the width. For ``s`` above about 27 both factors leave double range and the
+    whole peak came out as zeros, silently removing it from the run while it stayed in the
+    truth. Where the erfc argument is positive the product is rewritten with the scaled
+    complementary error function, ``exp(-d**2/2) * erfcx(x)``, which is exact and bounded;
+    elsewhere the original form cannot overflow.
+    """
+    if tau <= 0 or sigma / tau > 1e6:
+        return np.exp(-0.5 * ((t - center) / sigma) ** 2)
+    from scipy.special import erfc, erfcx
+
+    s = sigma / tau
+    d = (t - center) / sigma
+    x = (s - d) / np.sqrt(2.0)
+    y = np.empty_like(d, dtype=float)
+    pos = x >= 0
+    y[pos] = np.exp(-0.5 * d[pos] ** 2) * erfcx(x[pos])
+    neg = ~pos
+    y[neg] = np.exp(0.5 * s * s - s * d[neg]) * erfc(x[neg])
+    # scale so that the tau -> 0 limit tends to the plain Gaussian rather than to zero
+    y *= s * np.sqrt(np.pi / 2.0)
     return np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
 
 
@@ -56,6 +71,11 @@ class PeakTruth:
     charge_dists: dict[int, dict[int, float]] = field(default_factory=dict)
     saturated: bool = False
     _adducts: dict = field(default_factory=dict, repr=False)
+    _counts: dict = field(default_factory=dict, repr=False)
+
+
+#: Counts per ion of the simulated detector (shot-noise scale of the run tier).
+RUN_GAIN = 20.0
 
 
 @dataclass
@@ -64,10 +84,12 @@ class RunTruth:
     polarity_schedule: list[int]
     mode: str
     esi_mode: str
+    gain: float = RUN_GAIN
 
     def to_dict(self) -> dict:
-        out = {"mode": self.mode, "esi_mode": self.esi_mode, "peaks": []}
+        out = {"mode": self.mode, "esi_mode": self.esi_mode, "gain": self.gain, "peaks": []}
         for p in self.peaks:
+            counts = getattr(p, "_counts", {}) or {}
             out["peaks"].append({
                 "main": p.compound.name,
                 "mass": p.compound.mass,
@@ -77,11 +99,39 @@ class RunTruth:
                 "saturated": p.saturated,
                 "members": [
                     {"name": c.name, "mass": c.mass, "rel": rel, "kind": c.kind,
-                     "delta": c.meta.get("delta", 0.0)}
-                    for c, rel in p.members
+                     "delta": c.meta.get("delta", 0.0),
+                     **counts.get(i, {})}
+                    for i, (c, rel) in enumerate(p.members)
                 ],
             })
         return out
+
+
+def _expected_counts(p: PeakTruth, profile: np.ndarray, gain: float,
+                     points_per_fwhm: float = 5.0) -> dict[int, dict]:
+    """Expected ion counts in each member's strongest and second-strongest charge state.
+
+    A count here is the whole envelope of one charge state (all isotopologues and adduct forms)
+    summed over every frame of the chromatographic peak and over the profile points of each
+    peak, divided by the detector gain. It decides whether a member can be detected at all: a
+    species needs two charge states to be confirmed, so ``support_counts`` (the second-strongest
+    state) is the relevant figure. A member with a few counts cannot be told from shot noise
+    however good the deconvolution is, and scoring it as a miss would measure the generator,
+    not the software.
+    """
+    # profile peaks use the apex-height convention: a Gaussian of height h sampled at
+    # points_per_fwhm points per FWHM sums to h * sqrt(2 pi) * points_per_fwhm / 2.3548
+    area_per_height = np.sqrt(2.0 * np.pi) * points_per_fwhm / 2.354820045
+    frames_sum = float(np.sum(profile))
+    out: dict[int, dict] = {}
+    for idx, (_comp, rel) in enumerate(p.members):
+        cd = p.charge_dists.get(idx, {})
+        per_z = sorted(cd.values(), reverse=True)
+        scale = p.intensity * rel * area_per_height * frames_sum / gain
+        peak = per_z[0] * scale if per_z else 0.0
+        support = per_z[1] * scale if len(per_z) > 1 else (peak if set(cd) == {1} else 0.0)
+        out[idx] = {"peak_counts": float(peak), "support_counts": float(support)}
+    return out
 
 
 def generate_run(
@@ -96,7 +146,7 @@ def generate_run(
 ) -> tuple[Run, RunTruth]:
     library = AdductLibrary.from_mode(cfg.mode, 0, max_per_type=cfg.adduct_max_per_type,
                                       max_total=cfg.adduct_max_total)
-    props = sample_run_propensities(rng, library, cfg.adduct_max_lambda)
+    props = run_adduct_draw(cfg, library, rng)
     inst = InstrumentModel(cfg.instrument_kind,
                            float(np.exp(rng.uniform(*np.log(cfg.resolution_range)))),
                            shape="gaussian")
@@ -117,11 +167,9 @@ def generate_run(
         members = [(main, 1.0)] + sample_impurities(rng, main, 0, cfg.max_impurities, cfg.impurity_abundance)
         cdists = {}
         adists: dict[int, dict] = {}
-        for idx, (comp, _rel) in enumerate(members):
-            cd = charge_distribution(comp.mass, comp.compound_class, cfg.esi_mode,
-                                     cfg.polarity, rng, z_max=cfg.z_max)
+        for idx, (cd, adducts) in enumerate(member_distributions(cfg, members, library, props, rng)):
             cdists[idx] = cd
-            adists[idx] = {z: adduct_fractions_for_charge(z, props, library, rng) for z in cd}
+            adists[idx] = adducts
         saturated = esi_saturation and rng.random() < 0.5
         pk = PeakTruth(main, float(c), intensity, sigma, tau, members, cdists, saturated)
         pk._adducts = adists  # cached, reused every frame
@@ -149,6 +197,8 @@ def generate_run(
     uv = np.zeros(n_frames)
     esi_level = np.percentile([p.intensity for p in peaks], 60) * 3 if peaks else 1e6
     profiles = [emg(times, p.rt, p.sigma, p.tau) for p in peaks]
+    for p, prof in zip(peaks, profiles):
+        p._counts = _expected_counts(p, prof, RUN_GAIN, inst.points_per_fwhm)
 
     for fi, (t, pol) in enumerate(zip(times, pol_sched)):
         components: list[ComponentInstance] = []
@@ -179,7 +229,7 @@ def generate_run(
             if any(p.saturated for p in peaks):
                 prof_spec = prof_spec * comp_factor
         # shot + electronic noise
-        gain = 20.0
+        gain = RUN_GAIN
         lam = np.clip(prof_spec / gain, 0, None)
         prof_spec = rng.poisson(lam).astype(np.float64) * gain
         prof_spec += np.abs(rng.normal(0, 1.5, axis.size))
