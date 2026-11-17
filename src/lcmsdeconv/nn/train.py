@@ -185,11 +185,17 @@ def train(config: TrainConfig, synth_config=None):
             rep = degeneracy_report(_batch_dict(first, "cpu"), loss_fn)
             print(f"loss of constant predictors relative to the truth: {rep['margins']}")
             _log(log_path, {"degeneracy": rep})
-        # the bar to clear: the comb estimator's own charge reading on the validation frames
+    if comb is None or "by_kind" not in comb:
+        # the bar to clear: the comb as the pipeline runs it (whole spectrum, isotope-spacing
+        # charges on Orbitrap spectra) on the validation frames, scored as a network is
+        print("scoring the comb estimator, as the pipeline runs it, on the validation frames ...",
+              flush=True)
         comb = comb_baseline(vl)
-        print(f"comb estimator on the validation frames: {metric} {comb[metric]:.3f} "
-              f"bands {comb['bands_given_ion']}")
-        _log(log_path, {"comb_baseline": comb})
+        _log(log_path, {"comb_baseline": {k: v for k, v in comb.items() if k != "kinds"}})
+    bands = {k: round(v, 3) for k, v in comb["bands_given_ion"].items()}
+    print(f"comb estimator ({comb['estimator']}): {metric} {comb[metric]:.3f} bands {bands}")
+    for line in by_kind_lines(None, comb.get("by_kind")):
+        print(line)
 
     def save_state(epoch: int, step: int) -> None:
         state = {"model": model.state_dict(), "ema": ema.shadow.state_dict(),
@@ -272,8 +278,8 @@ def train(config: TrainConfig, synth_config=None):
                     return stop_here(epoch, i + 1, "paused")
                 raise
             try:
-                val_ema = evaluate(ema.shadow, vl, loss_fn, device)
-                val_live = evaluate(model, vl, loss_fn, device)
+                val_ema = evaluate(ema.shadow, vl, loss_fn, device, kinds=comb.get("kinds"))
+                val_live = evaluate(model, vl, loss_fn, device, kinds=comb.get("kinds"))
             except (RuntimeError, OSError):
                 # interrupted while validating: the epoch's training is done, so resuming
                 # starts with this validation
@@ -298,6 +304,8 @@ def train(config: TrainConfig, synth_config=None):
             print(f"epoch {epoch}: {metric} ema {val_ema[metric]:.3f} live "
                   f"{val_live[metric]:.3f} (comb {comb[metric]:.3f}) -> keeping {best}; "
                   f"bands {bands}", flush=True)
+            for line in by_kind_lines(val.get("by_kind"), comb.get("by_kind")):
+                print(line, flush=True)
             if best_state is None or key(val) > best_key:
                 best_key = key(val)
                 best_loss = val["val_loss"]
@@ -371,41 +379,85 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None
 
 
 def comb_baseline(loader) -> dict:
-    """Charge metrics of the comb's answer in feature channel 3 on ``loader``.
+    """Charge metrics of the comb estimator, as the pipeline runs it, on ``loader``'s frames.
 
-    This is the ladder comb without the isotope-spacing evidence the pipeline adds for Orbitrap
-    spectra, so on those it understates the pipeline's comb; scripts/eval_charge_bins.py scores
-    a trained model against the pipeline's estimator itself.
+    Every validation frame is generated again with its whole spectrum, which CombPredictor reads
+    as ``process_run`` does: all of it at once (a crop would hide the far neighbours of low
+    charge states), with isotope-spacing charges on Orbitrap and FT-ICR spectra
+    (:mod:`lcmsdeconv.nn.baseline`). Its charges inside each frame's crop are scored exactly as
+    :func:`evaluate` scores a network, batch by batch, so the two numbers compare. A frame
+    rendered onto its crop alone falls back to the comb's answer in feature channel 3, which
+    ``estimator`` then says. Also returns every frame's kind of spectrum (``kinds``, in loader
+    order) and per-kind accuracies with both weightings (``by_kind``, see
+    :class:`~lcmsdeconv.nn.checks.ChargeScoreboard`).
     """
     import torch
+    from torch.utils.data import DataLoader
 
-    from .checks import charge_metrics
+    from ..synth.dataset import CombBarFrames
+    from .checks import ChargeScoreboard, charge_metrics
 
+    frames = DataLoader(CombBarFrames(loader.dataset), batch_size=loader.batch_size,
+                        num_workers=loader.num_workers, shuffle=False)
     sums: dict[str, float] = {}
     bands: dict[str, list[float]] = {}
+    kinds: list[str] = []
+    hows: set[str] = set()
+    board = ChargeScoreboard()
     nb = 0
-    for sample in loader:
-        batch = _batch_dict(sample, "cpu")
-        feats = batch["features"]
-        n, _c, length = feats.shape
-        zc = torch.round(feats[:, 3, :] * 64).long().clamp(0, 100)
+    for f0, true, zc, kind, how in frames:
+        n, length = zc.shape
+        zc = zc.long().clamp(0, 100)
         logits = torch.full((n, 101, length), -10.0)
         logits.scatter_(1, zc[:, None, :], 10.0)
-        # where the comb has no answer (channel 3 = 0) it reads no charge: the ion-class argmax
-        # would otherwise land on class 1 and score singly charged bins as correct
-        logits[:, 100, :] = torch.where(zc == 0, torch.full_like(zc, 0, dtype=logits.dtype),
+        # where the comb has no answer it reads no charge: the ion-class argmax would otherwise
+        # land on class 1 and score singly charged bins as correct
+        logits[:, 100, :] = torch.where(zc == 0, torch.zeros_like(logits[:, 100, :]),
                                         logits[:, 100, :])
-        m = charge_metrics(logits, batch)
+        m = charge_metrics(logits, {"features": f0, "topk_z": true})
         for k in ("weighted_accuracy", "charge_accuracy_given_ion", "charge_accuracy_given_ion_z2"):
             sums[k] = sums.get(k, 0.0) + m[k]
         for k, v in m["bands_given_ion"].items():
             bands.setdefault(k, []).append(v)
+        for i in range(n):
+            board.add(kind[i], "comb", zc[i].numpy(), true[i, :, 0].numpy(), f0[i, 0].numpy())
+        kinds += list(kind)
+        hows |= set(how)
         nb += 1
     nb = max(nb, 1)
+    estimator = {"pipeline": "whole spectrum, isotope charges on Orbitrap",
+                 "channel 3": "channel-3 answer inside the crop"}
     return {"charge_acc": sums.get("weighted_accuracy", 0.0) / nb,
             "charge_acc_given_ion": sums.get("charge_accuracy_given_ion", 0.0) / nb,
             "charge_acc_given_ion_z2": sums.get("charge_accuracy_given_ion_z2", 0.0) / nb,
-            "bands_given_ion": {k: float(np.mean(v)) for k, v in bands.items()}}
+            "bands_given_ion": {k: float(np.mean(v)) for k, v in bands.items()},
+            "estimator": "; ".join(estimator[h] for h in sorted(hows)) or "no frames",
+            "kinds": kinds, "by_kind": board.summary()}
+
+
+def by_kind_lines(net: dict | None, comb: dict | None) -> list[str]:
+    """Lines setting a network's per-kind accuracy at z >= 2 beside the comb's, both weighted
+    by log-SNR and by intensity (``by_kind`` of :func:`evaluate` and :func:`comb_baseline`)."""
+    from .baseline import KIND_NAMES
+
+    def cell(board: dict | None, kind: str, est: str) -> str | None:
+        d = (board or {}).get(kind, {}).get(est)
+        if not d:
+            return None
+        a, b = d.get("log-SNR", {}).get("z>=2"), d.get("intensity", {}).get("z>=2")
+        if a is None or b is None:
+            return None
+        return f"{a:.3f} / {b:.3f}"
+
+    lines = []
+    for kind, name in KIND_NAMES.items():
+        parts = [f"{label} {c}" for label, c in (("network", cell(net, kind, "network")),
+                                                 ("comb", cell(comb, kind, "comb"))) if c]
+        if parts:
+            lines.append(f"    {name:15s} " + "   ".join(parts))
+    if lines:
+        lines.insert(0, "  charge of z >= 2 ion bins read right (log-SNR / intensity weighted):")
+    return lines
 
 
 def _log(path: Path, record: dict) -> None:
@@ -415,16 +467,18 @@ def _log(path: Path, record: dict) -> None:
         fh.write(json.dumps(record, default=float) + "\n")
 
 
-def evaluate(model, loader, loss_fn, device) -> dict:
+def evaluate(model, loader, loss_fn, device, kinds: list[str] | None = None) -> dict:
     """Validation loss and charge metrics (see :func:`lcmsdeconv.nn.checks.charge_metrics`).
 
-    ``charge_acc`` is the intensity-weighted top-1 accuracy over ion-bearing bins with the
+    ``charge_acc`` is the log-SNR-weighted top-1 accuracy over ion-bearing bins with the
     background class competing; ``charge_acc_given_ion`` takes the top charge among the ion
-    classes only, as inference does, and is the quantity checkpoints are selected by.
+    classes only, as inference does (``..._z2``: on bins of charge two or more), and is the
+    quantity checkpoints are selected by. With ``kinds`` (each frame's kind of spectrum, in
+    loader order) ``by_kind`` adds per-kind accuracies weighted by log-SNR and by intensity.
     """
     import torch
 
-    from .checks import charge_metrics
+    from .checks import ChargeScoreboard, charge_metrics
 
     model.eval()
     tot = 0.0
@@ -432,6 +486,8 @@ def evaluate(model, loader, loss_fn, device) -> dict:
     sums: dict[str, float] = {}
     bands: dict[str, list[float]] = {}
     never = 0
+    board = ChargeScoreboard() if kinds else None
+    pos = 0
     with torch.no_grad():
         for sample in loader:
             batch = _batch_dict(sample, device)
@@ -439,6 +495,14 @@ def evaluate(model, loader, loss_fn, device) -> dict:
             losses = loss_fn(out, batch)
             tot += float(losses["loss"])
             nb += 1
+            if board is not None:
+                pred = (out["charge_logits"][:, 1:, :].argmax(1) + 1).cpu().numpy()
+                true = batch["topk_z"][:, :, 0].cpu().numpy()
+                f0 = batch["features"][:, 0, :].cpu().numpy()
+                for i in range(pred.shape[0]):
+                    if pos + i < len(kinds):
+                        board.add(kinds[pos + i], "network", pred[i], true[i], f0[i])
+                pos += pred.shape[0]
             m = charge_metrics(out["charge_logits"], batch)
             for k in ("weighted_accuracy", "charge_accuracy_given_ion",
                       "charge_accuracy_given_ion_z2", "harmonic_error",
@@ -455,4 +519,6 @@ def evaluate(model, loader, loss_fn, device) -> dict:
         res[k] = sums.get(k, 0.0) / nb
     res["bands_given_ion"] = {k: float(np.mean(v)) for k, v in bands.items()}
     res["classes_never_predicted"] = never
+    if board is not None:
+        res["by_kind"] = board.summary()
     return res

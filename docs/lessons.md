@@ -340,27 +340,35 @@ and a small network shared by all charges scores the reading. It starts as the c
 part is initialised to zero; a test checks the equality) and has 9 500 parameters.
 
 Trained on two CPU threads for 45 minutes (240 synthetic spectra, 12 epochs), with singly
-charged ions either ignored by the loss or absent from the spectra, it read the right charge for
-0.80-0.83 of the ion intensity of fresh spectra at charges two and up, against 0.46 for the
-pipeline's comb on time-of-flight spectra and 0.22 on Orbitrap ones (the same spectra for every
-model; at z = 2-5, where the comb's ladders are short, 0.62-0.78 against 0.16-0.54). A first
-comparison against the cheaper comb proxy that training prints, on each run's own validation
-spectra, had given 0.92 against 0.57; an independent review pointed out that the two variants
-had been validated on different spectra and against a proxy, and the fair measurement
-(`scripts/eval_charge_bins.py`) was added. In the synthetic benchmark that became species: precision 34 → 52 % (protein),
-28 → 39 % (oligo), 14 → 47 % (Orbitrap oligo), impurity recall up, charge-harmonic false species
-almost gone (`benchmarks.md`).
+charged ions either ignored by the loss or absent from the spectra, it read the right charge on
+fresh spectra at charges two and up for 0.90 of the ion bins weighted by log-SNR, against 0.64
+for the comb as the pipeline runs it on time-of-flight spectra (0.84-0.88 against 0.23 on
+Orbitrap ones), and for 0.95-0.96 of each spectrum's ion intensity against 0.86. Pooled over
+spectra, though, so that the strongest few decide, the comb led on time-of-flight data (0.89
+against 0.82-0.86), at z = 2-5 above all: a 32 768-bin window cannot hold the nearest
+neighbours of a doubly charged ion, which the comb, reading the whole spectrum, sees. Getting
+that comparison fair took three corrections, two of them found by independent reviews: the two
+variants had first been validated on different spectra; training printed as its bar the comb's
+answer in feature channel 3, computed inside the crop (0.57 where the pipeline's comb scores
+0.64); and the "pipeline comb" of the first fair measurement had itself been run on the crop
+(0.46). `lcmsdeconv.nn.baseline` now runs every estimator, during training and in
+`scripts/eval_charge_bins.py`, the way `process_run` does. In the synthetic benchmark that
+became species: precision 34 → 52 % (protein), 28 → 39 % (oligo), 14 → 47 % (Orbitrap oligo),
+impurity recall up, charge-harmonic false species almost gone (`benchmarks.md`).
 
-On the four real runs it was not better than the comb: one known species fewer and 14-22 more
+On the four real runs it was not better than the comb: one known species fewer and 13-21 more
 unconfirmed reports, almost all tiny, 1.3-3.9 kDa, in the IP-RPLC column wash - singly charged
 background read as z = 2-3. What it shows:
 
 1. **Structure beats data at this scale.** A 9 500-parameter network with the right inductive
    bias learned in 45 CPU minutes what a 1 M-parameter U-Net could not approach.
 2. **Per-bin accuracy, synthetic species and real species are three different measurements.** A
-   35-point per-bin gain became 10-30 points of synthetic precision and a small loss on real
+   26-point per-bin gain (log-SNR weighted; 10 points of intensity per spectrum, and a loss on
+   the strongest spectra) became 10-30 points of synthetic precision and a small loss on real
    runs, because of what the synthetic spectra do not contain: the dense singly charged
-   background of a column wash.
+   background of a column wash. Which per-bin number to quote is itself a choice to make
+   explicit: log-SNR weighting rewards reading weak ions, intensity weighting reading the
+   strong ones the decoder's votes rest on.
 3. **Leaving a class out of the loss is not neutral at inference.** A network never penalised
    for calling a singly charged ion multiply charged does so on data full of them. "No reward
    for z = 1" is a good first stage - it removed the collapse onto z = 1 that the U-Net probes

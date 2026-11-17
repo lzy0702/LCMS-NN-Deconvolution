@@ -49,16 +49,45 @@ class FrameDataset(Dataset):
             return self._cache[key]
         return self._make(idx)
 
-    def _make(self, idx: int):
+    def frame(self, idx: int):
+        """Item ``idx`` as its configuration and whole :class:`FrameSample`, ``meta`` included."""
         rng = np.random.default_rng(self.base_seed + idx)
         cfg = self._configs[0] if self._weights is None else \
             self._configs[int(rng.choice(len(self._configs), p=self._weights))]
-        fs = generate_frame(cfg, rng)
+        return cfg, generate_frame(cfg, rng)
+
+    def _make(self, idx: int):
+        _cfg, fs = self.frame(idx)
         x = torch.from_numpy(fs.features)
         topk_z = torch.from_numpy(fs.topk_z.astype(np.int64))
         topk_w = torch.from_numpy(fs.topk_w.astype(np.float32))
         heat = torch.from_numpy(fs.heat.astype(np.float32))
         return x, topk_z, topk_w, heat
+
+
+class CombBarFrames(Dataset):
+    """The frames of a :class:`FrameDataset` with the charges the pipeline's comb reads on each.
+
+    Items are (feature channel 0 ``[1, L]``, true dominant class ``[L, 1]``, comb charges
+    ``[L]``, kind of spectrum, how the comb was read): what ``train.comb_baseline`` scores. The
+    frames are generated again (they are deterministic per index) so that their whole spectra,
+    which the training items leave out, are at hand.
+    """
+
+    def __init__(self, frames: FrameDataset):
+        self.frames = frames
+
+    def __len__(self) -> int:
+        return len(self.frames)
+
+    def __getitem__(self, idx: int):
+        from ..nn.baseline import comb_charges, spectrum_kind
+
+        cfg, fs = self.frames.frame(idx)
+        zc, how = comb_charges(cfg, fs)
+        return (torch.from_numpy(np.ascontiguousarray(fs.features[:1])),
+                torch.from_numpy(fs.topk_z[:, :1].astype(np.int64)),
+                torch.from_numpy(zc), spectrum_kind(fs.meta), how)
 
 
 def make_dataloaders(config, train_len: int, val_len: int, batch_size: int = 8,

@@ -3,9 +3,11 @@
 Frames are rendered along the inference path (summed, vendor-thresholded profile scans
 resampled onto the logarithmic grid) from a mixture of positive-mode proteins and polymers,
 negative-mode ion-pairing oligonucleotides and a general positive-mode mix. Every epoch prints
-the charge accuracy on ion bins next to the comb estimator's on the same validation frames, the
-bar a network has to clear before it is worth using; the best checkpoint is saved as soon as it
-improves, so an interrupted run still leaves a model.
+the charge accuracy on ion bins next to that of the comb estimator as the pipeline runs it (over
+the whole spectrum, isotope-spacing charges on Orbitrap spectra) on the same validation frames,
+by kind of spectrum and weighted by log-SNR and by intensity: the bar a network has to clear
+before it is worth using. The best checkpoint is saved as soon as it improves, so an
+interrupted run still leaves a model.
 
 Singly charged ions (chemical background, small molecules) dominate the bins and are learned
 first; ``--singly-charged`` controls them:
