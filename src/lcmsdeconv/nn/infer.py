@@ -44,6 +44,7 @@ class ChargePredictor:
         self.overlap = overlap
         self.backend = None
         self.z_max = 100
+        self.evidence_channels = 0
         path = Path(model_path) if model_path else bundled_model_path()
         self.model_path = path
         if path is not None and str(path).endswith((".onnx",)):
@@ -66,13 +67,16 @@ class ChargePredictor:
         self.backend = "onnx"
         meta = path.with_suffix(".json")
         if meta.exists():
-            self.z_max = json.loads(meta.read_text()).get("z_max", 100)
+            info = json.loads(meta.read_text())
+            self.z_max = info.get("z_max", 100)
+            self.evidence_channels = int(info.get("evidence_channels", 0))
 
     def _init_torch(self, path: Path):
         from .export import load_torch_model
 
         self.torch_model, ckpt = load_torch_model(path)
         self.z_max = ckpt.get("z_max", 100)
+        self.evidence_channels = int(ckpt.get("evidence_channels", 0))
         self.backend = "torch"
 
     # ------------------------------------------------------------- run
@@ -114,7 +118,8 @@ class ChargePredictor:
             seg = np.zeros(W, dtype=np.float64)
             seg[: s1 - s0] = intensity[s0:s1]
             pad = (-W) % DOWNSAMPLE
-            feats = featurize(seg, noise_sigma, grid.step, z_max=min(self.z_max, 64))
+            feats = featurize(seg, noise_sigma, grid.step, z_max=min(self.z_max, 64),
+                              evidence_channels=self.evidence_channels)
             if pad:
                 feats = np.pad(feats, ((0, 0), (0, pad)))
             logits, apx = self._run(feats)

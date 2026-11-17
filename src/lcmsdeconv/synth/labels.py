@@ -12,6 +12,8 @@ def build_labels(
     k: int = 3,
     heat_sigma: float = 1.5,
     apex_snr: float = 2.0,
+    noise_level: float | None = None,
+    observed: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Build training labels for one crop.
 
@@ -27,13 +29,25 @@ def build_labels(
     L = noise.size
     nz = charge_mat.shape[0]
     total_sig = charge_mat.sum(axis=0) if nz else np.zeros(L)
-    denom = total_sig + noise + 1e-9
 
     # assemble a (nz+1, L) share matrix with class 0 = noise
     shares = np.empty((nz + 1, L), dtype=np.float64)
-    shares[0] = noise / denom
-    if nz:
-        shares[1:] = charge_mat / denom
+    if observed is None:
+        denom = total_sig + noise + 1e-9
+        shares[0] = noise / denom
+        if nz:
+            shares[1:] = charge_mat / denom
+    else:
+        # Shares of what was observed: an ion takes y * c_z / max(y, S) of the bin, the rest is
+        # noise. A bin where nothing was recorded (thresholded away, or a far line-shape tail)
+        # is background, however much noise-free signal the renderer put there.
+        y = np.clip(np.asarray(observed, dtype=float), 0.0, None)
+        seen = y > 0
+        denom = np.maximum(y, total_sig) + 1e-12
+        ion = charge_mat * (seen / denom) if nz else np.zeros((0, L))
+        if nz:
+            shares[1:] = ion
+        shares[0] = np.clip(1.0 - ion.sum(axis=0), 0.0, 1.0) if nz else 1.0
     class_ids = np.concatenate([[0], charges.astype(np.int64)])
 
     # top-k classes per bin
@@ -49,7 +63,10 @@ def build_labels(
     # apex heatmap: local maxima of each charge row above apex_snr * local noise
     heat = np.zeros(L, dtype=np.float64)
     if nz:
-        noise_level = max(np.median(noise), 1e-6)
+        # thresholded profile data leave most bins at exactly zero, so the median of the noise
+        # is zero and every wiggle of a charge row would count as an apex; the measured noise
+        # level is the right floor when the caller has it
+        noise_level = max(float(np.median(noise)), float(noise_level or 0.0), 1e-6)
         apex_bins: list[int] = []
         for r in range(nz):
             row = charge_mat[r]

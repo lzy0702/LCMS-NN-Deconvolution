@@ -33,6 +33,8 @@ class TrainConfig:
     #: select the saved checkpoint by validation charge accuracy (``"accuracy"``) rather than
     #: by validation loss: a loss can improve while the model drifts toward a constant answer
     select_by: str = "accuracy"
+    #: per-charge comb evidence channels added to the four base input features
+    evidence_channels: int = 0
 
 
 def _device(name: str):
@@ -81,10 +83,14 @@ def train(config: TrainConfig, synth_config=None):
     from .model import build_model
 
     synth_config = synth_config or SynthConfig(z_max=config.z_max)
+    for sc in ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
+               else [synth_config]):
+        sc.evidence_channels = config.evidence_channels
+    in_ch = 4 + config.evidence_channels
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
-    model = build_model(config.model_size, z_max=config.z_max).to(device)
+    model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch).to(device)
     print(f"model {config.model_size}: {model.num_params()/1e6:.2f}M params on {device}")
 
     tl, vl = make_dataloaders(synth_config, config.train_len, config.val_len,
@@ -165,7 +171,8 @@ def train(config: TrainConfig, synth_config=None):
         best_state = model.state_dict()
     torch.save({"state_dict": best_state, "config": asdict(config),
                 "synth_config_z_max": config.z_max, "model_size": config.model_size,
-                "z_max": config.z_max}, out_path)
+                "z_max": config.z_max, "in_ch": in_ch,
+                "evidence_channels": config.evidence_channels}, out_path)
     print(f"saved {out_path} (best val_loss {best_loss:.4f})")
     model.load_state_dict(best_state)
     return model, history

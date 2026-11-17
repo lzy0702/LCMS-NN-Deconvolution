@@ -43,7 +43,10 @@ def degeneracy_report(batch: dict, loss_fn) -> dict:
     topk_z, topk_w = batch["topk_z"], batch["topk_w"]
     n, _c, length = feats.shape
     n_classes = int(max(int(topk_z.max()) + 1, 2))
-    w = loss_fn.weight_floor + feats[:, 0, :].clamp(0, loss_fn.weight_cap)
+    from .losses import bin_weights
+
+    w = bin_weights(feats, topk_z, topk_w, loss_fn.weight_floor, loss_fn.weight_cap,
+                    getattr(loss_fn, "background_scale", 1.0))
 
     def ce_of(probs):  # probs [N, C, L]
         return float(soft_charge_ce(_logits_from_probs(probs), topk_z, topk_w, w))

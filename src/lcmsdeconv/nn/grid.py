@@ -156,3 +156,33 @@ class LogMzGrid:
 
 def default_grid(polarity: int = 1, step: float = 2e-5, mz_max: float = 10000.0) -> LogMzGrid:
     return LogMzGrid(50.0, mz_max, step, polarity)
+
+
+def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step: float = 2e-5,
+                     mz_max: float = 10000.0, is_profile: bool | None = True,
+                     instrument=None) -> tuple[LogMzGrid, np.ndarray, float]:
+    """The grid view of a raw spectrum that both inference and training use.
+
+    Returns ``(grid, observed, noise_sigma)``: a grid restricted to the spectrum's measured m/z
+    range, the spectrum resampled onto it (centroided input is drawn with the instrument line
+    shape) and the noise level estimated from the result. :func:`lcmsdeconv.deconv.pipeline.
+    deconvolve_spectrum` and the training-frame renderer both call this one function, so the
+    network's input statistics cannot drift apart between training and use.
+    """
+    from ..chem.instrument import InstrumentModel, estimate_noise_sigma
+
+    mz = np.asarray(mz, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    if mz.size:
+        lo = max(50.0, float(mz.min()) * 0.995)
+        hi = min(mz_max, float(mz.max()) * 1.005)
+    else:
+        lo, hi = 50.0, mz_max
+    if hi <= lo * 1.01:
+        lo, hi = 50.0, mz_max
+    grid = LogMzGrid(lo, hi, step, polarity)
+    if is_profile is False:
+        observed = grid.render_centroids(mz, intensity, instrument or InstrumentModel("tof", 30000.0))
+    else:
+        observed = grid.resample_profile(mz, intensity)
+    return grid, observed, estimate_noise_sigma(observed)
