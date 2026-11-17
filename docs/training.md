@@ -38,12 +38,17 @@ a network learns them first. `--singly-charged` controls them:
 - `keep`: everything is trained on (a fine-tuning stage after either of the above).
 
 With `ignore` or `drop` the checkpoint is selected by the charge accuracy on ion bins of charge
-two or more (`charge_acc_given_ion_z2`), which every epoch prints next to the comb's accuracy on
-the same validation spectra. That bar is the comb's answer in feature channel 3, which leaves out
-the isotope-spacing charges the pipeline adds on Orbitrap spectra; `scripts/eval_charge_bins.py`
-scores models against the pipeline's own estimator, on identical spectra for every model. With
-`ignore`, a bin partly singly charged keeps its other charges as targets at proportionally lower
-weight; singly charged ions leave the target altogether.
+two or more (`charge_acc_given_ion_z2`, bins weighted by log-SNR), which every epoch prints next
+to the comb's on the same validation spectra, then split by kind of spectrum (time-of-flight,
+Orbitrap) with bins weighted by log-SNR and by intensity. The comb there is the one the pipeline
+runs (`lcmsdeconv.nn.baseline`): over the whole spectrum each validation crop was cut from, with
+charges read from isotope spacing on Orbitrap spectra. The comb's answer in feature channel 3 is
+no substitute: it is computed inside the crop, where the far neighbours of low charge states
+(34 657 bins from z = 2 to z = 1) are missing, and scored 0.57 where the pipeline's comb scores
+0.64 on the same spectra (an independent review caught the earlier use of that proxy as the
+bar). `scripts/eval_charge_bins.py` makes the same comparison on fresh spectra, with networks run
+as the pipeline runs them too. With `ignore`, a bin partly singly charged keeps its other charges
+as targets at proportionally lower weight; singly charged ions leave the target altogether.
 
 Install with the `fast` extra (`pip install -e ".[train,fast]"`): without numba the spectra are
 generated about 20 times slower (0.26 against 4.9 seconds per spectrum here).

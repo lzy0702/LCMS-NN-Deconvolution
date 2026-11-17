@@ -135,6 +135,69 @@ def charge_metrics(charge_logits, batch: dict, snr_min: float = 0.5) -> dict:
     return res
 
 
+#: charge bands of the per-bin comparisons, by true charge
+BIN_BANDS = (("z>=2", 2, 10_000), ("z=1", 1, 1), ("z=2-5", 2, 5), ("z=6-15", 6, 15),
+             ("z=16-40", 16, 40), ("z>40", 41, 10_000))
+#: how bins count: "log-SNR" as the training metric does (feature channel 0, bins above 0.5);
+#: "intensity" as the decoder's mass votes do (signal-to-noise, bins above three sigma). With
+#: both, every spectrum counts the same. "intensity, pooled" pools the bins of all spectra
+#: instead, so that the few strongest spectra decide it.
+WEIGHTINGS = ("log-SNR", "intensity")
+POOLED = "intensity, pooled"
+
+
+def bin_weights_by(f0: np.ndarray, how: str) -> np.ndarray:
+    """Bin weights from feature channel 0 (log10(1 + SNR)) under weighting ``how``."""
+    f0 = np.asarray(f0, dtype=float)
+    if how == "log-SNR":
+        return np.where(f0 > 0.5, f0, 0.0)
+    snr = 10.0 ** f0 - 1.0
+    return np.where(snr > 3.0, snr, 0.0)
+
+
+class ChargeScoreboard:
+    """Per-bin charge accuracy of several estimators over many spectra, by kind of spectrum.
+
+    Each spectrum's bin weights are scaled to sum to one over its ion bins, so every spectrum
+    counts the same whatever its signal level; within a spectrum, bins count by log-SNR or by
+    intensity (see :data:`WEIGHTINGS`; :data:`POOLED` skips the scaling). A charge of 0 or less
+    means "no answer" and counts as wrong.
+    """
+
+    def __init__(self):
+        self.sums: dict[tuple[str, str, str, str], list[float]] = {}
+
+    def add(self, kind: str, estimator: str, pred_z, true_z, f0) -> None:
+        pred_z = np.asarray(pred_z)
+        true_z = np.asarray(true_z)
+        ok = pred_z == true_z
+        for how in (*WEIGHTINGS, POOLED):
+            w = bin_weights_by(f0, "intensity" if how == POOLED else how) * (true_z > 0)
+            tot = float(w.sum())
+            if tot <= 0:
+                continue
+            if how != POOLED:
+                w = w / tot
+            for band, lo, hi in BIN_BANDS:
+                m = (true_z >= lo) & (true_z <= hi)
+                t = float((w * m).sum())
+                if t > 0:
+                    s = self.sums.setdefault((kind, estimator, how, band), [0.0, 0.0])
+                    s[0] += float((w * m * ok).sum())
+                    s[1] += t
+
+    def accuracy(self, kind: str, estimator: str, how: str, band: str = "z>=2") -> float | None:
+        c, t = self.sums.get((kind, estimator, how, band), (0.0, 0.0))
+        return c / t if t > 0 else None
+
+    def summary(self) -> dict:
+        """``{kind: {estimator: {weighting: {band: accuracy}}}}``."""
+        out: dict = {}
+        for (kind, est, how, band), (c, t) in self.sums.items():
+            out.setdefault(kind, {}).setdefault(est, {}).setdefault(how, {})[band] = c / t
+        return out
+
+
 def overfit_check(model, samples: list, loss_fn, steps: int = 150, lr: float = 3e-3) -> dict:
     """Fit a handful of fixed samples; returns the first and last loss and accuracy."""
     import torch

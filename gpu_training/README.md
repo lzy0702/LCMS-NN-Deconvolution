@@ -102,16 +102,25 @@ python scripts/train_charge_net.py --device cuda --arch ladder --model-size full
 ```
 
 `--workers` is the number of processes generating spectra: the scripts use the number of
-CPU cores minus two, at most 8. Every epoch prints a line such as
+CPU cores minus two, at most 8. Before the first epoch the run scores the comb estimator on the
+validation spectra (a minute or two), then every epoch prints lines such as
 
 ```text
-epoch 3: charge_acc_given_ion_z2 ema 0.612 live 0.598 (comb 0.574) -> keeping ema; bands {...}
+epoch 3: charge_acc_given_ion_z2 ema 0.902 live 0.895 (comb 0.635) -> keeping ema; bands {...}
+  charge of z >= 2 ion bins read right (log-SNR / intensity weighted):
+    time-of-flight  network 0.910 / 0.935   comb 0.732 / 0.945
+    Orbitrap        network 0.860 / 0.930   comb 0.110 / 0.340
 ```
 
-The number in brackets is the comb estimator on the same validation spectra: the bar to beat.
-The best checkpoint is saved whenever it improves, so you can stop the run at any time
-(Ctrl+C) and still have the best model so far. A log of every epoch is written next to it
-(`runs/ladder_full_ignore.log.jsonl`).
+The number in brackets is the comb estimator as the pipeline runs it (over the whole spectrum,
+with charges read from isotope spacing on Orbitrap spectra), scored the same way on the same
+validation spectra. The two lines below split that comparison by kind of spectrum, with bins
+weighted by log-SNR (the training metric, which counts weak ions as much as strong ones) and by
+intensity (what the decoder's mass votes weigh). On time-of-flight spectra the comb already
+reads most of the intensity right, so the intensity-weighted column there is the one a network
+has to win; the numbers above are an illustration, not a target. The best checkpoint is saved
+whenever it improves, so you can stop the run at any time (Ctrl+C) and still have the best
+model so far. A log of every epoch is written next to it (`runs/ladder_full_ignore.log.jsonl`).
 
 ### Pausing and resuming
 
