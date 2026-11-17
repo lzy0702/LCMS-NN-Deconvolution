@@ -45,6 +45,8 @@ class ChargePredictor:
         self.backend = None
         self.z_max = 100
         self.evidence_channels = 0
+        #: grid step a model's fixed offsets assume (LadderNet), None when it does not matter
+        self.grid_step: float | None = None
         path = Path(model_path) if model_path else bundled_model_path()
         self.model_path = path
         if path is not None and str(path).endswith((".onnx",)):
@@ -70,6 +72,9 @@ class ChargePredictor:
             info = json.loads(meta.read_text())
             self.z_max = info.get("z_max", 100)
             self.evidence_channels = int(info.get("evidence_channels", 0))
+            if info.get("arch") == "ladder":
+                self.grid_step = float(info.get("grid_step", 2e-5))
+                self.window = int(info.get("window", self.window))
 
     def _init_torch(self, path: Path):
         from .export import load_torch_model
@@ -77,6 +82,8 @@ class ChargePredictor:
         self.torch_model, ckpt = load_torch_model(path)
         self.z_max = ckpt.get("z_max", 100)
         self.evidence_channels = int(ckpt.get("evidence_channels", 0))
+        if ckpt.get("arch") == "ladder":
+            self.grid_step = float(ckpt.get("grid_step", 2e-5))
         self.backend = "torch"
 
     # ------------------------------------------------------------- run
@@ -93,6 +100,11 @@ class ChargePredictor:
         return out["charge_logits"][0].numpy(), out["apex_logit"][0, 0].numpy()
 
     def predict_grid(self, grid: LogMzGrid, intensity: np.ndarray, noise_sigma: float) -> ChargePrediction:
+        if self.grid_step is not None and abs(grid.step - self.grid_step) > 1e-12:
+            raise ValueError(
+                f"this charge model reads charge ladders at offsets fixed for a grid step of "
+                f"{self.grid_step:g}; the method's grid step is {grid.step:g}. Use a method with "
+                f"grid_step {self.grid_step:g}, or another model.")
         B = intensity.size
         top1_z = np.zeros(B, dtype=np.int16)
         top1_p = np.zeros(B, dtype=np.float32)

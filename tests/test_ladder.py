@@ -101,3 +101,41 @@ def test_training_pauses_and_resumes(tmp_path):
     assert [h["epoch"] for h in history] == [0, 1]
     assert out.exists()
     assert torch.load(resume, weights_only=False)["epoch"] == 2
+
+
+def test_paused_run_is_neither_overwritten_nor_resumed_with_other_settings(tmp_path):
+    from lcmsdeconv.nn.train import TrainConfig, train
+    from lcmsdeconv.synth.compounds import ClassConfig
+    from lcmsdeconv.synth.config import SynthConfig
+
+    synth = SynthConfig(classes=[ClassConfig("peptide", (8000.0, 20000.0))], mode="rplc",
+                        polarity=1)
+    out = tmp_path / "net.pt"
+    cfg = dict(arch="ladder", model_size="small", epochs=2, train_len=4, val_len=2,
+               batch_size=2, num_workers=0, threads=1, out=str(out), log_every=100)
+    train(TrainConfig(max_seconds=1e-6, **cfg), synth_config=synth)
+    with pytest.raises(SystemExit, match="--resume"):
+        train(TrainConfig(**cfg), synth_config=synth)  # would overwrite the paused run
+    with pytest.raises(SystemExit, match="epochs"):
+        train(TrainConfig(resume=True, **{**cfg, "epochs": 3}), synth_config=synth)
+    (tmp_path / "PAUSE.txt").write_text("")  # Explorer's name for a new text file
+    _m, history = train(TrainConfig(resume=True, **cfg), synth_config=synth)
+    assert not (tmp_path / "PAUSE.txt").exists()  # removed at start, so the run went on
+    assert [h["epoch"] for h in history] == [0, 1]
+    _m, history = train(TrainConfig(restart=True, **cfg), synth_config=synth)
+    assert [h["epoch"] for h in history] == [0, 1]
+
+
+def test_predictor_rejects_a_grid_the_ladder_model_was_not_built_for(tmp_path):
+    from lcmsdeconv.nn.grid import LogMzGrid
+    from lcmsdeconv.nn.infer import ChargePredictor
+    from lcmsdeconv.nn.model import build_model
+    from lcmsdeconv.nn.train import TrainConfig, _save
+
+    model = build_model("small", 100, 4, arch="ladder")
+    ckpt = tmp_path / "m.pt"
+    _save(ckpt, model.state_dict(), TrainConfig(arch="ladder", model_size="small"), 4, None, None,
+          "charge_acc_given_ion")
+    pred = ChargePredictor(ckpt)
+    with pytest.raises(ValueError, match="grid step"):
+        pred.predict_grid(LogMzGrid(300.0, 3000.0, 4e-5, 1), np.zeros(10), 1.0)

@@ -137,9 +137,14 @@ def synth(preset, out, peaks, minutes, rate, saturate, switch_polarity, seed):
 @click.option("--batch-size", default=4)
 @click.option("--workers", default=2)
 @click.option("--max-seconds", default=None, type=float)
+@click.option("--arch", default="unet", type=click.Choice(["unet", "ladder"]))
+@click.option("--singly-charged", default="keep", type=click.Choice(["keep", "drop", "ignore"]))
+@click.option("--resume", is_flag=True, help="Continue a paused or interrupted run.")
+@click.option("--restart", is_flag=True, help="Discard a paused run's state and start again.")
 @click.option("--out", default="models/charge_unet.pt", type=click.Path(dir_okay=False))
-def train(config, model_size, epochs, train_len, val_len, batch_size, workers, max_seconds, out):
-    """Train the charge network on synthetic data."""
+def train(config, model_size, epochs, train_len, val_len, batch_size, workers, max_seconds, arch,
+          singly_charged, resume, restart, out):
+    """Train the charge network on synthetic data (scripts/train_charge_net.py has more)."""
     import yaml
 
     from .nn.train import TrainConfig
@@ -155,7 +160,8 @@ def train(config, model_size, epochs, train_len, val_len, batch_size, workers, m
             if hasattr(synth_cfg, k):
                 setattr(synth_cfg, k, v)
     cfg = TrainConfig(model_size=model_size, epochs=epochs, train_len=train_len, val_len=val_len,
-                      batch_size=batch_size, num_workers=workers, max_seconds=max_seconds, out=out)
+                      batch_size=batch_size, num_workers=workers, max_seconds=max_seconds, out=out,
+                      arch=arch, singly_charged=singly_charged, resume=resume, restart=restart)
     for k, v in kw.items():
         if hasattr(cfg, k):
             setattr(cfg, k, v)

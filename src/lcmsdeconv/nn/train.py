@@ -50,6 +50,9 @@ class TrainConfig:
     #: continue from ``<out>.resume.pt`` (written every ``save_every_minutes``, at the end of
     #: every epoch, and when the run is paused with Ctrl+C or a file named PAUSE next to ``out``)
     resume: bool = False
+    #: start afresh even though ``<out>.resume.pt`` exists (it is overwritten); without this
+    #: or ``resume`` such a run refuses to start rather than overwrite a paused run's state
+    restart: bool = False
     save_every_minutes: float = 10.0
 
 
@@ -133,14 +136,24 @@ def train(config: TrainConfig, synth_config=None):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     log_path = out_path.with_suffix(".log.jsonl")
     resume_path = out_path.with_suffix(".resume.pt")
-    pause_path = out_path.parent / "PAUSE"
+
+    def pause_files() -> list[Path]:
+        # Windows Explorer names a new text file "PAUSE.txt"; either name, any case, counts
+        return [f for f in out_path.parent.iterdir()
+                if f.is_file() and f.name.lower() in ("pause", "pause.txt")]
 
     history: list = []
     best_state = None
     best_loss = float("inf")
     best_key = None
     epoch0, step0 = 0, 0
+    run_sum, run_n = 0.0, 0
     comb = None
+    if resume_path.exists() and not (config.resume or config.restart):
+        raise SystemExit(
+            f"{resume_path} holds the state of a paused or interrupted run. Add --resume to "
+            f"continue it, or --restart to discard it and start again (this overwrites "
+            f"{out_path} too).")
     if config.resume and resume_path.exists():
         st = torch.load(resume_path, map_location=device, weights_only=False)
         _check_same_run(st.get("config", {}), asdict(config))
@@ -151,12 +164,16 @@ def train(config: TrainConfig, synth_config=None):
         history, best_state, best_loss = st["history"], st["best_state"], st["best_loss"]
         best_key = tuple(st["best_key"]) if st["best_key"] is not None else None
         epoch0, step0, comb = st["epoch"], st["step"], st["comb"]
-        print(f"resumed from {resume_path}: epoch {epoch0}, step {step0} of {len(tl)}")
+        run_sum, run_n = st.get("running", (0.0, 0))
+        if epoch0 >= config.epochs:
+            print(f"{resume_path}: this run already finished all {config.epochs} epochs")
+        else:
+            print(f"resumed from {resume_path}: epoch {epoch0}, step {step0} of {len(tl)}")
     elif config.resume:
         print(f"nothing to resume at {resume_path}; starting from the beginning")
-    if pause_path.exists():
-        pause_path.unlink()
-        print(f"removed {pause_path} left from the last pause")
+    for f in pause_files():
+        f.unlink()
+        print(f"removed {f} left from the last pause")
 
     if comb is None:
         # Before spending hours: the true labels must beat every constant answer by a clear
@@ -178,12 +195,9 @@ def train(config: TrainConfig, synth_config=None):
         state = {"model": model.state_dict(), "ema": ema.shadow.state_dict(),
                  "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
-                 "epoch": epoch, "step": step, "comb": comb, "config": asdict(config)}
-        tmp = resume_path.with_suffix(".tmp")
-        torch.save(state, tmp)
-        import os
-
-        os.replace(tmp, resume_path)  # never leave a half-written state behind
+                 "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
+                 "running": (run_sum, run_n)}
+        _atomic_save(state, resume_path)
 
     # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
     # A second Ctrl+C aborts at once. A file named PAUSE next to the output does the same.
@@ -203,7 +217,7 @@ def train(config: TrainConfig, synth_config=None):
         old_handler = signal.signal(signal.SIGINT, on_interrupt)
 
     def paused() -> bool:
-        return pause["requested"] or pause_path.exists()
+        return pause["requested"] or bool(pause_files())
 
     def stop_here(epoch: int, step: int, why: str) -> tuple:
         save_state(epoch, step)
@@ -218,7 +232,8 @@ def train(config: TrainConfig, synth_config=None):
     try:
         for epoch in range(epoch0, config.epochs):
             model.train()
-            running = 0.0
+            if epoch != epoch0:
+                run_sum, run_n = 0.0, 0
             if config.fresh_each_epoch:
                 tl.dataset.base_seed = config.base_seed + epoch * config.train_len
             first_step = step0 if epoch == epoch0 else 0
@@ -237,7 +252,8 @@ def train(config: TrainConfig, synth_config=None):
                     if sched.last_epoch < steps - 1:
                         sched.step()
                     ema.update(model)
-                    running += loss_val
+                    run_sum += loss_val
+                    run_n += 1
                     if i % config.log_every == 0:
                         print(f"  epoch {epoch} step {i}/{len(tl)} loss {loss_val:.4f} "
                               f"ce {float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
@@ -249,13 +265,21 @@ def train(config: TrainConfig, synth_config=None):
                     if time.time() - last_save > 60.0 * config.save_every_minutes:
                         save_state(epoch, i + 1)
                         last_save = time.time()
-            except RuntimeError:
-                # Ctrl+C also reaches the data-loading workers, which then exit
+            except (RuntimeError, OSError):
+                # Ctrl+C also reaches the data-loading workers, which then exit; on Windows the
+                # interrupted wait can surface as an OSError (InterruptedError) instead
                 if pause["requested"]:
                     return stop_here(epoch, i + 1, "paused")
                 raise
-            val_ema = evaluate(ema.shadow, vl, loss_fn, device)
-            val_live = evaluate(model, vl, loss_fn, device)
+            try:
+                val_ema = evaluate(ema.shadow, vl, loss_fn, device)
+                val_live = evaluate(model, vl, loss_fn, device)
+            except (RuntimeError, OSError):
+                # interrupted while validating: the epoch's training is done, so resuming
+                # starts with this validation
+                if pause["requested"]:
+                    return stop_here(epoch, len(tl), "paused")
+                raise
 
             def key(v):
                 if config.select_by == "accuracy":
@@ -266,8 +290,7 @@ def train(config: TrainConfig, synth_config=None):
 
             best = "ema" if key(val_ema) >= key(val_live) else "live"
             val = val_ema if best == "ema" else val_live
-            n_done = max(1, i + 1 - first_step)
-            history.append({"epoch": epoch, "train_loss": running / n_done,
+            history.append({"epoch": epoch, "train_loss": run_sum / max(1, run_n),
                             "ema": val_ema, "live": val_live, "best": best,
                             "seconds": time.time() - session_start})
             _log(log_path, history[-1])
@@ -281,8 +304,11 @@ def train(config: TrainConfig, synth_config=None):
                 best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
                 _save(out_path, best_state, config, in_ch, val, comb, metric)
                 print(f"  saved {out_path} ({metric} {val[metric]:.3f})")
+            run_sum, run_n = 0.0, 0
             save_state(epoch + 1, 0)
             last_save = time.time()
+            if paused() and epoch + 1 < config.epochs:
+                return stop_here(epoch + 1, 0, "paused")
     finally:
         if old_handler is not None:
             signal.signal(signal.SIGINT, old_handler)
@@ -305,24 +331,43 @@ def _loader_from(loader, start: int):
 
 
 def _check_same_run(saved: dict, now: dict) -> None:
-    """Warn when a resumed run's settings differ from the saved run's."""
+    """Refuse to resume with settings that change the model, the schedule or the frames."""
     keys = ("arch", "model_size", "singly_charged", "epochs", "train_len", "batch_size", "lr",
-            "base_seed", "z_max")
+            "base_seed", "z_max", "evidence_channels", "comb_prior", "fresh_each_epoch",
+            "weight_decay", "heat_weight")
     diff = {k: (saved.get(k), now.get(k)) for k in keys if saved.get(k) != now.get(k)}
     if diff:
-        print(f"warning: resuming with different settings (saved, now): {diff}")
+        raise SystemExit(
+            "cannot resume: these settings differ from the paused run's (saved, now): "
+            f"{diff}. Resume with the original command plus --resume, or use --restart.")
+
+
+def _atomic_save(obj, path: Path) -> None:
+    """Write ``obj`` to ``path`` so that a crash or power cut leaves the old file or the new
+    one, never a truncated one: write a temporary file, flush it to disk, then rename."""
+    import os
+
+    import torch
+
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        torch.save(obj, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None:
-    import torch
+    from .grid import DEFAULT_STEP
 
-    torch.save({"state_dict": state, "config": asdict(config),
-                "synth_config_z_max": config.z_max, "model_size": config.model_size,
-                "z_max": config.z_max, "in_ch": in_ch,
-                "evidence_channels": config.evidence_channels,
-                "comb_prior": config.comb_prior, "arch": config.arch,
-                "singly_charged": config.singly_charged, "selection_metric": metric,
-                "val": val, "comb_baseline": comb}, path)
+    _atomic_save({"state_dict": state, "config": asdict(config),
+                  "synth_config_z_max": config.z_max, "model_size": config.model_size,
+                  "z_max": config.z_max, "in_ch": in_ch,
+                  "evidence_channels": config.evidence_channels,
+                  "comb_prior": config.comb_prior, "arch": config.arch,
+                  "singly_charged": config.singly_charged, "selection_metric": metric,
+                  "grid_step": DEFAULT_STEP, "window": 32768,
+                  "val": val, "comb_baseline": comb}, path)
 
 
 def comb_baseline(loader) -> dict:

@@ -154,6 +154,10 @@ class LogMzGrid:
         return out
 
 
+#: the grid step every model is trained on (ln m/z units, 20 ppm)
+DEFAULT_STEP = 2e-5
+
+
 def default_grid(polarity: int = 1, step: float = 2e-5, mz_max: float = 10000.0) -> LogMzGrid:
     return LogMzGrid(50.0, mz_max, step, polarity)
 

@@ -48,7 +48,8 @@ def export_onnx(checkpoint: str | Path, out_path: str | Path, length: int = 3276
     # write a small sidecar with metadata
     meta = {"z_max": ckpt.get("z_max", 100), "model_size": ckpt.get("model_size", "proof"),
             "in_ch": ckpt.get("in_ch", 4), "evidence_channels": ckpt.get("evidence_channels", 0),
-            "arch": ckpt.get("arch", "unet"), "singly_charged": ckpt.get("singly_charged", "keep")}
+            "arch": ckpt.get("arch", "unet"), "singly_charged": ckpt.get("singly_charged", "keep"),
+            "grid_step": ckpt.get("grid_step", 2e-5), "window": ckpt.get("window", 32768)}
     import json
 
     (out_path.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
