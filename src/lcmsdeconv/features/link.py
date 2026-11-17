@@ -47,7 +47,11 @@ def link_species(
                 })
             else:
                 w0, w1 = best["weight"], comp.intensity
-                best["mass"] = (best["mass"] * w0 + comp.mass * w1) / max(w0 + w1, 1e-12)
+                if w0 + w1 > 0:
+                    # an exact weighted mean: flooring the denominator (it was max(w0 + w1,
+                    # 1e-12)) shrank the mass toward zero whenever the intensities were tiny,
+                    # and the shrunken track then spawned species at meaningless masses
+                    best["mass"] = (best["mass"] * w0 + comp.mass * w1) / (w0 + w1)
                 best["weight"] = w0 + w1
                 best["last_frame"] = fi
                 prev = best["frames"].get(fi)
