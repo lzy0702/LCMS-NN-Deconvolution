@@ -41,6 +41,9 @@ python -m venv .venv
 For an offline machine, build a wheelhouse on a connected one (`pip download`) and install with
 `pip install --no-index --find-links wheelhouse lcmsdeconv`.
 
+Thermo `.raw` files are read directly with the `[thermo]` extra (the open-source `opentfraw`
+parser, no vendor libraries); other vendor formats need converting to mzML first.
+
 ## Use
 
 ```bash
@@ -81,10 +84,29 @@ Setting `model: comb` in a method selects a deterministic charge estimator that 
 at all. It is weaker than a trained network but makes the package usable immediately and is the
 baseline any model should beat.
 
+## Diagnostics
+
+Before improving a model, find the stage that loses species. `lcmsdeconv.diagnostics` provides a
+perfect per-bin charge oracle (the ceiling of everything downstream of the network), a confused
+oracle that mislabels charge envelopes at a chosen rate (how good the network must be), one-to-one
+scoring, classification of false species, and attribution of every missed species to the stage
+where it was lost, recorded by `process_run(run, method, trace=[])`:
+
+```bash
+python scripts/benchmark_synth.py --runs 4 --predictor oracle     # ceiling with perfect charges
+python scripts/benchmark_synth.py --runs 4 --predictor comb       # the deterministic estimator
+python scripts/benchmark_synth.py --runs 4 --predictor confused:0.8
+python scripts/benchmark_synth.py --runs 4 --predictor models/charge_unet_cpu.onnx
+```
+
+`docs/lessons.md` explains why these tools come first: it distils the record of a parallel
+three-month effort at the same problem, what went wrong there, and what that changed here.
+
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
+| `docs/lessons.md` | lessons from a parallel neural-network effort and the fixes they led to here |
 | `docs/architecture.md` | the logarithmic m/z transform, the network, decoding, refinement, the across-time pipeline |
 | `docs/usage.md` | methods, settings, adducts, reading the output, saturation warnings |
 | `docs/integration_events.md` | every integration event, baseline codes, how valley clusters are integrated |
@@ -94,7 +116,12 @@ baseline any model should beat.
 
 ## Validation
 
-Public spectra are used only for validation, never for training. Bovine serum albumin and the
+Four real Orbitrap runs of a GalNAc-conjugated phosphorothioate oligonucleotide and its
+impurities, published with known compositions (Tutiš et al., Anal. Chem. 2025, 97, 15717,
+https://doi.org/10.1021/acs.analchem.5c01407), are scored against the paper's species: of 20
+known species the original code found 2 among 87 reports, the current code finds 13 among 41,
+with masses within about 0.1 Da of theory for the main species (`docs/benchmarks.md`,
+`scripts/validate_oligo_runs.py`). Public spectra are used only for validation, never for training. Bovine serum albumin and the
 alcohol dehydrogenase tetramer are recovered within 1 % of their literature masses from public
 native mass spectra. On synthetic data with known truth, a 17 kDa protein carrying a 10 % sodium
 adduct is recovered to 0.2 ppm with the adduct fraction measured at 12 %, and the integrator

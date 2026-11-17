@@ -41,6 +41,43 @@ Running the pipeline end to end surfaced several defects that unit tests alone h
 
 All are fixed; each has a regression test.
 
+A second round, driven by charge oracles and per-species loss attribution
+(`lcmsdeconv.diagnostics`, see `lessons.md`), found more, in the generator and in the decoder:
+
+- The elution profile underflowed to zero when its tail was short against its width, deleting
+  about 2 % of synthetic chromatographic peaks from the data while keeping them in the truth.
+- A per-charge adduct propensity left the un-adducted form of large proteins at a few percent of
+  their signal, so the true mass was nearly invisible.
+- Impurities drew charge envelopes unrelated to their parent's; nucleic-acid charge states were
+  about 40 % low against a measured ion-pairing run.
+- The network was trained on spectra rendered straight onto the grid with the generator's noise
+  level, but run on resampled, thresholded, summed profiles with an estimated noise level; the
+  comb feature wrapped window edges into each other.
+- The region finder dropped chromatographic peaks under 5 % of the tallest, deleting a second
+  main component before deconvolution.
+- The mass histogram turned every resolved isotopologue into a candidate.
+- The consistency gate snapped impurities onto the main component's apex, and one outlying
+  charge state could veto a consistent candidate.
+- The adduct walk-down compared a base-only fit with a full adduct fit, so it moved main
+  components onto weaker neighbours one adduct lighter.
+- A species was fitted only over the charges that voted for it, leaving the rest of its envelope
+  to be explained as false species.
+- Inference imported PyTorch, which only training needs.
+
+## Real Orbitrap runs
+
+Four Thermo Q Exactive runs of oligonucleotide mixtures (a GalNAc-conjugated phosphorothioate
+16-mer spiked with 2 % of each of five impurities, and its non-conjugated form spiked with its
+deaminated form; ion-pairing reversed phase and ion-pairing HILIC; negative mode, profile at
+140k) are read directly from `.raw` (`lcmsdeconv.io.read_thermo_raw`). They are the runs of
+Tutiš et al., Anal. Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407),
+whose Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run against
+them, and checks every other report with extracted-ion chromatograms. Of 20 known species the
+original code found 2 among 87 reports; the current code finds 13 among 41, with 15 of 20 when
+species seen at one charge state are accepted (`deconvolution.single_charge`). Details, mass
+errors and what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what
+the truth table changed, are in `lessons.md`, section 11.
+
 ## Public data
 
 No real measurements are used for training. Two public sources are reachable without
@@ -65,7 +102,8 @@ package could not reach:
 
 - No model is loaded by default; the deterministic comb estimator is used until one is trained
   and installed as `charge_unet.onnx`. The bundled CPU-trained proof model did not beat the
-  estimator (two of seven components against three) and is therefore opt-in.
+  estimator (two of seven components against three) and is therefore opt-in. It was trained on
+  the old grid-rendered frames, so its features do not match what inference computes.
   A CPU-trained model is a proof of the pipeline, not a production model. Retrain on a GPU (see
   `training.md`) before using the software for decisions: the deconvolution mathematics is
   independent of model quality, but candidate generation is not.
@@ -81,4 +119,11 @@ package could not reach:
   modest resolving power. Such species are flagged rather than silently merged.
 - Adduct fractions become uncertain when the adduct spacing is below about 0.7 peak widths, which
   happens for sodium on a monoclonal antibody at a resolving power of 10 000.
-- Direct reading of vendor formats is out of scope; convert to mzML first.
+- Thermo `.raw` files are read directly (optional `opentfraw` dependency); other vendor formats
+  must be converted to mzML first.
+- Under ion-pairing HILIC with triethylammonium acetate, oligonucleotide impurities may carry a
+  single charge state above the noise and are missed unless `deconvolution.single_charge` is on,
+  which accepts them when resolved isotope spacing fixes the charge, at the cost of more
+  unconfirmed reports.
+- Abundances of a minor species overlapping a much stronger one (the PS-to-PO form under its
+  parent in IP-RPLC) can be underestimated by orders of magnitude.
