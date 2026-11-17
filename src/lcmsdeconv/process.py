@@ -6,13 +6,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from .chem.adducts import AdductLibrary
 from .chrom.integrate import integrate_chromatogram
 from .core.method import Method
 from .core.model import Chromatogram, PeakTable, Run, Species
 from .deconv.pipeline import DeconvParams, deconvolve_spectrum
 from .features.annotate import annotate_species, impurity_table
-from .features.link import link_species, merge_species_across_polarity
+from .features.link import (
+    _is_flat,
+    link_species,
+    merge_adjacent_species,
+    merge_species_across_polarity,
+)
 from .features.quantify import TemplateBank
 from .features.regions import Region, find_regions
 from .nn.grid import LogMzGrid
@@ -83,6 +90,7 @@ def _deconv_params(method: Method) -> DeconvParams:
         adduct_exclude=tuple(d.adducts.exclude),
         adduct_max_total=d.adducts.max_total,
         adduct_max_per_type=d.adducts.max_per_type,
+        adduct_require_evidence=getattr(d.adducts, "require_evidence", True),
     )
 
 
@@ -111,7 +119,8 @@ def process_run(
 
         predictor = make_predictor(model_path or method.deconvolution.model,
                                    providers=list(method.deconvolution.providers),
-                                   z_max=min(int(method.deconvolution.charge_range[1]), 60))
+                                   z_max=min(int(method.deconvolution.charge_range[1]), 60),
+                                   instrument=instrument)
 
     polarities = run.polarities
     if method.acquisition.polarity == "positive":
@@ -162,12 +171,17 @@ def process_run(
             sp = link_species(frame_results, method.linking.mass_tolerance_ppm,
                               method.linking.mass_tolerance_da, method.linking.min_frames,
                               method.linking.max_gap_frames, method.linking.noise_peak_ratio,
-                              region_id=region.id, start_id=sid)
+                              region_id=region.id, start_id=sid,
+                              flat_test=not method.deconvolution.quantify_frames)
+            if method.deconvolution.quantify_frames and sp:
+                sp = _drop_flat_species(sp, bank, run, region, pol, method)
             sid += len(sp) + 1
             all_species.extend(sp)
             if trace is not None:
                 trace[-1]["species"] = [{"mass": s.mass, "rt_apex": s.rt_apex} for s in sp]
 
+    all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
+                                         method.linking.mass_tolerance_da)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
     all_species.sort(key=lambda s: -s.total_intensity)
@@ -232,3 +246,34 @@ def process_run(
 
     result.timings["total_s"] = time.perf_counter() - t_start
     return result
+
+
+def _drop_flat_species(species, bank, run, region, polarity, method, context_min: float = 0.3):
+    """Drop species whose trace, seen with some chromatographic context, does not fall away.
+
+    Chemical background stays up across the whole run; a real species elutes. Judging that
+    inside one region fails when a broad band is split into several regions, because the trace
+    then stays up at both edges of each. The trace is therefore extended by one region width
+    (at least ``context_min``) of quantified frames on either side before testing.
+    """
+    width = max(region.end - region.start, context_min)
+    before = run.frames(polarity, (region.start - width, region.start - 1e-9))
+    after = run.frames(polarity, (region.end + 1e-9, region.end + width))
+    if not before and not after:
+        return species
+    ctx_before = [bank.quantify(f) for f in before]
+    ctx_after = [bank.quantify(f) for f in after]
+    tol_ppm, tol_da = method.linking.mass_tolerance_ppm, method.linking.mass_tolerance_da
+
+    def amount(fr, mass):
+        return sum(c.intensity for c in fr.components
+                   if abs(c.mass - mass) <= max(mass * tol_ppm * 1e-6, tol_da))
+
+    kept = []
+    for s in species:
+        trace = np.concatenate([[amount(fr, s.mass) for fr in ctx_before], s.intensity,
+                                [amount(fr, s.mass) for fr in ctx_after]])
+        if trace.size > 6 * method.linking.min_frames and _is_flat(trace, method.linking.noise_peak_ratio):
+            continue
+        kept.append(s)
+    return kept

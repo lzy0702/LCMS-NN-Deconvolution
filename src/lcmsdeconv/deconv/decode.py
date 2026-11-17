@@ -261,6 +261,81 @@ def envelope_geometry(mass: float, compound_class: str) -> tuple[float, float]:
     return sig, conv - avg
 
 
+def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np.ndarray,
+                               raw_int: np.ndarray, thr: float, polarity: int,
+                               compound_class: str, fwhm: float,
+                               min_populated: float = 0.6, min_rel: float = 0.3) -> bool:
+    """True when resolved isotopes show the envelope at ``centre_mz`` is not charge ``z``.
+
+    At charge z the isotopologues of a species lie 1.00336/z apart. When the instrument resolves
+    that spacing, the major isotopologue positions (abundance at least ``min_rel`` of the
+    largest) must hold observed peaks; a charge state whose positions are mostly empty is not
+    this species at this charge. Singly charged background ions show one peak per 1.003 Th, so
+    reading them at z = 30 predicts thirty positions per dalton of which one or two are
+    populated - the test removes the false high-charge ladders such background otherwise
+    forms on real data. When the spacing is not resolved the test cannot speak and returns
+    False.
+    """
+    from ..chem.adducts import carrier_mass
+    from ..chem.classes import class_isotope_pattern
+
+    spacing = ISOTOPE_SPACING / z
+    if spacing < 2.0 * fwhm:
+        return False
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(pat.abundances.max(), 1e-300)
+    major = a >= min_rel
+    if major.sum() < 2:
+        return False
+    carrier = carrier_mass(polarity)
+    avg = float((pat.abundances * pat.masses).sum() / max(pat.abundances.sum(), 1e-300))
+    iso_mz = (pat.masses[major] - avg + mass + z * carrier) / z
+    tol = max(0.5 * fwhm, 0.2 * spacing)
+    # The comb is slid across one spacing and the best placement counts: the measured mass can
+    # be off by a fraction of a dalton (a neighbouring adduct or impurity pulls the envelope's
+    # centre), which at low charge is a large fraction of the spacing, while background read at
+    # the wrong charge cannot fill a comb at any placement.
+    best = 0
+    for shift in np.linspace(-0.5, 0.5, 11) * spacing:
+        populated = 0
+        for x in iso_mz + shift:
+            lo = int(np.searchsorted(raw_mz, x - tol))
+            hi = int(np.searchsorted(raw_mz, x + tol))
+            if hi > lo and raw_int[lo:hi].max() > thr:
+                populated += 1
+        best = max(best, populated)
+    return best < min_populated * major.sum()
+
+
+def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarray,
+                           raw_int: np.ndarray, fwhm: float, min_coverage: float = 0.35,
+                           rel_level: float = 0.2) -> bool:
+    """True when an envelope that should be a continuous hump is a few separate spikes.
+
+    An envelope whose isotopes the instrument cannot separate, and which is much wider than one
+    peak, appears in profile data as a continuous hump. If the profile within ``half_width`` of
+    the envelope's centre stays above ``rel_level`` of its maximum over less than
+    ``min_coverage`` of that interval, the "envelope" is made of narrow peaks belonging to
+    something else - typically the resolved isotopes of a low-charge species, read at a high
+    charge as a much heavier one.
+    """
+    if half_width < 3.0 * fwhm:
+        return False  # a single peak is the whole envelope: nothing to test
+    lo = int(np.searchsorted(raw_mz, centre_mz - half_width))
+    hi = int(np.searchsorted(raw_mz, centre_mz + half_width))
+    if hi - lo < 3:
+        return True
+    x = raw_mz[lo:hi]
+    y = raw_int[lo:hi]
+    level = rel_level * float(y.max())
+    if level <= 0:
+        return True
+    dx = np.diff(x)
+    gap = 3.0 * float(np.median(dx)) if dx.size else 0.0
+    above = (y[:-1] >= level) & (y[1:] >= level) & (dx <= max(gap, 1e-12))
+    return float(dx[above].sum()) < min_coverage * 2.0 * half_width
+
+
 def refine_candidate_masses(
     candidates: list[Candidate],
     raw_mz: np.ndarray,
@@ -277,6 +352,8 @@ def refine_candidate_masses(
     link_ppm: float = 60.0,
     link_da: float = 1.5,
     min_cluster_weight: float = 0.5,
+    instrument=None,
+    profile: bool = False,
 ) -> list[Candidate]:
     """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
@@ -317,10 +394,21 @@ def refine_candidate_masses(
             m = z * (pos - carrier) - offset
             if abs(m - c.mass) > max_move_da:
                 continue
-            # the envelope must actually stand above the noise where the shift converged
-            j = int(np.searchsorted(raw_mz, pos))
-            lo, hi = max(0, j - 2), min(raw_int.size, j + 3)
+            # the envelope must actually stand above the noise around where the shift converged;
+            # with resolved isotopes the converged centre can sit in the valley between two
+            # isotopologues, so the core of the envelope is searched, not the single point
+            half = max(0.5 * kern_da / z, 2.0 * pos / max(resolution, 1.0))
+            lo = int(np.searchsorted(raw_mz, pos - half))
+            hi = int(np.searchsorted(raw_mz, pos + half))
             if hi <= lo or raw_int[lo:hi].max() <= thr:
+                continue
+            r_here = float(instrument.resolving_power(pos)) if instrument is not None else resolution
+            fwhm = pos / max(r_here, 1.0)
+            if isotopes_contradict_charge(m, z, pos, raw_mz, raw_int, thr, polarity,
+                                          compound_class, fwhm):
+                continue
+            if (profile and ISOTOPE_SPACING / z < 2.0 * fwhm
+                    and envelope_discontinuous(pos, env_sigma / z, raw_mz, raw_int, fwhm)):
                 continue
             masses.append(m)
             weights.append(kw)

@@ -59,6 +59,10 @@ class AdductSettings:
     max_total: int = 4
     max_types_mixed: int = 2
     min_fraction_report: float = 0.005
+    #: keep only adduct types the spectrum shows: an adduct type stays in the fit when an
+    #: envelope at M + delta of the strongest species passes the same consistency gate as a
+    #: species would (two charge states, isotope comb where resolved)
+    require_evidence: bool = True
 
 
 @dataclass
