@@ -166,29 +166,33 @@ two are not scored. That leaves 20 species named in the paper and 29 SI-listed o
 impurities in two chromatographies, minus the ones above, plus a 4842 Da form the SI shows at
 12.75 min). A reported species matches within 1 Da and 0.35 min.
 
-**Other reports** are sorted into: forms of a found species (+Na, +K, or the +201.4 Da form
-described below), the same molecule at another retention time, and the rest, which are
-"EIC-confirmed" when the extracted-ion chromatograms of their two strongest charge states peak
-together at the reported time and "unconfirmed" otherwise. The confirmation is a consistency
+**Other reports** are sorted into: forms of a found species (+Na, +K, their combinations, or
+the +201.4 Da form described below), charge harmonics of a found species, the same molecule at
+another retention time (within 0.3 Da), and the rest, which are "EIC-confirmed" when the
+extracted-ion chromatograms of their two strongest charge states peak together at the reported
+time and "unconfirmed" otherwise. The confirmation is a consistency
 check, not truth: a false charge ladder made of co-eluting background can pass it.
 
 | Code, charge assignment | Paper's species | SI-listed | Reported | Forms of found | Same molecule, other time | EIC-confirmed | Unconfirmed |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | original, comb | 2 / 20 | 0 / 29 | 87 | 0 | 0 | 47 | 38 |
-| before the truth table, comb | 9 / 20 | 4 / 29 | 27 | 2 | 3 | 8 | 1 |
-| now, comb | 13 / 20 | 5 / 29 | 39 | 4 | 3 | 9 | 5 |
-| now, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 8 | 5 | 17 | 22 |
-| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 3 | 13 | 27 |
-| now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 3 | 13 | 22 |
-| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 3 | 12 | 19 |
+| before the truth table, comb | 9 / 20 | 4 / 29 | 27 | 2 | 2 | 8 | 2 |
+| now, comb | 13 / 20 | 5 / 29 | 39 | 4 | 2 | 9 | 6 |
+| now, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 9 | 3 | 16 | 24 |
+| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 2 | 13 | 28 |
+| now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 2 | 13 | 23 |
+| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 2 | 12 | 20 |
+
+No report of any variant is a charge harmonic (half, a third, double or triple a found species'
+mass at its time), which the scoring now checks for before the extracted-ion test.
 
 The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the
 same species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity
 under NC at 10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion chromatogram),
-but they add 14-22 unconfirmed reports, nearly all below 0.13 % of the strongest species,
+but they add 14-22 more unconfirmed reports, nearly all below 0.13 % of the strongest species,
 1.3-3.9 kDa, in the IP-RPLC column wash: singly charged background read as z = 2-3. Stage 1
 never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200 background ions per
-spectrum, `--background-ions 200`) brings the number down from 27 to 19: the remedy is in the
+spectrum, `--background-ions 200`) brings the number down from 28 to 20: the remedy is in the
 right direction, and six CPU epochs are far from enough of it; `gpu_training/README.md` runs
 both stages on a GPU. (These tables are after a fix to species linking that had shrunk the masses
 of tracks with vanishingly weak frames toward zero; it removed two to three junk reports from
