@@ -366,7 +366,7 @@ background read as z = 2-3. What it shows:
    for z = 1" is a good first stage - it removed the collapse onto z = 1 that the U-Net probes
    showed - but it needs a second stage that trains on z = 1 among dense background. A short
    CPU version of that stage (`--singly-charged keep --background-ions 200`) cut the unconfirmed
-   reports from 27 to 19 and lifted synthetic precision further (protein 65 %, Orbitrap oligo
+   reports from 28 to 20 and lifted synthetic precision further (protein 65 %, Orbitrap oligo
    55 %), the right direction; the full version is the GPU run in `gpu_training/`.
 
 No model is shipped and the comb remains the default. A trained network replaces it only when
