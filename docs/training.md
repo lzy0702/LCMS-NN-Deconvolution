@@ -32,6 +32,64 @@ is how the bundled CPU model is produced:
 python scripts/train_proof.py --epochs 30 --train-len 600 --max-seconds 7200
 ```
 
+## Training on the input inference sees
+
+Inference deconvolves the summed spectrum of a chromatographic region: vendor-thresholded
+profile scans, summed, resampled onto the logarithmic grid, with the noise level estimated from
+the result. Training frames are rendered along exactly that path by default
+(`SynthConfig.render_path = "profile"`, see `synthetic_data.md`), so the log-SNR feature, the
+comb and the loss weights are computed from the same kind of spectrum, with the same noise
+estimate, at training and at run time. Earlier models were trained on spectra rendered straight
+onto the grid with the generator's own noise parameter, a different input from the one they were
+later run on; that mismatch is the most common way a network that trains well fails in use.
+
+## Checks before a long run
+
+`lcmsdeconv.nn.checks` holds three checks that cost seconds and catch the failures that cost
+days:
+
+- `degeneracy_report(batch, loss)`: the loss of the true labels against "all background", the
+  class prior (the best input-independent answer) and the comb's guess, on real batches. On the
+  default mixture the truth scores about 0.11 against 1.24, 3.3 and 6.6; a margin near one
+  means training will settle on a constant. Training prints it before the first step.
+- `overfit_check(model, samples, loss)`: a model that cannot fit eight fixed samples in a
+  hundred steps has broken labels, features or loss, and more data will not help.
+- `charge_metrics(logits, batch)`: intensity-weighted charge accuracy overall and by charge band,
+  the share of harmonic (2z, z/2) and neighbour (z ± 1) errors, background bins called ions,
+  and the number of charge classes present but never predicted.
+
+Every epoch's validation metrics go to `<out>.log.jsonl`, and the saved checkpoint is the one
+with the best validation charge accuracy, not the lowest loss: a loss can keep improving while a
+model drifts toward a constant answer.
+
+## Starting from the comb
+
+`TrainConfig(comb_prior=True, evidence_channels=...)` builds a network whose charge logits start
+as the comb estimator's evidence (fixed offsets from the evidence input channels) and whose
+charge head is initialised to zero, so the untrained model already assigns charges like the comb
+and training learns a correction. In CPU probes (see `lessons.md`, section 13) a network trained
+from scratch reached 12 % charge accuracy on ion bins in 450 steps and predicted almost only
+z = 1, while the comb-prior network started at the comb's 53 %, dipped, and returned to 53 %
+with the low charges the comb cannot read (z = 2-5: 13 to 47 %) learned. It is the configuration
+to train on a GPU.
+
+Charge accuracy is reported two ways: `charge_acc`, an argmax in which the background class
+competes, and `charge_acc_given_ion`, the top charge among the ion classes on bins that are
+ions. Inference uses the second (`ChargePredictor` reads its top two charges among the ion
+classes), checkpoints are selected by it, and only it tracks charge assignment: in the probes
+the first fell while the second recovered.
+
+## CPU training script
+
+```bash
+python scripts/train_cpu.py --minutes 120 --out models/charge_unet_cpu.pt
+lcmsdeconv export-onnx models/charge_unet_cpu.pt -o models/charge_unet_cpu.onnx
+python scripts/benchmark_synth.py --runs 4 --predictor models/charge_unet_cpu.onnx
+```
+
+It trains on a mixture of positive-mode proteins and polymers (40 %), negative-mode
+ion-pairing oligonucleotides (40 %) and a general positive-mode mix (20 %).
+
 ## What is being learned
 
 Per grid bin, a distribution over 101 classes (0 = not an ion, 1…100 = charge state) plus an apex

@@ -14,7 +14,7 @@ def load_torch_model(checkpoint: str | Path):
 
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
     model = build_model(ckpt.get("model_size", "proof"), z_max=ckpt.get("z_max", 100),
-                        in_ch=ckpt.get("in_ch", 4))
+                        in_ch=ckpt.get("in_ch", 4), comb_prior=ckpt.get("comb_prior", False))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model, ckpt
