@@ -371,7 +371,12 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None
 
 
 def comb_baseline(loader) -> dict:
-    """Charge metrics of the comb estimator's argmax (feature channel 3) on ``loader``."""
+    """Charge metrics of the comb's answer in feature channel 3 on ``loader``.
+
+    This is the ladder comb without the isotope-spacing evidence the pipeline adds for Orbitrap
+    spectra, so on those it understates the pipeline's comb; scripts/eval_charge_bins.py scores
+    a trained model against the pipeline's estimator itself.
+    """
     import torch
 
     from .checks import charge_metrics
@@ -386,6 +391,10 @@ def comb_baseline(loader) -> dict:
         zc = torch.round(feats[:, 3, :] * 64).long().clamp(0, 100)
         logits = torch.full((n, 101, length), -10.0)
         logits.scatter_(1, zc[:, None, :], 10.0)
+        # where the comb has no answer (channel 3 = 0) it reads no charge: the ion-class argmax
+        # would otherwise land on class 1 and score singly charged bins as correct
+        logits[:, 100, :] = torch.where(zc == 0, torch.full_like(zc, 0, dtype=logits.dtype),
+                                        logits[:, 100, :])
         m = charge_metrics(logits, batch)
         for k in ("weighted_accuracy", "charge_accuracy_given_ion", "charge_accuracy_given_ion_z2"):
             sums[k] = sums.get(k, 0.0) + m[k]

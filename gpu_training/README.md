@@ -28,7 +28,7 @@ altogether.
 - Python 3.10, 3.11 or 3.12.
 - As many CPU cores as possible: spectrum generation, not the GPU, sets the pace. Each
   spectrum-generating worker needs about 1 GB of memory; the scripts start up to 8.
-- About 2 GB of disk for the Python environment.
+- About 8 GB of free disk: PyTorch with CUDA is large (its download is cached by pip).
 
 ## 1. Unpack and open a terminal in this repository's top folder
 
@@ -40,8 +40,14 @@ Windows (PowerShell):
 
 ```powershell
 py -3.12 -m venv .venv
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # once: allows the activation script
 .venv\Scripts\Activate.ps1
 ```
+
+(In the old Command Prompt, `cmd.exe`, activate with `.venv\Scripts\activate.bat` instead;
+it needs no policy change.) Activation lasts for that terminal window only: in a new window,
+for example after a reboot, activate again before typing training commands. The run scripts of
+steps 6 and 7 find `.venv` by themselves.
 
 Linux or macOS:
 
@@ -62,8 +68,11 @@ pip install torch --index-url https://download.pytorch.org/whl/cu124
 ## 4. Install this package
 
 ```bash
-pip install -e ".[train]"
+pip install -e ".[train,fast]"
 ```
+
+`fast` installs numba, which generates the training spectra about 20 times faster; without it
+the training takes days instead of hours.
 
 ## 5. Check the installation (one minute)
 
@@ -72,7 +81,9 @@ python gpu_training/check_gpu.py
 python scripts/train_charge_net.py --smoke --device cuda
 ```
 
-The first prints your GPU and runs three training steps on it. The second trains one tiny epoch
+The first prints your GPU, confirms numba is installed and runs three training steps on the
+GPU (with a smaller batch if a batch of 8 does not fit; it then tells you which
+`--batch-size` to use). The second trains one tiny epoch
 end to end and should finish with `saved runs/smoke.pt`. If either fails, see
 **Troubleshooting** below.
 

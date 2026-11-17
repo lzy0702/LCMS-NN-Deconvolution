@@ -339,10 +339,14 @@ and a small network shared by all charges scores the reading. It starts as the c
 part is initialised to zero; a test checks the equality) and has 9 500 parameters.
 
 Trained on two CPU threads for 45 minutes (240 synthetic spectra, 12 epochs), with singly
-charged ions either ignored by the loss or absent from the spectra, it assigned the right charge
-to 0.92 and 0.90 of the ion intensity of held-out spectra (charges two and up), against 0.57 and
-0.54 for the comb on the same spectra; at z = 2-5, where the comb's ladders are short, 0.84
-against 0.25. In the synthetic benchmark that became species: precision 34 → 52 % (protein),
+charged ions either ignored by the loss or absent from the spectra, it read the right charge for
+0.80-0.83 of the ion intensity of fresh spectra at charges two and up, against 0.46 for the
+pipeline's comb on time-of-flight spectra and 0.22 on Orbitrap ones (the same spectra for every
+model; at z = 2-5, where the comb's ladders are short, 0.62-0.78 against 0.16-0.54). A first
+comparison against the cheaper comb proxy that training prints, on each run's own validation
+spectra, had given 0.92 against 0.57; an independent review pointed out that the two variants
+had been validated on different spectra and against a proxy, and the fair measurement
+(`scripts/eval_charge_bins.py`) was added. In the synthetic benchmark that became species: precision 34 → 52 % (protein),
 28 → 39 % (oligo), 14 → 47 % (Orbitrap oligo), impurity recall up, charge-harmonic false species
 almost gone (`benchmarks.md`).
 

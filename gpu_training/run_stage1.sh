@@ -5,10 +5,13 @@
 #   --workers N    processes generating spectra (default: cores minus 2, at most 8)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# the environment of README step 2 if it exists, so the scripts work in a fresh terminal too
+PY=python
+if [ -x .venv/bin/python ]; then PY=.venv/bin/python; fi
 CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 WORKERS=$(( CORES > 3 ? CORES - 2 : 1 ))
 if [ "$WORKERS" -gt 8 ]; then WORKERS=8; fi
 # options given on the command line come last and win (argparse keeps the last value)
-python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
+"$PY" scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
     --singly-charged ignore --epochs 30 --train-len 4000 --val-len 128 --batch-size 8 \
     --workers "$WORKERS" --out runs/ladder_full_ignore.pt "$@"

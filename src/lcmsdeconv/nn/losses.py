@@ -73,14 +73,20 @@ class ChargeLoss(nn.Module):
 
     def forward(self, outputs: dict, batch: dict) -> dict:
         logits = outputs["charge_logits"]
-        w = bin_weights(batch["features"], batch["topk_z"], batch["topk_w"], self.weight_floor,
+        topk_w = batch["topk_w"]
+        w = bin_weights(batch["features"], batch["topk_z"], topk_w, self.weight_floor,
                         self.weight_cap, self.background_scale)
         if self.ignore_charges:
-            ign = torch.zeros_like(batch["topk_w"])
+            ignored = torch.zeros_like(topk_w, dtype=torch.bool)
             for z in self.ignore_charges:
-                ign = ign + batch["topk_w"] * (batch["topk_z"] == z).to(ign.dtype)
-            w = w * (1.0 - ign.sum(dim=2).clamp(0.0, 1.0))
-        ce = soft_charge_ce(logits, batch["topk_z"], batch["topk_w"], w)
+                ignored = ignored | (batch["topk_z"] == z)
+            share = (topk_w * ignored.to(topk_w.dtype)).sum(dim=2).clamp(0.0, 1.0)
+            # the bin counts in proportion to what is not ignored, and the ignored charges leave
+            # the target: a bin half singly charged and half z = 5 teaches z = 5 at half weight
+            # and nothing about z = 1
+            w = w * (1.0 - share)
+            topk_w = torch.where(ignored, torch.zeros_like(topk_w), topk_w)
+        ce = soft_charge_ce(logits, batch["topk_z"], topk_w, w)
         hl = centernet_focal(outputs["apex_logit"], batch["heat"])
         total = ce + self.heat_weight * hl
         return {"loss": total, "ce": ce.detach(), "heat": hl.detach()}

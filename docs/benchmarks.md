@@ -69,11 +69,29 @@ generator gives every species several charge states, unlike ion-pairing HILIC on
 
 LadderNet (`docs/training.md`), `proof` size (9 500 parameters), trained on two CPU threads for
 45 minutes: 240 synthetic frames over 12 epochs, with singly charged ions either ignored by the
-loss (`--singly-charged ignore`) or absent from the spectra (`drop`). On held-out frames it
-assigns the right charge to 0.92 (ignore) and 0.90 (drop) of the ion intensity on bins of charge
-two or more, against 0.57 and 0.54 for the comb estimator on the same frames (0.84 against 0.25
-at z = 2-5). The same benchmark as above, with the network in place of the comb
-(`--predictor model.onnx`):
+loss (`--singly-charged ignore`) or absent from the spectra (`drop`); "stage 2" continues the
+first for six epochs with singly charged ions trained on and up to 200 background ions per
+spectrum.
+
+Charge read correctly, as a share of the ion intensity, on the same 96 fresh spectra of the
+training mixture (singly charged ions included) for every model
+(`python scripts/eval_charge_bins.py --frames 96 <models>`); "comb (pipeline)" is the estimator
+the pipeline uses, with isotope-spacing charges on Orbitrap spectra:
+
+| Spectra | Charge assignment | z >= 2 | z = 1 | z = 2-5 | z = 6-15 | z = 16-40 | z > 40 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| time-of-flight | comb (pipeline) | 0.46 | 0.00 | 0.16 | 0.40 | 0.59 | 0.73 |
+| time-of-flight | LadderNet, z = 1 ignored | 0.80 | 0.20 | 0.62 | 0.82 | 0.80 | 0.94 |
+| time-of-flight | LadderNet, z = 1 dropped | 0.82 | 0.00 | 0.73 | 0.83 | 0.80 | 0.94 |
+| time-of-flight | LadderNet, stage 2, dense background | 0.76 | 0.76 | 0.62 | 0.76 | 0.78 | 0.92 |
+| Orbitrap | comb (pipeline) | 0.22 | 0.66 | 0.54 | 0.10 | 0.92 | - |
+| Orbitrap | LadderNet, z = 1 ignored | 0.79 | 0.29 | 0.65 | 0.84 | 1.00 | - |
+| Orbitrap | LadderNet, z = 1 dropped | 0.83 | 0.00 | 0.78 | 0.84 | 1.00 | - |
+| Orbitrap | LadderNet, stage 2, dense background | 0.72 | 0.92 | 0.56 | 0.78 | 1.00 | - |
+
+(Training prints a cheaper bar, the comb's answer in feature channel 3, which leaves out the
+isotope-spacing charges: 0.49 and 0.27 on these spectra at z >= 2.) The same benchmark as above,
+with the network in place of the comb (`--predictor model.onnx`):
 
 | Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -94,8 +112,7 @@ at z = 2-5). The same benchmark as above, with the network in place of the comb
 | LadderNet, z = 1 dropped | oligo_orbitrap | 43 % (16/37) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
 | LadderNet, stage 2, dense background | oligo_orbitrap | 55 % (16/29) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 8.1 |
 
-"Stage 2, dense background" continues the "ignored" model for six epochs with singly charged
-ions trained on and up to 200 background ions per spectrum. It is the best model so far for
+Stage 2 is the best model so far for
 proteins and Orbitrap oligonucleotides and the worst for polymers, where it reads the small
 oligomers' low charges as background-like (32 unexplained false species against 6 for the comb):
 these CPU runs are short, and the variants trade off differently per preset.
