@@ -38,8 +38,15 @@ a network learns them first. `--singly-charged` controls them:
 - `keep`: everything is trained on (a fine-tuning stage after either of the above).
 
 With `ignore` or `drop` the checkpoint is selected by the charge accuracy on ion bins of charge
-two or more (`charge_acc_given_ion_z2`), which every epoch prints next to the comb estimator's
-accuracy on the same validation spectra: the bar to clear.
+two or more (`charge_acc_given_ion_z2`), which every epoch prints next to the comb's accuracy on
+the same validation spectra. That bar is the comb's answer in feature channel 3, which leaves out
+the isotope-spacing charges the pipeline adds on Orbitrap spectra; `scripts/eval_charge_bins.py`
+scores models against the pipeline's own estimator, on identical spectra for every model. With
+`ignore`, a bin partly singly charged keeps its other charges as targets at proportionally lower
+weight; singly charged ions leave the target altogether.
+
+Install with the `fast` extra (`pip install -e ".[train,fast]"`): without numba the spectra are
+generated about 20 times slower (0.26 against 4.9 seconds per spectrum here).
 
 ### Running it
 

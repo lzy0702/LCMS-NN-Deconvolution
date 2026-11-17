@@ -106,9 +106,16 @@ def main():
     ap.add_argument("--out", default="runs/ladder.pt")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check the installation")
     args = ap.parse_args()
+    try:
+        import numba  # noqa: F401
+    except ImportError:
+        print("WARNING: numba is not installed, so spectra are generated about 20 times slower. "
+              "Install it with: pip install numba", flush=True)
+    restart = args.restart
     if args.smoke:
         args.epochs, args.train_len, args.val_len, args.batch_size = 1, 16, 8, 2
         args.out = "runs/smoke.pt"
+        restart = not args.resume  # a smoke run is a throwaway: it may overwrite the last one
     cfg = TrainConfig(model_size=args.model_size, epochs=args.epochs, train_len=args.train_len,
                       val_len=args.val_len, batch_size=args.batch_size,
                       num_workers=args.workers, lr=args.lr, base_seed=args.seed, out=args.out,
@@ -116,7 +123,7 @@ def main():
                       threads=args.threads, device=args.device, arch=args.arch,
                       singly_charged=args.singly_charged,
                       fresh_each_epoch=not args.repeat_frames, cache_frames=args.repeat_frames,
-                      init=args.init, resume=args.resume, restart=args.restart,
+                      init=args.init, resume=args.resume, restart=restart,
                       save_every_minutes=args.save_every)
     train(cfg, synth_config=mixture(background_ions=args.background_ions))
 
