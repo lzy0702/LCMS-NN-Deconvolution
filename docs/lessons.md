@@ -298,7 +298,10 @@ What remains open:
   reported as part of the main component.
 - Polymer oligomers one repeat unit apart (44.026 Da for PEG) differ from two sodium
   exchanges by 0.06 Da, so adduct merging and oligomer series remain ambiguous by mass alone.
-- The charge network. See section 13.
+- The charge network: LadderNet beats the comb on synthetic data but not yet on the real runs;
+  see section 13 and `gpu_training/README.md`.
+- Reported species can fall below a method's mass range (a 667 Da report under the comb, 284-392
+  Da under a network, in an oligonucleotide method whose range starts at 1 000 Da).
 
 ## 13. The charge network: what CPU probes can and cannot show
 
@@ -323,8 +326,43 @@ accuracy on bins that are ions:
 
 So a residual learner on top of the comb keeps the comb's accuracy and learns the low charges
 the comb cannot read; whether it ends above the comb on high charges needs runs two orders of
-magnitude longer than this machine allows. No model is shipped and the comb remains the default.
-The next step is GPU training with the comb prior and the accuracy on ions as the selection
-criterion, scored on the synthetic benchmark (whose oracle rows are the ceiling) and on the four
-real runs.
+magnitude longer than this machine allows.
+
+### Give the network the physics: LadderNet
+
+The U-Net above had to discover, from a few hundred spectra, offsets thousands of bins long and
+different for every charge. LadderNet (`build_model(..., arch="ladder")`, `docs/training.md`) is
+given them: for every candidate charge it reads a learned description of the spectrum at the
+bin, at the bin's z ± 1..3 neighbours and at the two positions only a reading at 2z would fill,
+and a small network shared by all charges scores the reading. It starts as the comb (its learned
+part is initialised to zero; a test checks the equality) and has 9 500 parameters.
+
+Trained on two CPU threads for 45 minutes (240 synthetic spectra, 12 epochs), with singly
+charged ions either ignored by the loss or absent from the spectra, it assigned the right charge
+to 0.92 and 0.90 of the ion intensity of held-out spectra (charges two and up), against 0.57 and
+0.54 for the comb on the same spectra; at z = 2-5, where the comb's ladders are short, 0.84
+against 0.25. In the synthetic benchmark that became species: precision 34 → 52 % (protein),
+28 → 39 % (oligo), 13 → 44 % (Orbitrap oligo), impurity recall up, charge-harmonic false species
+almost gone (`benchmarks.md`).
+
+On the four real runs it was not better than the comb: one known species fewer and 15-23 more
+unconfirmed reports, almost all tiny, 1.3-3.9 kDa, in the IP-RPLC column wash - singly charged
+background read as z = 2-3. What it shows:
+
+1. **Structure beats data at this scale.** A 9 500-parameter network with the right inductive
+   bias learned in 45 CPU minutes what a 1 M-parameter U-Net could not approach.
+2. **Per-bin accuracy, synthetic species and real species are three different measurements.** A
+   35-point per-bin gain became 10-30 points of synthetic precision and a small loss on real
+   runs, because of what the synthetic spectra do not contain: the dense singly charged
+   background of a column wash.
+3. **Leaving a class out of the loss is not neutral at inference.** A network never penalised
+   for calling a singly charged ion multiply charged does so on data full of them. "No reward
+   for z = 1" is a good first stage - it removed the collapse onto z = 1 that the U-Net probes
+   showed - but it needs a second stage that trains on z = 1 among dense background. A short
+   CPU version of that stage (`--singly-charged keep --background-ions 200`) cut the unconfirmed
+   reports from 29-30 to 22, the right direction; the full version is the GPU run in
+   `gpu_training/`.
+
+No model is shipped and the comb remains the default. A trained network replaces it only when
+it finds at least what the comb finds on the four real runs without adding reports.
 

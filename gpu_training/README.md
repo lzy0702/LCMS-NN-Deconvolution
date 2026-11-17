@@ -78,6 +78,9 @@ end to end and should finish with `saved runs/smoke.pt`. If either fails, see
 
 ## 6. Stage 1: train without singly charged ions in the loss (2-4 hours)
 
+Stage 1 and stage 2 (step 7) are the two runs to do; together they take about 3-6 hours, and
+both can be paused and resumed at any time.
+
 Windows: `gpu_training\run_stage1.bat`. Linux or macOS: `bash gpu_training/run_stage1.sh`.
 Any option you add is passed on (for example `--workers 6` or `--batch-size 4`). Both run:
 
@@ -120,9 +123,27 @@ You can stop a run at any time and continue later, even in the middle of an epoc
   epoch, so a crash, a reboot or a power cut loses at most a few minutes of training: resume
   the same way.
 
-## 7. Optional runs (if you have the time)
+## 7. Stage 2: add singly charged ions and dense background (1-2 hours)
 
-The same with singly charged ions removed from the spectra, for comparison:
+Stage 1 never penalises calling a singly charged ion multiply charged, and on real runs the
+column wash is full of singly charged background: a stage-1 network reads some of it as small
+multiply charged species. Stage 2 continues from stage 1 with singly charged ions trained on and
+up to 200 background ions per spectrum. Windows: `gpu_training\run_stage2.bat`. Linux or macOS:
+`bash gpu_training/run_stage2.sh`. Both run:
+
+```bash
+python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
+    --singly-charged keep --background-ions 200 --init runs/ladder_full_ignore.pt \
+    --epochs 12 --lr 5e-4 --train-len 4000 --val-len 128 --batch-size 8 \
+    --workers 8 --out runs/ladder_full_stage2.pt
+```
+
+Pausing and resuming work the same way (`--resume`). Here the printed accuracy covers all ion
+bins, singly charged ones included, so it is lower than stage 1's.
+
+### Optional: the "drop" variant, for comparison
+
+Stage 1 with singly charged ions removed from the spectra altogether:
 
 ```bash
 python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
@@ -130,18 +151,11 @@ python scripts/train_charge_net.py --device cuda --arch ladder --model-size full
     --workers 8 --out runs/ladder_full_drop.pt
 ```
 
-Stage 2, continuing stage 1 with singly charged ions included:
-
-```bash
-python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
-    --singly-charged keep --init runs/ladder_full_ignore.pt --epochs 10 --lr 5e-4 \
-    --train-len 4000 --val-len 128 --batch-size 8 --workers 8 --out runs/ladder_full_keep.pt
-```
-
 ## 8. What to upload
 
 The `.pt` checkpoints and `.log.jsonl` logs from the `runs` folder (each checkpoint is well under
-1 MB), for example `runs/ladder_full_ignore.pt` and `runs/ladder_full_ignore.log.jsonl`. Zip
+1 MB): `runs/ladder_full_ignore.pt`, `runs/ladder_full_stage2.pt` and their `.log.jsonl` files
+(and `runs/ladder_full_drop.*` if you ran it). The `.resume.pt` files are not needed. Zip
 the `runs` folder if that is easier. The checkpoint is converted to ONNX and scored on the
 synthetic benchmark and on the four real runs after you upload it.
 
