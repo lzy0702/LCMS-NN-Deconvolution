@@ -29,7 +29,7 @@ def main():
 @click.option("--report/--no-report", default=True, help="Write an HTML report.")
 @click.option("--quiet", is_flag=True)
 def process(input_file, method, out, model, uv_csv, report, quiet):
-    """Process an mzML run: deconvolve, link, integrate and quantify."""
+    """Process an mzML (or Thermo .raw) run: deconvolve, link, integrate and quantify."""
     from .core.method import Method
     from .io.mzml import read_mzml, read_uv_csv
     from .io.results import save_json
@@ -38,7 +38,12 @@ def process(input_file, method, out, model, uv_csv, report, quiet):
     meth = Method.load(method)
     if not quiet:
         click.echo(f"reading {input_file}")
-    run = read_mzml(input_file)
+    if str(input_file).lower().endswith(".raw"):
+        from .io.thermo import read_thermo_raw
+
+        run = read_thermo_raw(input_file)
+    else:
+        run = read_mzml(input_file)
     if uv_csv:
         ch = read_uv_csv(uv_csv)
         run.chromatograms[ch.name] = ch
