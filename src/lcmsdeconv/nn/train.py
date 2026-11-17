@@ -35,6 +35,8 @@ class TrainConfig:
     select_by: str = "accuracy"
     #: per-charge comb evidence channels added to the four base input features
     evidence_channels: int = 0
+    #: add that evidence straight to the charge logits (see ChargeUNet)
+    comb_prior: bool = False
 
 
 def _device(name: str):
@@ -90,7 +92,8 @@ def train(config: TrainConfig, synth_config=None):
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
-    model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch).to(device)
+    model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
+                        comb_prior=config.comb_prior).to(device)
     print(f"model {config.model_size}: {model.num_params()/1e6:.2f}M params on {device}")
 
     tl, vl = make_dataloaders(synth_config, config.train_len, config.val_len,
@@ -148,7 +151,9 @@ def train(config: TrainConfig, synth_config=None):
 
         def key(v):
             if config.select_by == "accuracy":
-                return (v["charge_acc"], -v["val_loss"])
+                # accuracy on ion bins: what inference uses (the top charges among the ion
+                # classes); an argmax that includes the background class splits the votes
+                return (v["charge_acc_given_ion"], -v["val_loss"])
             return (-v["val_loss"],)
 
         best = "ema" if key(val_ema) >= key(val_live) else "live"
@@ -172,7 +177,8 @@ def train(config: TrainConfig, synth_config=None):
     torch.save({"state_dict": best_state, "config": asdict(config),
                 "synth_config_z_max": config.z_max, "model_size": config.model_size,
                 "z_max": config.z_max, "in_ch": in_ch,
-                "evidence_channels": config.evidence_channels}, out_path)
+                "evidence_channels": config.evidence_channels,
+                "comb_prior": config.comb_prior}, out_path)
     print(f"saved {out_path} (best val_loss {best_loss:.4f})")
     model.load_state_dict(best_state)
     return model, history
@@ -188,8 +194,9 @@ def _log(path: Path, record: dict) -> None:
 def evaluate(model, loader, loss_fn, device) -> dict:
     """Validation loss and charge metrics (see :func:`lcmsdeconv.nn.checks.charge_metrics`).
 
-    ``charge_acc`` is the intensity-weighted top-1 charge accuracy over ion-bearing bins, the
-    quantity checkpoints are selected by.
+    ``charge_acc`` is the intensity-weighted top-1 accuracy over ion-bearing bins with the
+    background class competing; ``charge_acc_given_ion`` takes the top charge among the ion
+    classes only, as inference does, and is the quantity checkpoints are selected by.
     """
     import torch
 
@@ -209,14 +216,15 @@ def evaluate(model, loader, loss_fn, device) -> dict:
             tot += float(losses["loss"])
             nb += 1
             m = charge_metrics(out["charge_logits"], batch)
-            for k in ("weighted_accuracy", "harmonic_error", "neighbour_error",
-                      "missed_as_background", "background_called_ion"):
+            for k in ("weighted_accuracy", "charge_accuracy_given_ion", "harmonic_error",
+                      "neighbour_error", "missed_as_background", "background_called_ion"):
                 sums[k] = sums.get(k, 0.0) + m[k]
             for k, v in m["bands"].items():
                 bands.setdefault(k, []).append(v)
             never = max(never, m["classes_never_predicted"])
     nb = max(1, nb)
-    res = {"val_loss": tot / nb, "charge_acc": sums.get("weighted_accuracy", 0.0) / nb}
+    res = {"val_loss": tot / nb, "charge_acc": sums.get("weighted_accuracy", 0.0) / nb,
+           "charge_acc_given_ion": sums.get("charge_accuracy_given_ion", 0.0) / nb}
     for k in ("harmonic_error", "neighbour_error", "missed_as_background", "background_called_ion"):
         res[k] = sums.get(k, 0.0) / nb
     res["bands"] = {k: float(np.mean(v)) for k, v in bands.items()}

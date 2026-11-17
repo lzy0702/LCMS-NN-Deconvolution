@@ -101,19 +101,26 @@ def charge_metrics(charge_logits, batch: dict, snr_min: float = 0.5) -> dict:
         harmonic = ((p == 2 * t) | (2 * p == t)) & (t > 1)
         neighbour = (p - t).abs() == 1
         called_bg = p == 0
+        # which charge, given that the bin is an ion: the decoder decides "is this signal" from
+        # the intensity, so the charge read off the ion classes alone is what it uses
+        pred_ion = charge_logits[:, 1:, :].argmax(1) + 1
+        correct_ion = float((wt * (pred_ion == true)).sum())
         res = {
             "weighted_accuracy": correct / tot,
+            "charge_accuracy_given_ion": correct_ion / tot,
             "harmonic_error": float((ww * harmonic).sum()) / tot,
             "neighbour_error": float((ww * neighbour).sum()) / tot,
             "missed_as_background": float((ww * called_bg).sum()) / tot,
             "background_called_ion": float(((pred != 0) & bgm).sum()) / max(float(bgm.sum()), 1.0),
             "bands": {},
         }
+        res["bands_given_ion"] = {}
         for name, lo, hi in BANDS:
             m = ion & (true >= lo) & (true <= hi)
             mw = float((w * m).sum())
             if mw > 0:
                 res["bands"][name] = float((w * m * (pred == true)).sum()) / mw
+                res["bands_given_ion"][name] = float((w * m * (pred_ion == true)).sum()) / mw
         tc = torch.bincount(true[ion].reshape(-1), minlength=charge_logits.shape[1]).float()
         pc = torch.bincount(pred[ion].reshape(-1), minlength=charge_logits.shape[1]).float()
         present = tc > 0

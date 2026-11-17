@@ -126,11 +126,18 @@ class ChargePredictor:
             logits = logits[:, :W]
             apx = apx[:W]
             probs = _softmax(logits, axis=0)  # [C, W]
-            order = np.argsort(-probs, axis=0)[:2]  # [2, W]
-            w1 = probs[order[0], np.arange(W)]
-            z1 = order[0].astype(np.int16)
-            w2 = probs[order[1], np.arange(W)]
-            z2 = order[1].astype(np.int16)
+            # Which charge, given that the bin is an ion: the decoder decides whether a bin is
+            # signal from its intensity, so the charge is read off the ion classes alone and its
+            # probability renormalised. Taking the argmax over all classes instead lets a
+            # background share beat a charge distribution spread over a few classes, and the bin
+            # then casts no vote at all.
+            ion = probs[1:]
+            ion = ion / np.maximum(ion.sum(axis=0, keepdims=True), 1e-12)
+            order = np.argsort(-ion, axis=0)[:2]  # [2, W]
+            w1 = ion[order[0], np.arange(W)]
+            z1 = (order[0] + 1).astype(np.int16)
+            w2 = ion[order[1], np.arange(W)]
+            z2 = (order[1] + 1).astype(np.int16)
             wl = ramp[: s1 - s0]
             local = slice(s0, s1)
             better = wl > best_w[local]
