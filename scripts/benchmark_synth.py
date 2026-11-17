@@ -8,6 +8,7 @@ Markdown and, optionally, JSON.
 The charge assignment can be swapped to measure the rest of the chain in isolation:
 
     --predictor comb            deterministic estimator (the default without a model)
+    --predictor comb-ladder     the estimator without resolved-isotope charge evidence
     --predictor oracle          perfect per-bin charges: the ceiling of everything downstream
     --predictor confused:0.9    oracle with 10 % of charge envelopes relabelled 2z, z/2, z+/-1
     --predictor model.onnx      a trained network
@@ -55,7 +56,13 @@ PRESETS = {
     "polymer": (dict(classes=[ClassConfig("peg", (1500.0, 12000.0))], mode="polymer",
                      polarity=1, instrument_kind="tof",
                      resolution_range=(20000.0, 40000.0)), "polymer_pos"),
+    # resolved isotopes, the regime of the real Orbitrap runs (resolving power at m/z 1000,
+    # 67 000-140 000 at m/z 200); not in the default preset list
+    "oligo_orbitrap": (dict(classes=[ClassConfig("ps_rna", (3000.0, 9000.0))], mode="iprp",
+                            polarity=-1, instrument_kind="orbitrap",
+                            resolution_range=(30000.0, 63000.0)), "orbitrap_iprp_neg_oligo"),
 }
+DEFAULT_PRESETS = ("protein_tof", "oligo_iprp", "polymer")
 
 GENERATORS = {
     "default": {},
@@ -66,6 +73,10 @@ GENERATORS = {
 
 def make_predictor(spec: str, truth, polarity: int, seed: int):
     """(predictor, model_path) for ``process_run``."""
+    if spec == "comb-ladder":  # charge-ladder comb only, without resolved-isotope evidence
+        from lcmsdeconv.deconv.classical import CombPredictor
+
+        return CombPredictor(z_max=60), None
     if spec == "oracle":
         return oracle_predictor(truth, polarity), None
     if spec.startswith("confused:"):
@@ -76,6 +87,8 @@ def make_predictor(spec: str, truth, polarity: int, seed: int):
 def run_one(preset: str, seed: int, args) -> dict:
     kw, method_name = PRESETS[preset]
     method = Method.load(method_name)
+    if args.single_charge != "auto":
+        method.deconvolution.single_charge = args.single_charge == "on"
     cfg = SynthConfig(**kw, **GENERATORS[args.generator])
     rng = np.random.default_rng(seed)
     run, truth = generate_run(cfg, rng, n_peaks=args.peaks, rt_range=(0.5, 0.5 + args.minutes),
@@ -196,7 +209,11 @@ def main():
                     help="comb | oracle | confused:<accuracy> | path to an ONNX model")
     ap.add_argument("--model", default=None, help="alias for --predictor <path>")
     ap.add_argument("--generator", default="default", choices=sorted(GENERATORS))
-    ap.add_argument("--presets", default=",".join(PRESETS))
+    ap.add_argument("--presets", default=",".join(DEFAULT_PRESETS),
+                    help=f"comma-separated, from {', '.join(PRESETS)}")
+    ap.add_argument("--single-charge", default="auto", choices=("auto", "on", "off"),
+                    help="accept species seen at one charge state with resolved isotopes "
+                         "(auto: the method's setting)")
     ap.add_argument("--out", default=None, type=Path, help="Markdown report")
     ap.add_argument("--json", default=None, type=Path, help="full per-run results")
     args = ap.parse_args()

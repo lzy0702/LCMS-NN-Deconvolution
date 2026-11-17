@@ -44,6 +44,13 @@ class DeconvParams:
     adduct_max_total: int = 3
     adduct_max_per_type: int = 2
     adduct_require_evidence: bool = True
+    # accept a species seen at one charge state when resolved isotope spacing fixes the charge
+    # (high-resolution instruments; see refine_candidate_masses)
+    single_charge_isotopes: bool = False
+    # charges are read from resolved isotope spacing (Orbitrap, FT-ICR): candidates may then be
+    # displaced by peaks that inherit an envelope's ladder charge, and the gate lets them climb
+    # to the envelope's centre from anywhere within its half-width
+    isotope_charges: bool = False
 
 
 def choose_class_auto(mass: float, candidates) -> str:
@@ -109,7 +116,8 @@ def deconvolve_spectrum(
                           "weight": hist[nz].astype(np.float64)})
         cands = pick_candidates(lm_axis, hist, charge_support,
                                 min_charge_support=params.min_charge_support,
-                                rel_height=params.min_relative_abundance)
+                                rel_height=params.min_relative_abundance,
+                                single_charge_ok=params.single_charge_isotopes)
         snap("picked", cands, it)
         if not cands:
             return []
@@ -119,7 +127,9 @@ def deconvolve_spectrum(
                                         compound_class=gate_class,
                                         resolution=float(instrument.resolving_power(1000.0)),
                                         instrument=instrument,
-                                        profile=spectrum.is_profile is not False)
+                                        profile=spectrum.is_profile is not False,
+                                        single_charge_ok=params.single_charge_isotopes,
+                                        envelope_move=params.isotope_charges)
         snap("gated", cands, it)
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)

@@ -79,6 +79,16 @@ class DeconvSettings:
     model: str | None = None  # path to ONNX model; None = bundled default
     providers: list[str] = field(default_factory=lambda: ["CPUExecutionProvider"])
     per_frame_nn: bool = False
+    #: read charges from resolved isotope spacing in the comb estimator. None = automatic: on
+    #: for Orbitrap and FT-ICR instruments, off for time-of-flight, where isotopes of low charge
+    #: states are only marginally resolved and the evidence cost precision on synthetic runs
+    isotope_charges: bool | None = None
+    #: also accept a species seen at a single charge state (z >= 2) when the measured spacing
+    #: of its resolved isotopes fixes that charge. Off by default: on four real Orbitrap
+    #: oligonucleotide runs it found 2 more of 20 known species (impurities that ion-pairing
+    #: HILIC leaves at one charge state) but added about 16 reports no extracted-ion check
+    #: could confirm; see docs/benchmarks.md
+    single_charge: bool = False
     refine_iterations: int = 2
     nn_probability_min: int | float = 0.05
     min_charge_support: int = 2

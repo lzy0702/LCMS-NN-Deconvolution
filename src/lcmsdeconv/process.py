@@ -70,6 +70,19 @@ class ProcessResult:
         }
 
 
+def _isotope_mode(method: Method) -> bool:
+    """Whether the charge estimator reads charges from resolved isotope spacing.
+
+    ``deconvolution.isotope_charges`` decides; unset, it is on for Orbitrap and FT-ICR
+    instruments.
+    """
+    iso = getattr(method.deconvolution, "isotope_charges", None)
+    if iso is None:
+        inst = method.instrument
+        iso = inst is not None and inst.kind in ("orbitrap", "fticr")
+    return bool(iso)
+
+
 def _deconv_params(method: Method) -> DeconvParams:
     d = method.deconvolution
     return DeconvParams(
@@ -91,6 +104,8 @@ def _deconv_params(method: Method) -> DeconvParams:
         adduct_max_total=d.adducts.max_total,
         adduct_max_per_type=d.adducts.max_per_type,
         adduct_require_evidence=getattr(d.adducts, "require_evidence", True),
+        single_charge_isotopes=bool(getattr(d, "single_charge", False)),
+        isotope_charges=_isotope_mode(method),
     )
 
 
@@ -120,7 +135,7 @@ def process_run(
         predictor = make_predictor(model_path or method.deconvolution.model,
                                    providers=list(method.deconvolution.providers),
                                    z_max=min(int(method.deconvolution.charge_range[1]), 60),
-                                   instrument=instrument)
+                                   instrument=instrument if _isotope_mode(method) else None)
 
     polarities = run.polarities
     if method.acquisition.polarity == "positive":

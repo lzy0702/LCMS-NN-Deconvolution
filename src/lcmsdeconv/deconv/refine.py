@@ -163,7 +163,8 @@ def refine_frame(
             decide(cand_mass0, "no_fit")
             continue
         charges_present = {z for (z, _lab) in coeffs}
-        if len(charges_present) < min_charge_support and charges_present != {1}:
+        if (len(charges_present) < min_charge_support and charges_present != {1}
+                and not getattr(cand, "single_charge", False)):
             decide(cand_mass0, "charge_support")
             continue
         strongest = max(strongest, explained)
