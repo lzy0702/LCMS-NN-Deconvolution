@@ -22,9 +22,12 @@ at z = 3) repeats another row's mass. Species that co-elute with a stronger one 
 1.5 Da away (DA with FLP, DA-NC with NC under IP-RPLC) cannot be told apart by mass and are
 listed but not scored.
 
-Every reported species that matches no expected one is checked the same model-free way: it is
-"EIC-confirmed" when the extracted-ion chromatograms of its two strongest charge states peak
-together within 0.25 min of its reported apex. This is a consistency check, not truth - a false
+Every reported species that matches no expected one is first compared with the species found:
+a form of one (+Na, +K, their combinations, or the unassigned +201.4 Da form), a charge harmonic
+of one (half, a third, double or triple its mass at the same time), or the same molecule at
+another time (within 0.3 Da). The rest are checked the model-free way: "EIC-confirmed" when the
+extracted-ion chromatograms of their two strongest charge states peak together within 0.25 min
+of the reported apex. This is a consistency check, not truth - a false
 charge ladder built from co-eluting background can pass it - but every species here is lighter
 than 8 kDa, where it is informative.
 
@@ -125,7 +128,10 @@ TRUTH = {
     + [_si(n, mz, z, rt_r) for n, mz, z, _rt_h, rt_r in _S19],
 }
 #: mass differences that make a report a form of a found species rather than a new one
-FORMS = {"+Na": 21.98194, "+K": 37.95588, "+201.4 (unassigned)": 201.4}
+FORMS = {"+Na": 21.98194, "+K": 37.95588, "+2Na": 43.96388, "+Na+K": 59.93782,
+         "+3Na": 65.94582, "+2K": 75.91176, "+201.4 (unassigned)": 201.4}
+#: the same molecule reported at another retention time agrees to well within this (Da)
+SAME_TOL = 0.3
 
 
 def run_key(path: Path) -> str:
@@ -182,11 +188,17 @@ def score(key: str, species: list, confirm) -> dict:
             continue
         why = None
         for m, t in found:
-            if abs(s.mass - m) <= MASS_TOL:
+            if abs(s.mass - m) <= SAME_TOL:
                 why = f"same molecule as {m:.2f} (other time)"
             for label, d in FORMS.items():
                 if abs(s.mass - m - d) <= MASS_TOL and abs(s.rt_apex - t) <= RT_TOL:
                     why = f"{label} form of {m:.2f}"
+            # a charge harmonic: the found species' envelopes read at z/k or k*z; it passes the
+            # extracted-ion check because its ions are the found species' own
+            for k in (2, 3):
+                if abs(s.rt_apex - t) <= RT_TOL and (abs(s.mass - m / k) <= MASS_TOL
+                                                      or abs(s.mass - m * k) <= k * MASS_TOL):
+                    why = f"harmonic of {m:.2f}"
         if why is None:
             why = "EIC-confirmed" if confirm(s.mass, s.rt_apex) else "unconfirmed"
         others.append((s, why))
@@ -223,7 +235,9 @@ def main():
                                          f"{100 * s.total_intensity / top:.2f} %")
             print(f"   {kind:8s} {name:26s} {mass:9.2f} @ {rt:5.2f}: {got}")
         for s, why in sc["others"]:
-            k = why.split(" form")[0] if " form" in why else why.split(" (")[0]
+            k = (why.split(" form")[0] if " form" in why
+                 else "harmonic" if why.startswith("harmonic")
+                 else "same molecule" if why.startswith("same molecule") else why)
             kinds[k] = kinds.get(k, 0) + 1
             print(f"   other    {s.mass:9.2f} @ {s.rt_apex:5.2f} "
                   f"({100 * s.total_intensity / top:.3f} %): {why}")
