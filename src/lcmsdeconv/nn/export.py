@@ -14,7 +14,8 @@ def load_torch_model(checkpoint: str | Path):
 
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
     model = build_model(ckpt.get("model_size", "proof"), z_max=ckpt.get("z_max", 100),
-                        in_ch=ckpt.get("in_ch", 4), comb_prior=ckpt.get("comb_prior", False))
+                        in_ch=ckpt.get("in_ch", 4), comb_prior=ckpt.get("comb_prior", False),
+                        arch=ckpt.get("arch", "unet"))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model, ckpt
@@ -26,24 +27,28 @@ def export_onnx(checkpoint: str | Path, out_path: str | Path, length: int = 3276
     model, ckpt = load_torch_model(checkpoint)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    dummy = torch.randn(1, ckpt.get("in_ch", 4), length)
+    ladder = ckpt.get("arch", "unet") == "ladder"
+    if ladder:
+        # static shifts over a fixed window: the exported graph is for that length only
+        model.dense = True
+        length = model.window
+    dummy = torch.rand(1, ckpt.get("in_ch", 4), length)
+    dummy[:, 0] *= 5.0
+    axes = {0: "batch"} if ladder else {0: "batch", 2: "length"}
     torch.onnx.export(
         model,
         dummy,
         str(out_path),
         input_names=["features"],
         output_names=["charge_logits", "apex_logit"],
-        dynamic_axes={
-            "features": {0: "batch", 2: "length"},
-            "charge_logits": {0: "batch", 2: "length"},
-            "apex_logit": {0: "batch", 2: "length"},
-        },
+        dynamic_axes={"features": axes, "charge_logits": axes, "apex_logit": axes},
         opset_version=17,
         dynamo=False,
     )
     # write a small sidecar with metadata
     meta = {"z_max": ckpt.get("z_max", 100), "model_size": ckpt.get("model_size", "proof"),
-            "in_ch": ckpt.get("in_ch", 4), "evidence_channels": ckpt.get("evidence_channels", 0)}
+            "in_ch": ckpt.get("in_ch", 4), "evidence_channels": ckpt.get("evidence_channels", 0),
+            "arch": ckpt.get("arch", "unet"), "singly_charged": ckpt.get("singly_charged", "keep")}
     import json
 
     (out_path.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
@@ -56,7 +61,10 @@ def verify_parity(checkpoint: str | Path, onnx_path: str | Path, length: int = 8
     import torch
 
     model, ckpt = load_torch_model(checkpoint)
-    x = torch.randn(1, ckpt.get("in_ch", 4), length)
+    if ckpt.get("arch", "unet") == "ladder":
+        length = model.window  # the sparse path is the reference for the dense export
+    x = torch.rand(1, ckpt.get("in_ch", 4), length)
+    x[:, 0] *= 5.0
     with torch.no_grad():
         ref = model(x)
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])

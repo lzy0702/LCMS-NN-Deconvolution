@@ -24,11 +24,12 @@ class FrameDataset(Dataset):
     from the mixture, deterministically from its index.
     """
 
-    def __init__(self, config, length: int, base_seed: int = 0, k: int = 3):
+    def __init__(self, config, length: int, base_seed: int = 0, k: int = 3, cache: bool = False):
         self.config = config
         self.length = length
         self.base_seed = base_seed
         self.k = k
+        self._cache: dict | None = {} if cache else None
         if isinstance(config, (list, tuple)):
             w = np.array([float(wc[0]) for wc in config])
             self._weights = w / w.sum()
@@ -41,6 +42,14 @@ class FrameDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx: int):
+        if self._cache is not None:
+            key = (self.base_seed, idx)
+            if key not in self._cache:
+                self._cache[key] = self._make(idx)
+            return self._cache[key]
+        return self._make(idx)
+
+    def _make(self, idx: int):
         rng = np.random.default_rng(self.base_seed + idx)
         cfg = self._configs[0] if self._weights is None else \
             self._configs[int(rng.choice(len(self._configs), p=self._weights))]
@@ -53,11 +62,15 @@ class FrameDataset(Dataset):
 
 
 def make_dataloaders(config, train_len: int, val_len: int, batch_size: int = 8,
-                     num_workers: int = 1, base_seed: int = 0):
+                     num_workers: int = 1, base_seed: int = 0, cache: bool = False):
+    """Train and validation loaders. With ``cache`` frames are kept once generated, which only
+    pays with ``num_workers = 0`` (worker processes keep their own copies)."""
     from torch.utils.data import DataLoader
 
-    train = FrameDataset(config, train_len, base_seed=base_seed)
-    val = FrameDataset(config, val_len, base_seed=10_000_000 + base_seed)
+    if cache:
+        num_workers = 0
+    train = FrameDataset(config, train_len, base_seed=base_seed, cache=cache)
+    val = FrameDataset(config, val_len, base_seed=10_000_000 + base_seed, cache=cache)
     tl = DataLoader(train, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=True)
     vl = DataLoader(val, batch_size=batch_size, num_workers=num_workers, shuffle=False)
     return tl, vl

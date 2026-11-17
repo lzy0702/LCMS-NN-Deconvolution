@@ -1,4 +1,7 @@
-"""1D U-Net for per-bin charge-state assignment on the log(m/z) grid.
+"""Networks for per-bin charge-state assignment on the log(m/z) grid.
+
+``ChargeUNet`` is a 1D U-Net; ``LadderNet`` reads every candidate charge's ladder at its exact
+offsets on the grid (see its docstring).
 
 Outputs a per-bin charge-share distribution over classes 0..Zmax (0 = non-ion) and an apex
 heatmap. Only ONNX-friendly ops are used (Conv1d, GroupNorm, SiLU, nearest upsample), so the
@@ -116,8 +119,206 @@ class ChargeUNet(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
+def _shift(t: torch.Tensor, s: int) -> torch.Tensor:
+    """``y[..., i] = t[..., i + s]``, zero where ``i + s`` falls outside (static ``s``)."""
+    if s == 0:
+        return t
+    length = t.shape[-1]
+    if abs(s) >= length:
+        return torch.zeros_like(t)
+    if s > 0:
+        return nn.functional.pad(t[..., s:], (0, s))
+    return nn.functional.pad(t[..., :s], (-s, 0))
+
+
+class LadderNet(nn.Module):
+    """Charge assignment by reading every candidate charge's ladder at its exact offsets.
+
+    On the grid u = ln(m/z -/+ m_p) the charge states of one species lie at u = ln M - ln z, so
+    if a bin at u carries charge z, the same species' charge z + k sits at u + ln(z / (z + k)),
+    whatever its mass. A convolutional network has to discover these offsets - thousands of bins
+    long and different for every z - from data; here they are given. For each charge z up to
+    ``z_ladder`` the network reads a learned local description of the spectrum (peak shape,
+    isotope spacing) at the bin itself, at its neighbours z +/- 1..3, and at the two positions
+    that only a reading at 2z would fill (u + ln(2z / (2z +/- 1)), halfway between the z ladder's
+    rungs), and a small network shared across charges, with a learned bias per charge, scores
+    the reading. The comb estimator's own score - the bin's log-SNR times the mean of its
+    neighbours' - is added with a learnable weight and the learned part starts at zero, so an
+    untrained model assigns charges as the comb does and training learns corrections. A
+    depthwise convolution over neighbouring bins, initialised to the identity, lets the bins of
+    one peak agree.
+
+    Ladders are read only at the ``active_top`` strongest bins of a window whose log-SNR feature
+    also exceeds ``active_level`` (ions occupy a few percent of the bins; without a vendor
+    threshold most of the rest is noise above any fixed level); elsewhere every charge gets one
+    learned constant logit. Training uses a sparse gather over those bins; ``dense = True`` computes the same
+    function with static shifts over the whole window, which is what is exported to ONNX.
+    Charges above ``z_ladder`` get a constant low logit. The offsets are fixed for one grid
+    step and window length, which inference uses throughout.
+    """
+
+    def __init__(self, in_ch: int = 4, z_max: int = 100, z_ladder: int = 64, step: float = 2e-5,
+                 width: int = 16, proj: int = 4, hidden: int = 16, ks: tuple[int, ...] = (1, 2, 3),
+                 window: int = 32768, active_level: float = 0.5, active_top: int = 6144):
+        super().__init__()
+        import math
+
+        self.z_max = z_max
+        self.n_classes = z_max + 1
+        self.z_ladder = min(z_ladder, z_max)
+        self.in_ch = in_ch
+        self.window = window
+        self.active_level = active_level
+        self.active_top = active_top
+        self.dense = False
+
+        def shift(z_from: float, z_to: float) -> int | None:
+            if z_to < 1:
+                return None
+            sh = int(round(math.log(z_from / z_to) / step))
+            return sh if abs(sh) < window else None
+
+        offsets, comb, comb_n = [], [], []
+        for z in range(1, self.z_ladder + 1):
+            o: list[int | None] = [0]
+            c: list[int] = []
+            n_defined = 0
+            for k in ks:
+                for zt in (z + k, z - k):
+                    sh = shift(z, zt)
+                    o.append(sh)
+                    if zt >= 1 and sh != 0:
+                        # the comb counts every neighbour charge that exists; one outside the
+                        # window contributes zero but still counts (lcmsdeconv.nn.features)
+                        n_defined += 1
+                        if sh is not None:
+                            c.append(sh)
+            o.append(shift(2 * z, 2 * z + 1))
+            o.append(shift(2 * z, 2 * z - 1))
+            offsets.append(o)
+            comb.append(c)
+            comb_n.append(n_defined)
+        self.offsets = offsets  # per charge: self, z +/- k, two 2z-only positions (None = absent)
+        self.comb_offsets = comb
+        self.comb_count = comb_n
+        self.n_pos = len(offsets[0])
+        big = 10 * window  # sentinel: outside any window
+        self.register_buffer("off_t", torch.tensor([[big if v is None else v for v in o]
+                                                    for o in offsets], dtype=torch.long),
+                             persistent=False)
+        n_comb = max(1, max(len(c) for c in comb))
+        self.register_buffer("comb_t", torch.tensor([c + [big] * (n_comb - len(c)) for c in comb],
+                                                    dtype=torch.long), persistent=False)
+        self.register_buffer("comb_den", torch.tensor([max(n, 1) for n in comb_n],
+                                                      dtype=torch.float32), persistent=False)
+
+        self.encoder = nn.Sequential(ConvBlock(2, width, 9), ConvBlock(width, width, 9, 2),
+                                     ConvBlock(width, width, 9, 4), ConvBlock(width, width, 9, 8))
+        self.proj = nn.Conv1d(width, proj, 1)
+        self.mlp1 = nn.Linear(self.n_pos * proj, hidden)
+        self.z_bias = nn.Parameter(torch.zeros(self.z_ladder, hidden))
+        self.mlp2 = nn.Linear(hidden, 1)
+        nn.init.zeros_(self.mlp2.weight)
+        nn.init.zeros_(self.mlp2.bias)
+        self.inactive = nn.Parameter(torch.tensor(0.0))
+        self.background = nn.Conv1d(width, 1, 1)
+        nn.init.zeros_(self.background.weight)
+        nn.init.zeros_(self.background.bias)
+        self.prior_scale = nn.Parameter(torch.tensor(8.0))
+        self.prior_background = nn.Parameter(torch.tensor(2.0))
+        n = self.z_ladder + 1
+        self.smooth = nn.Conv1d(n, n, 5, padding=2, groups=n, bias=False)
+        with torch.no_grad():
+            self.smooth.weight.zero_()
+            self.smooth.weight[:, 0, 2] = 1.0
+        self.apex_head = nn.Conv1d(width, 1, 1)
+        # start the apex heatmap near p = 0.01 everywhere, as for CenterNet: at p = 0.5 the
+        # focal loss's negative term over 32 768 bins swamps the charge loss at first
+        nn.init.zeros_(self.apex_head.weight)
+        nn.init.constant_(self.apex_head.bias, -4.6)
+
+    # ------------------------------------------------------------------ ladder scores
+    def _sparse(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor) -> torch.Tensor:
+        """Ladder logits ``[N, z_ladder, L]``: scored at active bins, constant elsewhere."""
+        n_b, n_p, length = q.shape
+        out = self.inactive.expand(n_b, self.z_ladder, length).clone()
+        b_idx, i_idx = active.nonzero(as_tuple=True)
+        if b_idx.numel() == 0:
+            return out
+        qf = q.permute(0, 2, 1).reshape(n_b * length, n_p)
+        t = i_idx[:, None, None] + self.off_t[None]  # [n, Z, J]
+        valid = ((t >= 0) & (t < length)).to(q.dtype)
+        rows = b_idx[:, None, None] * length + t.clamp(0, length - 1)
+        g = qf[rows] * valid[..., None]  # [n, Z, J, P]
+        hid = self.mlp1(g.reshape(g.shape[0], self.z_ladder, -1)) + self.z_bias[None]
+        learned = self.mlp2(nn.functional.silu(hid)).squeeze(-1)  # [n, Z]
+        sf = s0.reshape(n_b * length)
+        tc = i_idx[:, None, None] + self.comb_t[None]
+        vc = ((tc >= 0) & (tc < length)).to(q.dtype)
+        nb = sf[b_idx[:, None, None] * length + tc.clamp(0, length - 1)] * vc
+        centre = sf[b_idx * length + i_idx]
+        comb = centre[:, None] * nb.sum(-1) / self.comb_den[None]
+        out[b_idx, :, i_idx] = learned + self.prior_scale * comb
+        return out
+
+    def _dense(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor) -> torch.Tensor:
+        """The same function with static shifts over every bin (ONNX export)."""
+        w1 = self.mlp1.weight  # [H, J*P]
+        n_p = q.shape[1]
+        zero_q = torch.zeros_like(q)
+        rows = []
+        for zi in range(self.z_ladder):
+            parts = [zero_q if s is None else _shift(q, s) for s in self.offsets[zi]]
+            hid = nn.functional.conv1d(torch.cat(parts, dim=1), w1[:, :, None], self.mlp1.bias)
+            hid = hid + self.z_bias[zi][None, :, None]
+            learned = nn.functional.conv1d(nn.functional.silu(hid), self.mlp2.weight[:, :, None],
+                                           self.mlp2.bias)
+            nb = self.comb_offsets[zi]
+            if nb:
+                acc = _shift(s0, nb[0])
+                for sh in nb[1:]:
+                    acc = acc + _shift(s0, sh)
+                comb = s0 * acc / float(self.comb_count[zi])
+            else:
+                comb = torch.zeros_like(s0)
+            rows.append(learned + self.prior_scale * comb)
+        del n_p
+        dense = torch.cat(rows, dim=1)
+        return torch.where(active[:, None, :], dense, self.inactive.expand_as(dense))
+
+    def forward(self, x):
+        s0 = x[:, 0:1, :] / 5.0
+        h = self.encoder(torch.cat([s0, x[:, 1:2, :]], dim=1))
+        q = self.proj(h)
+        level = x[:, 0, :]
+        kth = torch.topk(level, min(self.active_top, level.shape[-1]), dim=-1).values[:, -1:]
+        active = (level > self.active_level) & (level >= kth)
+        ladder = (self._dense if self.dense else self._sparse)(q, s0, active)
+        background = self.background(h) + self.prior_background * (1.0 - s0)
+        logits = self.smooth(torch.cat([background, ladder], dim=1))
+        rest = self.n_classes - 1 - self.z_ladder
+        if rest > 0:
+            low = torch.zeros_like(background).repeat(1, rest, 1) - 10.0
+            logits = torch.cat([logits, low], dim=1)
+        return {"charge_logits": logits, "apex_logit": self.apex_head(h)}
+
+    def num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+
+#: LadderNet sizes: (encoder width, projection channels, hidden units, highest charge read)
+LADDER_SIZES = {"small": (8, 4, 12, 48), "proof": (16, 4, 16, 64), "full": (24, 8, 32, 80)}
+
+
 def build_model(size: str = "proof", z_max: int = 100, in_ch: int = 4,
-                comb_prior: bool = False) -> ChargeUNet:
+                comb_prior: bool = False, arch: str = "unet"):
+    if arch == "ladder":
+        if size not in LADDER_SIZES:
+            raise ValueError(f"Unknown model size {size!r}")
+        width, proj, hidden, z_ladder = LADDER_SIZES[size]
+        return LadderNet(in_ch, z_max, z_ladder=z_ladder, width=width, proj=proj, hidden=hidden)
+    if arch != "unet":
+        raise ValueError(f"Unknown architecture {arch!r}")
     if size == "proof":
         return ChargeUNet(in_ch, z_max, channels=(8, 16, 24, 32, 48, 64, 80), comb_prior=comb_prior)
     if size == "full":

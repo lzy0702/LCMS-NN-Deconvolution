@@ -43,6 +43,11 @@ class SynthConfig:
     electronic_sigma_range: tuple[float, float] = (0.5, 5.0)
     threshold_sigmas_range: tuple[float, float] = (0.0, 3.0)
     background_ions_range: tuple[int, int] = (0, 40)
+    #: singly charged ions (chemical background, small molecules): "keep"; "drop" - generate
+    #: none, so the network never sees one; "ignore" - generate them, and give their bins no
+    #: weight in the loss (``ChargeLoss(ignore_charges=(1,))``), so z = 1 is neither rewarded
+    #: nor penalised while the input stays realistic
+    singly_charged: str = "keep"
     #: per-charge comb evidence channels appended to the four base features (0 = none)
     evidence_channels: int = 0
     # adducts: by default the load is drawn per ion, as the mean number of each adduct type an

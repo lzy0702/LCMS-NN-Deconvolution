@@ -105,9 +105,15 @@ def charge_metrics(charge_logits, batch: dict, snr_min: float = 0.5) -> dict:
         # the intensity, so the charge read off the ion classes alone is what it uses
         pred_ion = charge_logits[:, 1:, :].argmax(1) + 1
         correct_ion = float((wt * (pred_ion == true)).sum())
+        multi = ion & (true >= 2)
+        wm = torch.where(multi, w, torch.zeros_like(w))
+        tot_m = float(wm.sum()) or 1.0
         res = {
             "weighted_accuracy": correct / tot,
             "charge_accuracy_given_ion": correct_ion / tot,
+            # the same on bins whose charge is 2 or more (comparable whether or not z = 1 is
+            # trained on)
+            "charge_accuracy_given_ion_z2": float((wm * (pred_ion == true)).sum()) / tot_m,
             "harmonic_error": float((ww * harmonic).sum()) / tot,
             "neighbour_error": float((ww * neighbour).sum()) / tot,
             "missed_as_background": float((ww * called_bg).sum()) / tot,

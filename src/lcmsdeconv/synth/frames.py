@@ -80,6 +80,13 @@ def _choose_crop(scene: Scene, grid: LogMzGrid, cfg: SynthConfig, rng: np.random
     return int(np.clip(b0, 0, max(0, grid.size - L)))
 
 
+def _without_singly_charged(sticks):
+    """The sticks of every charge state but z = 1."""
+    keep = sticks.z != 1
+    return type(sticks)(sticks.mz[keep], sticks.intensity[keep], sticks.comp_id[keep],
+                        sticks.z[keep], sticks.adduct_mass[keep])
+
+
 def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     library = AdductLibrary.from_mode(
         cfg.mode, cfg.polarity, max_per_type=cfg.adduct_max_per_type, max_total=cfg.adduct_max_total
@@ -90,6 +97,8 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
     sticks = build_sticks(scene)
+    if cfg.singly_charged == "drop":
+        sticks = _without_singly_charged(sticks)
     b0 = _choose_crop(scene, grid, cfg, rng)
     b1 = b0 + cfg.crop_size
     cmat, charges, _comp = render_grid_by_charge(sticks, grid, inst, b0, b1)
@@ -165,6 +174,9 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         lo, hi = max(60.0, lo / 1.5), min(cfg.grid_mz_max * 0.995, hi * 1.5)
     # chemical background across the measured range
     n_bg = int(rng.integers(cfg.background_ions_range[0], cfg.background_ions_range[1] + 1))
+    if cfg.singly_charged == "drop":
+        n_bg = 0
+        sticks = _without_singly_charged(sticks)
     if n_bg:
         base = max((c.intensity for c in scene.components), default=1e5)
         bg = _background_ions(rng, n_bg, lo, hi, base, polarity)

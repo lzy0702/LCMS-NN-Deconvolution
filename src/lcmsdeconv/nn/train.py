@@ -37,6 +37,20 @@ class TrainConfig:
     evidence_channels: int = 0
     #: add that evidence straight to the charge logits (see ChargeUNet)
     comb_prior: bool = False
+    #: "unet" (ChargeUNet) or "ladder" (LadderNet)
+    arch: str = "unet"
+    #: singly charged ions in the training data: "keep", "drop" or "ignore" (see SynthConfig)
+    singly_charged: str = "keep"
+    #: draw new frames every epoch (seeds advance by train_len) instead of repeating them
+    fresh_each_epoch: bool = False
+    #: keep generated frames in memory (CPU runs that repeat a small pool)
+    cache_frames: bool = False
+    #: checkpoint to start from (same architecture and size), e.g. a previous stage
+    init: str | None = None
+    #: continue from ``<out>.resume.pt`` (written every ``save_every_minutes``, at the end of
+    #: every epoch, and when the run is paused with Ctrl+C or a file named PAUSE next to ``out``)
+    resume: bool = False
+    save_every_minutes: float = 10.0
 
 
 def _device(name: str):
@@ -88,100 +102,256 @@ def train(config: TrainConfig, synth_config=None):
     for sc in ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
                else [synth_config]):
         sc.evidence_channels = config.evidence_channels
+        sc.singly_charged = config.singly_charged
     in_ch = 4 + config.evidence_channels
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
-                        comb_prior=config.comb_prior).to(device)
-    print(f"model {config.model_size}: {model.num_params()/1e6:.2f}M params on {device}")
+                        comb_prior=config.comb_prior, arch=config.arch).to(device)
+    if config.init:
+        state = torch.load(config.init, map_location=device, weights_only=False)["state_dict"]
+        model.load_state_dict(state)
+        print(f"started from {config.init}")
+    print(f"model {config.arch}/{config.model_size}: {model.num_params()/1e6:.3f}M params "
+          f"on {device}; singly charged ions: {config.singly_charged}")
 
     tl, vl = make_dataloaders(synth_config, config.train_len, config.val_len,
                               batch_size=config.batch_size, num_workers=config.num_workers,
-                              base_seed=config.base_seed)
+                              base_seed=config.base_seed, cache=config.cache_frames)
     opt = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     steps = max(1, len(tl)) * config.epochs
     sched = OneCycleLR(opt, max_lr=config.lr, total_steps=steps, pct_start=0.2)
-    loss_fn = ChargeLoss(heat_weight=config.heat_weight)
+    loss_fn = ChargeLoss(heat_weight=config.heat_weight,
+                         ignore_charges=(1,) if config.singly_charged == "ignore" else ())
     ema = EMA(model, config.ema_decay)
-
-    history = []
-    best_state = None
-    best_loss = float("inf")
-    best_key = None
-    start = time.time()
-    stop = False
-    log_path = Path(config.out).with_suffix(".log.jsonl")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Before spending hours: the true labels must beat every constant answer by a clear margin
-    # on real batches, or the optimiser will settle on the constant.
-    from .checks import degeneracy_report
-
-    first = next(iter(tl), None)
-    if first is not None:
-        rep = degeneracy_report(_batch_dict(first, "cpu"), loss_fn)
-        print(f"loss of constant predictors relative to the truth: {rep['margins']}")
-        _log(log_path, {"degeneracy": rep})
-    for epoch in range(config.epochs):
-        model.train()
-        running = 0.0
-        for i, sample in enumerate(tl):
-            batch = _batch_dict(sample, device)
-            out = model(batch["features"])
-            losses = loss_fn(out, batch)
-            loss_val = float(losses["loss"].detach())
-            opt.zero_grad()
-            losses["loss"].backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            opt.step()
-            if sched.last_epoch < steps - 1:
-                sched.step()
-            ema.update(model)
-            running += loss_val
-            if i % config.log_every == 0:
-                print(f"  epoch {epoch} step {i}/{len(tl)} loss {loss_val:.4f} "
-                      f"ce {float(losses['ce']):.4f} heat {float(losses['heat']):.4f}")
-            if config.max_seconds and (time.time() - start) > config.max_seconds:
-                print("  reached time budget; stopping")
-                stop = True
-                break
-        val_ema = evaluate(ema.shadow, vl, loss_fn, device)
-        val_live = evaluate(model, vl, loss_fn, device)
-
-        def key(v):
-            if config.select_by == "accuracy":
-                # accuracy on ion bins: what inference uses (the top charges among the ion
-                # classes); an argmax that includes the background class splits the votes
-                return (v["charge_acc_given_ion"], -v["val_loss"])
-            return (-v["val_loss"],)
-
-        best = "ema" if key(val_ema) >= key(val_live) else "live"
-        val = val_ema if best == "ema" else val_live
-        history.append({"epoch": epoch, "train_loss": running / max(1, i + 1),
-                        "ema": val_ema, "live": val_live, "best": best,
-                        "seconds": time.time() - start})
-        _log(log_path, history[-1])
-        print(f"epoch {epoch}: ema={val_ema} live={val_live} -> keeping {best}")
-        if best_state is None or key(val) > best_key:
-            best_key = key(val)
-            best_loss = val["val_loss"]
-            best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
-        if stop:
-            break
+    # the quantity checkpoints are selected by: accuracy on ion bins (z >= 2 only when singly
+    # charged ions are not trained on), the way inference reads charges
+    metric = "charge_acc_given_ion" if config.singly_charged == "keep" else "charge_acc_given_ion_z2"
 
     out_path = Path(config.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = out_path.with_suffix(".log.jsonl")
+    resume_path = out_path.with_suffix(".resume.pt")
+    pause_path = out_path.parent / "PAUSE"
+
+    history: list = []
+    best_state = None
+    best_loss = float("inf")
+    best_key = None
+    epoch0, step0 = 0, 0
+    comb = None
+    if config.resume and resume_path.exists():
+        st = torch.load(resume_path, map_location=device, weights_only=False)
+        _check_same_run(st.get("config", {}), asdict(config))
+        model.load_state_dict(st["model"])
+        ema.shadow.load_state_dict(st["ema"])
+        opt.load_state_dict(st["opt"])
+        sched.load_state_dict(st["sched"])
+        history, best_state, best_loss = st["history"], st["best_state"], st["best_loss"]
+        best_key = tuple(st["best_key"]) if st["best_key"] is not None else None
+        epoch0, step0, comb = st["epoch"], st["step"], st["comb"]
+        print(f"resumed from {resume_path}: epoch {epoch0}, step {step0} of {len(tl)}")
+    elif config.resume:
+        print(f"nothing to resume at {resume_path}; starting from the beginning")
+    if pause_path.exists():
+        pause_path.unlink()
+        print(f"removed {pause_path} left from the last pause")
+
+    if comb is None:
+        # Before spending hours: the true labels must beat every constant answer by a clear
+        # margin on real batches, or the optimiser will settle on the constant.
+        from .checks import degeneracy_report
+
+        first = next(iter(tl), None)
+        if first is not None:
+            rep = degeneracy_report(_batch_dict(first, "cpu"), loss_fn)
+            print(f"loss of constant predictors relative to the truth: {rep['margins']}")
+            _log(log_path, {"degeneracy": rep})
+        # the bar to clear: the comb estimator's own charge reading on the validation frames
+        comb = comb_baseline(vl)
+        print(f"comb estimator on the validation frames: {metric} {comb[metric]:.3f} "
+              f"bands {comb['bands_given_ion']}")
+        _log(log_path, {"comb_baseline": comb})
+
+    def save_state(epoch: int, step: int) -> None:
+        state = {"model": model.state_dict(), "ema": ema.shadow.state_dict(),
+                 "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
+                 "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
+                 "epoch": epoch, "step": step, "comb": comb, "config": asdict(config)}
+        tmp = resume_path.with_suffix(".tmp")
+        torch.save(state, tmp)
+        import os
+
+        os.replace(tmp, resume_path)  # never leave a half-written state behind
+
+    # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
+    # A second Ctrl+C aborts at once. A file named PAUSE next to the output does the same.
+    import signal
+    import threading
+
+    pause = {"requested": False}
+
+    def on_interrupt(signum, frame):
+        if pause["requested"]:
+            raise KeyboardInterrupt
+        pause["requested"] = True
+        print("\n  pause requested: saving after this step (Ctrl+C again aborts)", flush=True)
+
+    old_handler = None
+    if threading.current_thread() is threading.main_thread():
+        old_handler = signal.signal(signal.SIGINT, on_interrupt)
+
+    def paused() -> bool:
+        return pause["requested"] or pause_path.exists()
+
+    def stop_here(epoch: int, step: int, why: str) -> tuple:
+        save_state(epoch, step)
+        print(f"{why}: state saved to {resume_path}; run the same command with --resume to "
+              f"continue (epoch {epoch}, step {step})", flush=True)
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        return model, history
+
+    session_start = time.time()
+    last_save = time.time()
+    try:
+        for epoch in range(epoch0, config.epochs):
+            model.train()
+            running = 0.0
+            if config.fresh_each_epoch:
+                tl.dataset.base_seed = config.base_seed + epoch * config.train_len
+            first_step = step0 if epoch == epoch0 else 0
+            loader = tl if first_step == 0 else _loader_from(tl, first_step * config.batch_size)
+            i = first_step - 1
+            try:
+                for i, sample in enumerate(loader, start=first_step):
+                    batch = _batch_dict(sample, device)
+                    out = model(batch["features"])
+                    losses = loss_fn(out, batch)
+                    loss_val = float(losses["loss"].detach())
+                    opt.zero_grad()
+                    losses["loss"].backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+                    opt.step()
+                    if sched.last_epoch < steps - 1:
+                        sched.step()
+                    ema.update(model)
+                    running += loss_val
+                    if i % config.log_every == 0:
+                        print(f"  epoch {epoch} step {i}/{len(tl)} loss {loss_val:.4f} "
+                              f"ce {float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
+                              flush=True)
+                    if paused():
+                        return stop_here(epoch, i + 1, "paused")
+                    if config.max_seconds and (time.time() - session_start) > config.max_seconds:
+                        return stop_here(epoch, i + 1, "time budget reached")
+                    if time.time() - last_save > 60.0 * config.save_every_minutes:
+                        save_state(epoch, i + 1)
+                        last_save = time.time()
+            except RuntimeError:
+                # Ctrl+C also reaches the data-loading workers, which then exit
+                if pause["requested"]:
+                    return stop_here(epoch, i + 1, "paused")
+                raise
+            val_ema = evaluate(ema.shadow, vl, loss_fn, device)
+            val_live = evaluate(model, vl, loss_fn, device)
+
+            def key(v):
+                if config.select_by == "accuracy":
+                    # accuracy on ion bins: what inference uses (the top charges among the ion
+                    # classes); an argmax that includes the background class splits the votes
+                    return (v[metric], -v["val_loss"])
+                return (-v["val_loss"],)
+
+            best = "ema" if key(val_ema) >= key(val_live) else "live"
+            val = val_ema if best == "ema" else val_live
+            n_done = max(1, i + 1 - first_step)
+            history.append({"epoch": epoch, "train_loss": running / n_done,
+                            "ema": val_ema, "live": val_live, "best": best,
+                            "seconds": time.time() - session_start})
+            _log(log_path, history[-1])
+            bands = {k: round(v, 3) for k, v in val["bands_given_ion"].items()}
+            print(f"epoch {epoch}: {metric} ema {val_ema[metric]:.3f} live "
+                  f"{val_live[metric]:.3f} (comb {comb[metric]:.3f}) -> keeping {best}; "
+                  f"bands {bands}", flush=True)
+            if best_state is None or key(val) > best_key:
+                best_key = key(val)
+                best_loss = val["val_loss"]
+                best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
+                _save(out_path, best_state, config, in_ch, val, comb, metric)
+                print(f"  saved {out_path} ({metric} {val[metric]:.3f})")
+            save_state(epoch + 1, 0)
+            last_save = time.time()
+    finally:
+        if old_handler is not None:
+            signal.signal(signal.SIGINT, old_handler)
+
     if best_state is None:
         best_state = model.state_dict()
-    torch.save({"state_dict": best_state, "config": asdict(config),
+        _save(out_path, best_state, config, in_ch, None, comb, metric)
+    print(f"finished; best checkpoint {out_path} (val_loss {best_loss:.4f})")
+    model.load_state_dict(best_state)
+    return model, history
+
+
+def _loader_from(loader, start: int):
+    """``loader`` over its dataset from item ``start`` on (resuming inside an epoch)."""
+    from torch.utils.data import DataLoader, Subset
+
+    ds = Subset(loader.dataset, range(start, len(loader.dataset)))
+    return DataLoader(ds, batch_size=loader.batch_size, num_workers=loader.num_workers,
+                      shuffle=False, drop_last=True)
+
+
+def _check_same_run(saved: dict, now: dict) -> None:
+    """Warn when a resumed run's settings differ from the saved run's."""
+    keys = ("arch", "model_size", "singly_charged", "epochs", "train_len", "batch_size", "lr",
+            "base_seed", "z_max")
+    diff = {k: (saved.get(k), now.get(k)) for k in keys if saved.get(k) != now.get(k)}
+    if diff:
+        print(f"warning: resuming with different settings (saved, now): {diff}")
+
+
+def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None:
+    import torch
+
+    torch.save({"state_dict": state, "config": asdict(config),
                 "synth_config_z_max": config.z_max, "model_size": config.model_size,
                 "z_max": config.z_max, "in_ch": in_ch,
                 "evidence_channels": config.evidence_channels,
-                "comb_prior": config.comb_prior}, out_path)
-    print(f"saved {out_path} (best val_loss {best_loss:.4f})")
-    model.load_state_dict(best_state)
-    return model, history
+                "comb_prior": config.comb_prior, "arch": config.arch,
+                "singly_charged": config.singly_charged, "selection_metric": metric,
+                "val": val, "comb_baseline": comb}, path)
+
+
+def comb_baseline(loader) -> dict:
+    """Charge metrics of the comb estimator's argmax (feature channel 3) on ``loader``."""
+    import torch
+
+    from .checks import charge_metrics
+
+    sums: dict[str, float] = {}
+    bands: dict[str, list[float]] = {}
+    nb = 0
+    for sample in loader:
+        batch = _batch_dict(sample, "cpu")
+        feats = batch["features"]
+        n, _c, length = feats.shape
+        zc = torch.round(feats[:, 3, :] * 64).long().clamp(0, 100)
+        logits = torch.full((n, 101, length), -10.0)
+        logits.scatter_(1, zc[:, None, :], 10.0)
+        m = charge_metrics(logits, batch)
+        for k in ("weighted_accuracy", "charge_accuracy_given_ion", "charge_accuracy_given_ion_z2"):
+            sums[k] = sums.get(k, 0.0) + m[k]
+        for k, v in m["bands_given_ion"].items():
+            bands.setdefault(k, []).append(v)
+        nb += 1
+    nb = max(nb, 1)
+    return {"charge_acc": sums.get("weighted_accuracy", 0.0) / nb,
+            "charge_acc_given_ion": sums.get("charge_accuracy_given_ion", 0.0) / nb,
+            "charge_acc_given_ion_z2": sums.get("charge_accuracy_given_ion_z2", 0.0) / nb,
+            "bands_given_ion": {k: float(np.mean(v)) for k, v in bands.items()}}
 
 
 def _log(path: Path, record: dict) -> None:
@@ -216,17 +386,19 @@ def evaluate(model, loader, loss_fn, device) -> dict:
             tot += float(losses["loss"])
             nb += 1
             m = charge_metrics(out["charge_logits"], batch)
-            for k in ("weighted_accuracy", "charge_accuracy_given_ion", "harmonic_error",
+            for k in ("weighted_accuracy", "charge_accuracy_given_ion",
+                      "charge_accuracy_given_ion_z2", "harmonic_error",
                       "neighbour_error", "missed_as_background", "background_called_ion"):
                 sums[k] = sums.get(k, 0.0) + m[k]
-            for k, v in m["bands"].items():
+            for k, v in m["bands_given_ion"].items():
                 bands.setdefault(k, []).append(v)
             never = max(never, m["classes_never_predicted"])
     nb = max(1, nb)
     res = {"val_loss": tot / nb, "charge_acc": sums.get("weighted_accuracy", 0.0) / nb,
-           "charge_acc_given_ion": sums.get("charge_accuracy_given_ion", 0.0) / nb}
+           "charge_acc_given_ion": sums.get("charge_accuracy_given_ion", 0.0) / nb,
+           "charge_acc_given_ion_z2": sums.get("charge_accuracy_given_ion_z2", 0.0) / nb}
     for k in ("harmonic_error", "neighbour_error", "missed_as_background", "background_called_ion"):
         res[k] = sums.get(k, 0.0) / nb
-    res["bands"] = {k: float(np.mean(v)) for k, v in bands.items()}
+    res["bands_given_ion"] = {k: float(np.mean(v)) for k, v in bands.items()}
     res["classes_never_predicted"] = never
     return res
