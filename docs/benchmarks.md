@@ -125,13 +125,19 @@ triethylammonium acetate at 80 °C). Read with `lcmsdeconv.io.read_thermo_raw`, 
 the bundled `orbitrap_iprp_neg_oligo` method and the comb estimator, and scored with
 `python scripts/validate_oligo_runs.py <the four .raw files>`.
 
-**Truth.** The average masses of the paper's Table 1; for the NC product's own impurities, the
-PS-to-PO form (16.06 Da below NC) and the masses the paper reports for its tentative n-1
-(4832.56 Da) and n-2 (4503.53 Da) assignments. Retention times are where extracted-ion
-chromatograms of the species peak at two or more charge states together. DA co-elutes with
-FLP under IP-RPLC, and DA-NC with NC, less than 1 Da apart; those two are not scored, which
-leaves 20 species. A reported species matches within 1 Da (1.5 Da for the paper's tentative
-masses) and 0.35 min.
+**Truth.** The average masses of the paper's Table 1, confirmed from the sequences of its
+Supporting Information (Table S1; the non-conjugated product NC is C160H205N60O78P15S15); for
+NC's own impurities, the PS-to-PO form (16.06 Da below NC), the n-1 and n-2 forms the paper
+assigns tentatively (329.3 and 658.6 Da below NC: one or two dA phosphorothioates, by
+composition), and the 17 synthesis impurities of the SI's Figure S19 with their retention times
+under both chromatographies. Figure S19 gives the neutral mass of an extracted isotope peak, not
+an average mass, and does not say which isotopologue; near 2.9 and 4.5 kDa the two most abundant
+differ by a few percent, so both readings are accepted. Two of its labels are wrong (the z = 2
+masses were computed with three protons; m/z 1281.4753 carries another row's mass) and are
+corrected. DA co-elutes with FLP under IP-RPLC, and DA-NC with NC, less than 1 Da apart; those
+two are not scored. That leaves 20 species named in the paper and 29 SI-listed ones (the 17
+impurities in two chromatographies, minus the ones above, plus a 4842 Da form the SI shows at
+12.75 min). A reported species matches within 1 Da and 0.35 min.
 
 **Other reports** are sorted into: forms of a found species (+Na, +K, or the +201.4 Da form
 described below), the same molecule at another retention time, and the rest, which are
@@ -139,35 +145,49 @@ described below), the same molecule at another retention time, and the rest, whi
 together at the reported time and "unconfirmed" otherwise. The confirmation is a consistency
 check, not truth: a false charge ladder made of co-eluting background can pass it.
 
-| Code | Known species found | Reported | Matching a listed species | Forms of found species | Same molecule, other time | EIC-confirmed | Unconfirmed |
+| Code, charge assignment | Paper's species | SI-listed | Reported | Forms of found | Same molecule, other time | EIC-confirmed | Unconfirmed |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| original | 2 / 20 | 87 | 2 | 0 | 0 | 47 | 38 |
-| before the truth table | 9 / 20 | 27 | 15 | 2 | 3 | 6 | 1 |
-| now | 13 / 20 | 41 | 19 | 5 | 3 | 7 | 7 |
-| now, `single_charge: true` | 15 / 20 | 74 | 21 | 9 | 5 | 16 | 23 |
+| original, comb | 2 / 20 | 0 / 29 | 87 | 0 | 0 | 47 | 38 |
+| before the truth table, comb | 9 / 20 | 4 / 29 | 27 | 2 | 3 | 8 | 1 |
+| now, comb | 13 / 20 | 5 / 29 | 41 | 4 | 3 | 9 | 7 |
+| now, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 8 | 5 | 17 | 22 |
+| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 67 | 5 | 3 | 13 | 30 |
+| now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 3 | 13 | 22 |
+| now, LadderNet stage 2 (z = 1 kept) | 12 / 20 | 3 / 29 | 65 | 5 | 3 | 13 | 29 |
+| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 58 | 5 | 3 | 12 | 22 |
 
-"Listed species" are the 20 known ones plus ten located by extracted-ion chromatograms in the
-NC runs (shortmers the paper shows but does not assign, such as NC minus dG, T or MeC).
+The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the
+same species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity
+under NC at 10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion chromatogram),
+but they add 15-23 unconfirmed reports, nearly all below 0.13 % of the strongest species,
+1.3-3.9 kDa, in the IP-RPLC column wash: singly charged background read as z = 2-3. Stage 1
+never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200 background ions per
+spectrum, `--background-ions 200`) brings the number down from 29-30 to 22, the remedy is in
+the right direction, and 45 CPU minutes are far from enough of it; `gpu_training/README.md`
+runs both stages on a GPU. Most of the SI-listed impurities missed by every variant are small
+fragments (1.2-3.8 kDa) eluting at 3-15 min.
 
 66 of the original code's 87 reports were heavier than 8 kDa, which nothing in these samples is
 (the largest is n+1 at 7139 Da): singly charged background in the column wash read as charge
 ladders. 47 of its reports pass the extracted-ion check, which shows how weak that check is for
 such ladders. No report of the current code is heavier than 8 kDa.
 
-Found species and their mass errors against the theoretical average masses, current defaults:
+Found species and their mass errors against the theoretical average masses, current defaults
+(comb):
 
 | Run | Species found (error, Da) | Missed |
 | --- | --- | --- |
 | IP-RPLC, conjugate | FLP (+0.06), n-1 (+0.03), n+1 (+0.10), NC (+0.01), PO (-0.21) | - |
-| IP-RPLC, NC | NC (+0.02), PO-NC (-0.01), n-1 (+0.39 against the paper's 4832.56), n-2 (+0.32 against 4503.53) | - |
+| IP-RPLC, NC | NC (+0.02), PO-NC (-0.03), n-1 (-0.03), n-2 (+0.14) | - |
 | IP-HILIC, NC | NC (+0.11), DA-NC (-0.01), PO-NC (+0.02) | n-1, n-2 |
 | IP-HILIC, conjugate | FLP (+0.06) | n-1, DA, PO, n+1, NC |
 
 The paper's tentative n-1 of the NC product (4832.56 Da, "loss of dG") lies 329.3 Da below
 NC: one deoxyadenosine phosphorothioate (4832.98 Da by composition) or one deoxyguanosine
-phosphodiester, not a dG phosphorothioate (345.27 Da). The reported 4832.95 Da matches the
-composition; the other shortmers found (NC minus dG, T or MeC phosphorothioate, 4816.86,
-4842.02 and 4842.97 Da) are within 0.12 Da of theirs. Earlier versions of this section scored the runs against a reference
+phosphodiester, not a dG phosphorothioate (345.27 Da). The figure's mass is that of the third
+isotopologue; the reported average, 4832.95 Da, matches the composition. The other shortmers
+found (NC minus dG, T or MeC phosphorothioate, 4816.86, 4842.02 and 4842.97 Da) are within
+0.12 Da of theirs. Earlier versions of this section scored the runs against a reference
 built from resolved isotope spacing; it sat 0.33-0.35 Da below the theoretical masses and looked
 only inside the strongest TIC bands, so it missed every separated impurity and made correct
 masses look 0.1-0.5 Da high.
