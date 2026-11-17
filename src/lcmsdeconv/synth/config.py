@@ -43,6 +43,8 @@ class SynthConfig:
     electronic_sigma_range: tuple[float, float] = (0.5, 5.0)
     threshold_sigmas_range: tuple[float, float] = (0.0, 3.0)
     background_ions_range: tuple[int, int] = (0, 40)
+    #: per-charge comb evidence channels appended to the four base features (0 = none)
+    evidence_channels: int = 0
     # adducts: by default the load is drawn per ion, as the mean number of each adduct type an
     # ion at the apex charge carries (0..adduct_max_per_ion). Setting adduct_max_lambda instead
     # restores the older per-charge propensity, under which the load grows with charge; it is

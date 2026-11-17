@@ -13,7 +13,8 @@ def load_torch_model(checkpoint: str | Path):
     from .model import build_model
 
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    model = build_model(ckpt.get("model_size", "proof"), z_max=ckpt.get("z_max", 100))
+    model = build_model(ckpt.get("model_size", "proof"), z_max=ckpt.get("z_max", 100),
+                        in_ch=ckpt.get("in_ch", 4))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model, ckpt
@@ -25,7 +26,7 @@ def export_onnx(checkpoint: str | Path, out_path: str | Path, length: int = 3276
     model, ckpt = load_torch_model(checkpoint)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    dummy = torch.randn(1, 4, length)
+    dummy = torch.randn(1, ckpt.get("in_ch", 4), length)
     torch.onnx.export(
         model,
         dummy,
@@ -41,7 +42,8 @@ def export_onnx(checkpoint: str | Path, out_path: str | Path, length: int = 3276
         dynamo=False,
     )
     # write a small sidecar with metadata
-    meta = {"z_max": ckpt.get("z_max", 100), "model_size": ckpt.get("model_size", "proof")}
+    meta = {"z_max": ckpt.get("z_max", 100), "model_size": ckpt.get("model_size", "proof"),
+            "in_ch": ckpt.get("in_ch", 4), "evidence_channels": ckpt.get("evidence_channels", 0)}
     import json
 
     (out_path.with_suffix(".json")).write_text(json.dumps(meta, indent=2))
@@ -53,8 +55,8 @@ def verify_parity(checkpoint: str | Path, onnx_path: str | Path, length: int = 8
     import onnxruntime as ort
     import torch
 
-    model, _ = load_torch_model(checkpoint)
-    x = torch.randn(1, 4, length)
+    model, ckpt = load_torch_model(checkpoint)
+    x = torch.randn(1, ckpt.get("in_ch", 4), length)
     with torch.no_grad():
         ref = model(x)
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])

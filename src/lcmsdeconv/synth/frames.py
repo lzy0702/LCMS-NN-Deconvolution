@@ -108,7 +108,8 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
         observed = np.minimum(observed, sat_level)
 
     noise_sigma = max(esig, 1e-6)
-    feats = featurize(observed, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64))
+    feats = featurize(observed, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64),
+                      evidence_channels=cfg.evidence_channels)
     labels = build_labels(cmat, charges, noise)
     return FrameSample(feats, labels["topk_z"], labels["topk_w"], labels["heat"], b0,
                        scene.truths(), {"resolution": inst.resolution, "kind": inst.kind})
@@ -135,13 +136,6 @@ def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: floa
     return out
 
 
-def _resample_counts(axis, frames_int, grid):
-    """Sum thresholded scans and resample the sum onto the grid, as region summing does."""
-    total = np.sum(frames_int, axis=0) if len(frames_int) > 1 else frames_int[0]
-    keep = total > 0
-    return grid.resample_profile(axis[keep], total[keep]) if keep.any() else np.zeros(grid.size)
-
-
 def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
                            library: AdductLibrary) -> FrameSample:
     """One training sample rendered along the same path inference takes.
@@ -154,8 +148,8 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     evaluated on data it has never seen. Labels come from per-charge renders of the same scans
     through the same resampling, so they stay consistent with the features.
     """
-    from ..chem.instrument import estimate_noise_sigma
     from ..nn.features import featurize
+    from ..nn.grid import spectrum_to_grid
     from .render import render_profile
 
     inst = sample_instrument(cfg, rng)
@@ -199,18 +193,12 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         scan[scan < thr] = 0.0
         frames_int.append(scan)
 
-    # the grid inference would build for this spectrum: restricted to the measured range
-    measured = np.flatnonzero(np.sum(frames_int, axis=0) > 0)
-    if measured.size:
-        g_lo = max(50.0, float(axis[measured[0]]) * 0.995)
-        g_hi = min(cfg.grid_mz_max, float(axis[measured[-1]]) * 1.005)
-    else:
-        g_lo, g_hi = lo, hi
-    if g_hi <= g_lo * 1.01:
-        g_lo, g_hi = lo, hi
-    grid = LogMzGrid(g_lo, g_hi, cfg.grid_step, polarity)
-    observed = _resample_counts(axis, frames_int, grid)
-    noise_sigma = estimate_noise_sigma(observed)
+    # exactly the grid view inference builds for this summed spectrum
+    total = np.sum(frames_int, axis=0)
+    kept = total > 0
+    grid, observed, noise_sigma = spectrum_to_grid(axis[kept], total[kept], polarity,
+                                                   cfg.grid_step, cfg.grid_mz_max, True)
+    g_lo = grid.mz_min
 
     L = cfg.crop_size
     b0 = _choose_crop(scene, grid, cfg, rng) if grid.size > L else 0
@@ -246,9 +234,12 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     # shares of the observed intensity: y * c_z / max(y, sum c), the remainder is non-ion
     signal = cmat.sum(axis=0) if cmat.shape[0] else np.zeros(L)
     noise_part = np.clip(window - signal, 0.0, None)
-    feats = featurize(window, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64))
-    labels = build_labels(cmat, np.array(zs, dtype=int), noise_part)
+    feats = featurize(window, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64),
+                      evidence_channels=cfg.evidence_channels)
+    labels = build_labels(cmat, np.array(zs, dtype=int), noise_part, noise_level=noise_sigma,
+                          observed=window)
     return FrameSample(feats, labels["topk_z"], labels["topk_w"], labels["heat"], b0,
                        scene.truths(), {"resolution": inst.resolution, "kind": inst.kind,
                                         "noise_sigma": noise_sigma, "n_sum": n_sum,
-                                        "gain": gain, "grid_lo": g_lo})
+                                        "gain": gain, "grid_lo": g_lo,
+                                        "raw": (axis[kept], total[kept])})

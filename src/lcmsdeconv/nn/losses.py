@@ -38,18 +38,35 @@ def centernet_focal(apex_logit: torch.Tensor, heat: torch.Tensor, alpha: float =
     return (pos_loss.sum() + neg_loss.sum()) / n_pos
 
 
+def bin_weights(features: torch.Tensor, topk_z: torch.Tensor, topk_w: torch.Tensor,
+                floor: float = 0.02, cap: float = 4.0, background_scale: float = 0.1) -> torch.Tensor:
+    """Per-bin loss weights: log-SNR, scaled by how much of the bin is ion signal.
+
+    The log-SNR feature alone gives a noise bin a weight of 0.3-1, and noise bins outnumber ion
+    bins several times over, so background ended up carrying 70-95 % of the loss and the
+    cheapest way to lower it was to call everything background. Scaling the SNR term by
+    ``background_scale + (1 - background_scale) * ion_share`` keeps background bins in the loss
+    (they still teach what is not an ion) without letting them dominate it.
+    """
+    ch0 = features[:, 0, :]
+    ion_share = (topk_w * (topk_z > 0).to(topk_w.dtype)).sum(dim=2).clamp(0.0, 1.0)
+    scale = background_scale + (1.0 - background_scale) * ion_share
+    return floor + ch0.clamp(0, cap) * scale
+
+
 class ChargeLoss(nn.Module):
-    def __init__(self, heat_weight: float = 0.1, weight_floor: float = 0.02, weight_cap: float = 4.0):
+    def __init__(self, heat_weight: float = 0.1, weight_floor: float = 0.02, weight_cap: float = 4.0,
+                 background_scale: float = 0.1):
         super().__init__()
         self.heat_weight = heat_weight
         self.weight_floor = weight_floor
         self.weight_cap = weight_cap
+        self.background_scale = background_scale
 
     def forward(self, outputs: dict, batch: dict) -> dict:
         logits = outputs["charge_logits"]
-        # bin weights from the log-SNR feature channel 0
-        ch0 = batch["features"][:, 0, :]
-        w = self.weight_floor + ch0.clamp(0, self.weight_cap)
+        w = bin_weights(batch["features"], batch["topk_z"], batch["topk_w"], self.weight_floor,
+                        self.weight_cap, self.background_scale)
         ce = soft_charge_ce(logits, batch["topk_z"], batch["topk_w"], w)
         hl = centernet_focal(outputs["apex_logit"], batch["heat"])
         total = ce + self.heat_weight * hl
