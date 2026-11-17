@@ -17,3 +17,4 @@ results/
 .coverage
 htmlcov/
 src/lcmsdeconv/models/*.pt
+/models/

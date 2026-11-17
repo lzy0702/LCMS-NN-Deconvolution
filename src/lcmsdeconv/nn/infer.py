@@ -8,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
+from .constants import DOWNSAMPLE
 from .features import featurize
 from .grid import LogMzGrid
-from .model import DOWNSAMPLE
 
 
 @dataclass

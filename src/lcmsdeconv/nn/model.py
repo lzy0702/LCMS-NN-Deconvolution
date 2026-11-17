@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-DOWNSAMPLE = 64  # 2 ** n_levels; input length must be a multiple of this
+from .constants import DOWNSAMPLE  # noqa: F401  (re-exported for callers)
 
 
 def _gn(ch: int) -> nn.GroupNorm:
