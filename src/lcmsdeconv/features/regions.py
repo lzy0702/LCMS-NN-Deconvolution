@@ -33,14 +33,23 @@ def find_regions(
     margin_min: float = 0.05,
     min_frames: int = 2,
     integration=None,
-    min_rel_height: float = 0.05,
-    min_rel_area: float = 0.005,
-    min_rel_tic: float = 0.02,
+    min_rel_height: float = 0.002,
+    min_rel_area: float = 0.0005,
+    min_rel_tic: float = 0.001,
+    min_snr: float = 10.0,
 ) -> list[Region]:
     """Split a run into regions around detected chromatographic peaks.
 
     Uses the integrator when an :class:`IntegrationSettings` is supplied (peaks on the TIC or
     UV), otherwise falls back to fixed windows covering the whole run.
+
+    A peak is kept when it stands ``min_snr`` times above the trace's noise. The relative
+    floors (``min_rel_height`` of the tallest peak, ``min_rel_area`` of the total) are kept low
+    on purpose: a second component at a few percent of the main one is an ordinary sample, and a
+    floor tied to the tallest peak silently deletes it before deconvolution has a chance to
+    look. Neighbouring peaks become separate regions split at the valley between them, so each
+    region's summed spectrum is dominated by one elution band; only peaks whose apexes are
+    closer than their widths are deconvolved together.
     """
     frames = run.frames(polarity)
     if not frames:
@@ -54,15 +63,14 @@ def find_regions(
             from ..chrom.integrate import integrate_chromatogram
 
             table = integrate_chromatogram(chrom, integration)
-            peaks = list(table.peaks)
+            peaks = sorted(table.peaks, key=lambda p: p.rt)
             if peaks:
-                # ignore baseline ripple: a region must carry a real share of the signal
                 top = max(p.height for p in peaks)
                 total = sum(p.area for p in peaks)
+                floor = max(min_rel_height * top, min_snr * _trace_noise(chrom.intensity))
                 peaks = [p for p in peaks
-                         if p.height >= min_rel_height * top
-                         and (total <= 0 or p.area >= min_rel_area * total)]
-            windows = _merge_windows([(p.start - margin_min, p.end + margin_min) for p in peaks])
+                         if p.height >= floor and (total <= 0 or p.area >= min_rel_area * total)]
+            windows = _peak_windows(peaks, margin_min)
     if not windows:
         t0, t1 = float(times.min()), float(times.max())
         n = max(1, int(np.ceil((t1 - t0) / max(window_min, 1e-6))))
@@ -87,6 +95,45 @@ def find_regions(
     for i, r in enumerate(regions):
         r.id = i
     return regions
+
+
+def _trace_noise(y: np.ndarray) -> float:
+    """Robust noise level of a chromatogram from its first differences (peaks are sparse)."""
+    y = np.asarray(y, dtype=float)
+    if y.size < 4:
+        return 0.0
+    d = np.diff(y)
+    return float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2.0))
+
+
+def _peak_windows(peaks, margin_min: float) -> list[tuple[float, float]]:
+    """Retention-time windows, one per peak, split at the valley between neighbours.
+
+    Peaks closer than their own widths (apex separation below the larger half-height width)
+    are one co-elution and share a window.
+    """
+    if not peaks:
+        return []
+    groups: list[list] = [[peaks[0]]]
+    for p in peaks[1:]:
+        prev = groups[-1][-1]
+        width = max(prev.width_half, p.width_half, 1e-6)
+        if p.rt - prev.rt < width:
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+    spans = [(min(p.start for p in g), max(p.end for p in g)) for g in groups]
+    out: list[tuple[float, float]] = []
+    for i, (a, b) in enumerate(spans):
+        lo, hi = a - margin_min, b + margin_min
+        if i > 0:
+            prev_end = spans[i - 1][1]
+            lo = max(lo, 0.5 * (prev_end + a)) if prev_end + margin_min > a - margin_min else lo
+        if i + 1 < len(spans):
+            next_start = spans[i + 1][0]
+            hi = min(hi, 0.5 * (b + next_start)) if b + margin_min > next_start - margin_min else hi
+        out.append((lo, hi))
+    return out
 
 
 def _merge_windows(windows: list[tuple[float, float]]) -> list[tuple[float, float]]:

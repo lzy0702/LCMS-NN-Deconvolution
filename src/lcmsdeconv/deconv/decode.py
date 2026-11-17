@@ -91,6 +91,38 @@ def accumulate_mass_histogram(
     return lm_axis, hist, support
 
 
+#: Isotope spacing (13C - 12C), the period of a resolved isotope pattern in the mass domain.
+ISOTOPE_SPACING = 1.0033548
+
+
+def smooth_mass_histogram(lm_axis: np.ndarray, hist: np.ndarray, smooth_bins: int = 5,
+                          smooth_da: float = 1.2, passes: int = 3) -> np.ndarray:
+    """Smooth a log-mass histogram over a fixed width in daltons, not in bins.
+
+    When isotopes are resolved, every isotopologue peak votes for its own mass and the histogram
+    of one species is a comb with a 1.0034 Da period, whose every tooth would otherwise become a
+    candidate. Three passes of a 1.2 Da box approximate a Gaussian of 0.6 Da, which leaves under
+    one percent of that ripple while barely widening envelopes that are several daltons wide
+    anyway (large molecules, unresolved isotopes). The width is never narrower than
+    ``smooth_bins`` histogram bins.
+    """
+    n = hist.size
+    if n < 3:
+        return hist.astype(float)
+    step = float(lm_axis[1] - lm_axis[0])
+    mass = np.exp(lm_axis)
+    hw = np.maximum(smooth_bins // 2, np.round(0.5 * smooth_da / (mass * step))).astype(np.int64)
+    hw = np.minimum(hw, 5000)
+    idx = np.arange(n)
+    lo = np.clip(idx - hw, 0, n)
+    hi = np.clip(idx + hw + 1, 0, n)
+    out = hist.astype(float)
+    for _ in range(max(1, passes)):
+        cs = np.concatenate([[0.0], np.cumsum(out)])
+        out = (cs[hi] - cs[lo]) / np.maximum(hi - lo, 1)
+    return out
+
+
 def pick_candidates(
     lm_axis: np.ndarray,
     hist: np.ndarray,
@@ -100,26 +132,25 @@ def pick_candidates(
     smooth_bins: int = 5,
     merge_ppm: float = 200.0,
     max_candidates: int = 200,
+    smooth_da: float = 1.2,
 ) -> list[Candidate]:
     """Peak-pick the mass histogram into candidate masses."""
     if hist.max() <= 0:
         return []
-    from scipy.ndimage import maximum_filter1d, uniform_filter1d
-
-    sm = uniform_filter1d(hist, size=max(1, smooth_bins))
-    mx = maximum_filter1d(sm, size=max(3, smooth_bins * 2 + 1))
+    sm = smooth_mass_histogram(lm_axis, hist, smooth_bins, smooth_da)
     thr = rel_height * sm.max()
-    peaks = np.nonzero((sm == mx) & (sm > thr))[0]
+    mid = sm[1:-1]
+    peaks = np.nonzero((mid > sm[:-2]) & (mid >= sm[2:]) & (mid > thr))[0] + 1
+    step = float(lm_axis[1] - lm_axis[0])
     cands: list[Candidate] = []
-    win = smooth_bins * 3
     for p in peaks:
-        lo, hi = max(0, p - win), min(len(hist), p + win + 1)
+        # the support window follows the smoothing width so that every vote that built the
+        # peak is counted, plus the bins of the original fixed window
+        hw = max(smooth_bins * 3, int(round(0.75 * smooth_da / (np.exp(lm_axis[p]) * step))))
+        lo, hi = max(0, p - hw), min(len(hist), p + hw + 1)
         support = charge_support.charges_in(lo, hi)
-        if len(support) < min_charge_support and 1 not in support:
-            # allow singly-charged species (small molecules) with strong evidence
-            if not (support == {1} and sm[p] > 0.01 * sm.max()):
-                if len(support) < min_charge_support:
-                    continue
+        if len(support) < min_charge_support and support != {1}:
+            continue
         # sub-bin parabolic interpolation for a mass accurate to a few ppm
         lm = float(lm_axis[p])
         if 0 < p < len(sm) - 1:
@@ -127,7 +158,7 @@ def pick_candidates(
             den = y0 - 2 * y1 + y2
             if den < 0:
                 shift = 0.5 * (y0 - y2) / den
-                lm += float(np.clip(shift, -1.0, 1.0)) * (lm_axis[1] - lm_axis[0])
+                lm += float(np.clip(shift, -1.0, 1.0)) * step
         mass = float(np.exp(lm))
         cands.append(Candidate(mass=mass, score=float(sm[p]), charges=support,
                                intensity=float(hist[lo:hi].sum())))
@@ -183,6 +214,53 @@ def dedupe_adduct_candidates(
     return kept
 
 
+def _mean_shift(x: np.ndarray, w: np.ndarray, start: float, sigma: float,
+                max_iter: int = 25) -> tuple[float, float]:
+    """Gaussian-kernel mean shift on weighted points sorted by ``x``.
+
+    Returns (converged position, kernel-weighted intensity there). Started at a species'
+    predicted position it climbs to the nearest envelope, and with a kernel as wide as the
+    envelope it sees resolved isotopologues as one envelope rather than a comb.
+    """
+    pos = float(start)
+    mass_w = 0.0
+    for _ in range(max_iter):
+        lo = int(np.searchsorted(x, pos - 3.0 * sigma))
+        hi = int(np.searchsorted(x, pos + 3.0 * sigma))
+        if hi <= lo:
+            return pos, 0.0
+        k = w[lo:hi] * np.exp(-0.5 * ((x[lo:hi] - pos) / sigma) ** 2)
+        mass_w = float(k.sum())
+        if mass_w <= 0:
+            return pos, 0.0
+        new = float((k * x[lo:hi]).sum() / mass_w)
+        if abs(new - pos) < 1e-4 * sigma:
+            pos = new
+            break
+        pos = new
+    return pos, mass_w
+
+
+def envelope_geometry(mass: float, compound_class: str) -> tuple[float, float]:
+    """(isotope-envelope sigma in Da, mean-shift offset of the envelope from its average mass).
+
+    The offset is what a mean shift with an envelope-wide kernel converges to on the noise-free
+    pattern, minus the average mass: isotope envelopes are skewed, so the smoothed mode sits a
+    little below the average, and subtracting the same quantity measured on theory removes that
+    bias from observed masses.
+    """
+    from ..chem.classes import class_isotope_pattern
+
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(pat.abundances.sum(), 1e-300)
+    avg = float((a * pat.masses).sum())
+    sig = float(np.sqrt(max((a * (pat.masses - avg) ** 2).sum(), 1e-12)))
+    kern = max(sig, 0.35)
+    order = np.argsort(pat.masses)
+    conv, _w = _mean_shift(pat.masses[order], a[order], avg, kern)
+    return sig, conv - avg
+
+
 def refine_candidate_masses(
     candidates: list[Candidate],
     raw_mz: np.ndarray,
@@ -195,58 +273,85 @@ def refine_candidate_masses(
     snr: float = 3.0,
     drop_unsupported: bool = True,
     compound_class: str = "peptide",
+    resolution: float = 30000.0,
+    link_ppm: float = 60.0,
+    link_da: float = 1.5,
+    min_cluster_weight: float = 0.5,
 ) -> list[Candidate]:
-    """Snap candidate masses onto observed peak apexes and drop unsupported candidates.
+    """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
-    A real neutral mass must produce an observed peak at its predicted m/z for at least
-    ``min_charges`` charge states, and the masses those peaks imply must agree. Candidates
-    generated from the wings of a stronger envelope fail both tests, which removes the shifted
-    duplicates that would otherwise be absorbed by adduct columns and double-count intensity.
+    A real neutral mass must produce an envelope at its predicted m/z for at least
+    ``min_charges`` charge states, and the masses those envelopes imply must agree. For each
+    charge state a Gaussian-kernel mean shift, started at the predicted position with a kernel
+    as wide as the envelope, climbs to the nearest envelope; the mass it lands on is corrected
+    for the envelope's skew so that it estimates the average mass. The per-charge masses are
+    then clustered (single linkage at ``max(link_ppm, link_da)``) and the cluster carrying most
+    of the intensity decides: it needs ``min_charges`` members, at least ``min_cluster_weight``
+    of the intensity and a spread within ``max_spread_ppm``. Charge states in other clusters are
+    envelopes of other species that happened to lie under one charge state's window, and no
+    longer veto an otherwise consistent candidate.
+
+    A mean shift that has to travel further than ``tol_ppm`` belongs to some other envelope and
+    is discarded for that charge state. Candidates carried by the wings of a stronger envelope
+    converge onto that envelope and are removed by the later duplicate merge.
     """
-    from ..chem.adducts import carrier_mass, mass_from_mz
-    from ..chem.classes import class_isotope_pattern
+    from ..chem.adducts import carrier_mass
 
     carrier = carrier_mass(polarity)
     thr = snr * noise_sigma
     out: list[Candidate] = []
+    order = np.argsort(raw_mz)
+    raw_mz = raw_mz[order]
+    raw_int = np.clip(raw_int[order].astype(float), 0, None)
     for c in candidates:
-        pat = class_isotope_pattern(c.mass, compound_class)
-        apex_offset = pat.average_mass - pat.most_abundant_mass
+        env_sigma, offset = envelope_geometry(c.mass, compound_class)
+        inst_sigma_da = c.mass / max(resolution, 1.0) / 2.354820045
+        kern_da = float(np.sqrt(env_sigma ** 2 + inst_sigma_da ** 2))
+        max_move_da = c.mass * tol_ppm * 1e-6
         masses, weights, matched_z = [], [], []
         for z in sorted(c.charges):
-            mz_pred = (c.mass + z * carrier) / z
-            tol = mz_pred * tol_ppm * 1e-6
-            lo = int(np.searchsorted(raw_mz, mz_pred - tol))
-            hi = int(np.searchsorted(raw_mz, mz_pred + tol))
-            if hi - lo < 3:
+            mz_pred = (c.mass + offset + z * carrier) / z
+            pos, kw = _mean_shift(raw_mz, raw_int, mz_pred, kern_da / z)
+            if kw <= 0:
                 continue
-            seg_i = raw_int[lo:hi]
-            k = int(np.argmax(seg_i))
-            if seg_i[k] <= thr:
+            m = z * (pos - carrier) - offset
+            if abs(m - c.mass) > max_move_da:
                 continue
-            gk = lo + k
-            # require a genuine local maximum, not a shoulder of a neighbouring peak
-            if 0 < gk < raw_int.size - 1 and not (raw_int[gk] >= raw_int[gk - 1] and raw_int[gk] >= raw_int[gk + 1]):
+            # the envelope must actually stand above the noise where the shift converged
+            j = int(np.searchsorted(raw_mz, pos))
+            lo, hi = max(0, j - 2), min(raw_int.size, j + 3)
+            if hi <= lo or raw_int[lo:hi].max() <= thr:
                 continue
-            masses.append(mass_from_mz(float(raw_mz[gk]), z, polarity, 0.0) + apex_offset)
-            weights.append(float(seg_i[k]))
+            masses.append(m)
+            weights.append(kw)
             matched_z.append(int(z))
         if len(masses) < min_charges:
             if drop_unsupported and c.charges != {1}:
                 continue
             out.append(c)
             continue
-        masses = np.array(masses)
-        weights = np.array(weights)
-        order = np.argsort(masses)
-        ms, ws = masses[order], weights[order]
-        cw = np.cumsum(ws)
-        med = float(ms[int(np.searchsorted(cw, 0.5 * cw[-1]))])
-        spread = float(np.sqrt(np.average((masses - med) ** 2, weights=weights)) / med * 1e6)
+        ms = np.array(masses)
+        ws = np.array(weights)
+        zs = np.array(matched_z)
+        srt = np.argsort(ms)
+        ms, ws, zs = ms[srt], ws[srt], zs[srt]
+        link = max(c.mass * link_ppm * 1e-6, link_da)
+        breaks = np.nonzero(np.diff(ms) > link)[0] + 1
+        groups = np.split(np.arange(ms.size), breaks)
+        best = max(groups, key=lambda g: ws[g].sum())
+        if best.size < min_charges or ws[best].sum() < min_cluster_weight * ws.sum():
+            if drop_unsupported:
+                continue
+            out.append(c)
+            continue
+        bm, bw = ms[best], ws[best]
+        cw = np.cumsum(bw)
+        med = float(bm[int(np.searchsorted(cw, 0.5 * cw[-1]))])
+        spread = float(np.sqrt(np.average((bm - med) ** 2, weights=bw)) / med * 1e6)
         if drop_unsupported and spread > max_spread_ppm:
             continue
         c.mass = med
-        c.charges = set(matched_z) | c.charges
+        c.charges = set(zs[best].tolist()) | c.charges
         out.append(c)
     return out
 

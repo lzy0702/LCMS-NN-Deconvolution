@@ -19,7 +19,7 @@ from .decode import (
     refine_candidate_masses,
     suppress_harmonics,
 )
-from .refine import refine_frame
+from .refine import drop_shared_evidence, refine_frame
 
 
 @dataclass
@@ -56,7 +56,14 @@ def deconvolve_spectrum(
     predictor: ChargePredictor,
     params: DeconvParams,
     instrument: InstrumentModel | None = None,
+    trace: list | None = None,
 ) -> FrameResult:
+    """Deconvolve one spectrum into neutral-mass components.
+
+    ``trace``, when a list is passed, receives a snapshot of the candidate list after every
+    stage (and every fit decision), so a diagnostic can tell at which stage a known species was
+    lost. Passing nothing leaves the computation unchanged.
+    """
     polarity = spectrum.polarity
     # restrict the grid to the measured m/z range: empty grid costs inference time for nothing
     if spectrum.mz.size:
@@ -84,8 +91,20 @@ def deconvolve_spectrum(
                                       max_total=params.adduct_max_total)
     raw_order = np.argsort(spectrum.mz)
     raw_mz, raw_int = spectrum.mz[raw_order], spectrum.intensity[raw_order]
+    # the class sets the isotope-envelope width used to locate each charge state's envelope;
+    # with automatic selection the class is only known after detection, and the first
+    # candidate class is the best prior
+    gate_class = (params.compound_class if params.compound_class != "auto"
+                  else (params.class_candidates[0] if params.class_candidates else "peptide"))
 
-    def detect(signal: np.ndarray):
+    def snap(stage: str, cands, it: int, **extra) -> None:
+        if trace is not None:
+            trace.append({"pass": it, "stage": stage,
+                          "masses": [float(c.mass) for c in cands],
+                          "charges": [sorted(int(z) for z in c.charges) for c in cands],
+                          "scores": [float(c.score) for c in cands], **extra})
+
+    def detect(signal: np.ndarray, it: int = 0):
         """Charge assignment, mass histogram and candidate cleanup for one spectrum."""
         prediction = predictor.predict_grid(grid, signal, noise_sigma)
         lm_axis, hist, charge_support = accumulate_mass_histogram(
@@ -93,21 +112,33 @@ def deconvolve_spectrum(
             mass_min=params.mass_range[0], mass_max=params.mass_range[1],
             z_min=params.charge_range[0], z_max=params.charge_range[1],
         )
+        if trace is not None:
+            nz = np.flatnonzero(hist)
+            trace.append({"pass": it, "stage": "votes", "log_mass": lm_axis[nz].astype(np.float64),
+                          "weight": hist[nz].astype(np.float64)})
         cands = pick_candidates(lm_axis, hist, charge_support,
                                 min_charge_support=params.min_charge_support,
                                 rel_height=params.min_relative_abundance)
+        snap("picked", cands, it)
         if not cands:
             return []
         cands = refine_candidate_masses(cands, raw_mz, raw_int, polarity,
                                         noise_sigma=noise_sigma, snr=params.snr,
-                                        max_spread_ppm=params.max_mass_spread_ppm)
+                                        max_spread_ppm=params.max_mass_spread_ppm,
+                                        compound_class=gate_class,
+                                        resolution=float(instrument.resolving_power(1000.0)))
+        snap("gated", cands, it)
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
+        snap("harmonics", cands, it)
         cands = dedupe_adduct_candidates(cands, library.deltas())
+        snap("adduct_dedupe", cands, it)
         if cands:
             floor = params.min_relative_abundance * max(c.score for c in cands)
             cands = [c for c in cands if c.score >= floor]
-        return cands[: params.max_components]
+        cands = cands[: params.max_components]
+        snap("detected", cands, it)
+        return cands
 
     candidates = detect(observed)
     if not candidates:
@@ -128,10 +159,11 @@ def deconvolve_spectrum(
     for iteration in range(max(1, params.refine_iterations)):
         if iteration > 0:
             found_masses = [e.mass for e in components]
-            candidates = [c for c in detect(residual)
+            candidates = [c for c in detect(residual, iteration)
                           if all(abs(c.mass - e) > max(e * 1e-4, 0.5) for e in found_masses)]
             candidates = drop_harmonics_of(candidates, found_masses,
                                            suppress_multimers=params.suppress_multimers)
+            snap("not_yet_found", candidates, iteration)
             if not candidates:
                 break
         new, residual_fraction, residual = refine_frame(
@@ -142,10 +174,15 @@ def deconvolve_spectrum(
             max_mass_spread_ppm=params.max_mass_spread_ppm,
             residual=residual, start_id=len(components),
             strongest_explained=max((c.intensity for c in components), default=0.0),
+            trace=trace, trace_pass=iteration,
         )
         if not new:
             break
         components.extend(new)
+    components = drop_shared_evidence(components, library, polarity,
+                                      resolution=float(instrument.resolving_power(1000.0)),
+                                      trace=trace)
+    snap("components", components, -1)
 
     for c in components:
         c.compound_class = cls

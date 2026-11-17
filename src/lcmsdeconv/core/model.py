@@ -151,6 +151,9 @@ class Component:
     compound_class: str = "peptide"
     flags: list[str] = field(default_factory=list)
     id: int = -1
+    #: fitted coefficient of every (charge, adduct-state label) envelope; used to decide whether
+    #: a weaker component's envelopes are already explained by a stronger one
+    columns: dict[tuple[int, str], float] = field(default_factory=dict, repr=False)
 
     @property
     def charge_range(self) -> tuple[int, int]:

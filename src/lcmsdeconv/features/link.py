@@ -16,6 +16,8 @@ def link_species(
     noise_peak_ratio: float = 3.0,
     region_id: int = -1,
     start_id: int = 0,
+    edge_frames: int = 2,
+    edge_fraction: float = 0.1,
 ) -> list[Species]:
     """Group components with consistent mass across consecutive frames."""
     if not frame_results:
@@ -59,8 +61,19 @@ def link_species(
 
     species: list[Species] = []
     sid = start_id
+    strongest = max((sum(c.intensity for c in tr["frames"].values()) for tr in tracks), default=0.0)
+    n_frames = times.size
     for tr in tracks:
         if len(tr["frames"]) < min_frames:
+            continue
+        total = sum(c.intensity for c in tr["frames"].values())
+        apex_frame = max(tr["frames"], key=lambda f: tr["frames"][f].intensity)
+        edge = max(edge_frames, int(round(edge_fraction * n_frames)))
+        if (n_frames > 6 * min_frames and total < strongest
+                and (apex_frame < edge or apex_frame >= n_frames - edge)):
+            # A region is built around elution bands, so a species whose trace peaks on the
+            # region's edge is not eluting here: it is a template soaking up a neighbour's tail
+            # or residue. The region's strongest species is exempt (it defines the region).
             continue
         inten = np.zeros(times.size)
         adducts: dict[str, np.ndarray] = {}

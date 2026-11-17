@@ -92,8 +92,14 @@ def process_run(
     predictor: ChargePredictor | None = None,
     model_path: str | None = None,
     progress=None,
+    trace: list | None = None,
 ) -> ProcessResult:
-    """Process one run end to end."""
+    """Process one run end to end.
+
+    ``trace``, when a list is passed, receives one record per deconvolved region holding the
+    stage-by-stage candidate snapshots of :func:`deconvolve_spectrum` and the species linked
+    from it. :mod:`lcmsdeconv.diagnostics` turns that into a per-species loss attribution.
+    """
     method = method or Method()
     t_start = time.perf_counter()
     result = ProcessResult(run_name=run.name, method=method)
@@ -133,7 +139,11 @@ def process_run(
             if progress:
                 progress(f"deconvolving region {region.id} ({region.start:.2f}-{region.end:.2f} min)")
             summed = region.summed(run)
-            fr = deconvolve_spectrum(summed, predictor, params, instrument)
+            region_trace: list | None = [] if trace is not None else None
+            fr = deconvolve_spectrum(summed, predictor, params, instrument, trace=region_trace)
+            if trace is not None:
+                trace.append({"region": region.id, "start": region.start, "end": region.end,
+                              "polarity": pol, "stages": region_trace, "species": []})
             if not fr.components:
                 continue
             grid = fr.meta.get("grid") or LogMzGrid(50.0, params.grid_mz_max, params.grid_step, pol)
@@ -155,6 +165,8 @@ def process_run(
                               region_id=region.id, start_id=sid)
             sid += len(sp) + 1
             all_species.extend(sp)
+            if trace is not None:
+                trace[-1]["species"] = [{"mass": s.mass, "rt_apex": s.rt_apex} for s in sp]
 
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..chem.adducts import AdductLibrary, AdductState, carrier_mass, mass_from_mz
+from ..chem.adducts import AdductLibrary, AdductState, carrier_mass
 from ..chem.instrument import InstrumentModel
 from ..core.model import Component
 from .decode import Candidate
 from .nnls_solve import weighted_nnls
-from .templates import build_template, template_mz
+from .templates import build_template
 
 
 def _fit_candidate(
@@ -23,8 +23,8 @@ def _fit_candidate(
     z_extend: int = 1,
     min_coef_frac: float = 1e-3,
     mz_range: tuple[float, float] | None = None,
-    max_charges: int = 45,
-    max_columns: int = 300,
+    max_charges: int = 70,
+    max_columns: int = 700,
 ) -> tuple[dict[tuple[int, str], float], list, float]:
     """Weighted NNLS of one candidate (charges x adduct states) against the residual.
 
@@ -114,6 +114,8 @@ def refine_frame(
     residual: np.ndarray | None = None,
     start_id: int = 0,
     strongest_explained: float = 0.0,
+    trace: list | None = None,
+    trace_pass: int = 0,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -137,18 +139,36 @@ def refine_frame(
     remaining = list(candidates)
     cid = start_id
     remaining.sort(key=lambda c: -c.score)
+
+    def decide(cand_mass: float, outcome: str, mass: float | None = None) -> None:
+        if trace is not None:
+            trace.append({"pass": trace_pass, "stage": "fit", "candidate": float(cand_mass),
+                          "outcome": outcome, "mass": None if mass is None else float(mass)})
+
+    resolution = float(instrument.resolving_power(1000.0)) if instrument is not None else 30000.0
     for cand in remaining:
+        cand_mass0 = cand.mass
+        if raw_mz is not None and raw_mz.size and cand.charges and cand.charges != {1}:
+            # fit the species' whole observed envelope, not only the charges that voted for it:
+            # charge states the charge map got wrong are otherwise left in the residual, where
+            # they are later explained as separate, false species
+            cand.charges = observed_charges(cand.mass, cand.charges, raw_mz, raw_int,
+                                            3.0 * noise_sigma, grid.polarity, compound_class,
+                                            resolution, mz_range)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
         )
         if explained <= 0:
+            decide(cand_mass0, "no_fit")
             continue
         charges_present = {z for (z, _lab) in coeffs}
         if len(charges_present) < min_charge_support and charges_present != {1}:
+            decide(cand_mass0, "charge_support")
             continue
         strongest = max(strongest, explained)
         if explained < min_component_frac * strongest:
+            decide(cand_mass0, "abundance_floor")
             continue
         # aggregate by charge and by adduct
         charge_int: dict[int, float] = {}
@@ -162,29 +182,32 @@ def refine_frame(
             compound_class=compound_class, id=cid,
         )
         if raw_mz is not None:
-            _refine_mass(comp, raw_mz, raw_int, grid.polarity)
+            _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
         if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
             # charge states disagree on the mass: a degenerate fit, not a real species
+            decide(cand_mass0, "mass_spread", comp.mass)
             continue
-        # An adduct only ever adds mass, so if the fit is centred on an adducted form the
-        # lighter base form cannot be represented at all. Trying the centre one adduct
-        # lower and keeping it when it explains more recovers the true neutral mass.
+        full = None
         if len(states_full) > 1 and explained >= adduct_refit_frac * strongest:
-            cand, coeffs, used, explained = _recenter_base(
-                cand, coeffs, used, explained, residual, weights, grid, instrument,
-                compound_class, states_full, library, mz_range,
-                raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
+            full = _fit_candidate(cand, residual, weights, grid, instrument, compound_class,
+                                  states_full, mz_range=mz_range)
+            # An adduct only ever adds mass, so if the fit is centred on an adducted form the
+            # lighter base form cannot be represented at all. Trying the centre one adduct
+            # lower, and keeping it when it explains more with the same adduct model, recovers
+            # the true neutral mass.
+            moved, full2 = _recenter_base(
+                cand, full, residual, weights, grid, instrument, compound_class, states_full,
+                library, mz_range, raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
+                resolution=resolution,
             )
-            if abs(cand.mass - comp.mass) > 1e-6:
-                # re-centred: measure the mass again from the raw apexes at the new centre
+            if moved is not cand:
+                cand, full = moved, full2
+                # re-centred: measure the mass again from the raw envelopes at the new centre
                 comp.mass = cand.mass
                 if raw_mz is not None:
-                    _refine_mass(comp, raw_mz, raw_int, grid.polarity)
-        if len(states_full) > 1 and explained >= adduct_refit_frac * strongest:
-            coeffs_full, used_full, explained_full = _fit_candidate(
-                cand, residual, weights, grid, instrument, compound_class, states_full,
-                mz_range=mz_range,
-            )
+                    _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
+        if full is not None:
+            coeffs_full, used_full, explained_full = full
             if explained_full >= 0.8 * explained:
                 coeffs, used, explained = coeffs_full, used_full, explained_full
                 adduct_int = {}
@@ -193,7 +216,9 @@ def refine_frame(
                     charge_int[z] = charge_int.get(z, 0.0) + v
                     adduct_int[lab or "base"] = adduct_int.get(lab or "base", 0.0) + v
                 comp.charges, comp.adducts, comp.intensity = charge_int, adduct_int, explained
+        comp.columns = {k: float(v) for k, v in coeffs.items()}
         components.append(comp)
+        decide(cand_mass0, "accepted", comp.mass)
         cid += 1
         # subtract fitted envelope
         for tpl, coef in used:
@@ -206,111 +231,142 @@ def refine_frame(
     residual_fraction = float(residual[sig_bins].sum() / denom) if sig_bins.any() else 0.0
     for c in components:
         c.flags = list(c.flags)
+    if trace is not None:
+        trace.append({"pass": trace_pass, "stage": "pre_merge",
+                      "masses": [float(c.mass) for c in components]})
     _merge_same_mass(components)
     _merge_adduct_components(components, library)
+    if trace is not None:
+        trace.append({"pass": trace_pass, "stage": "post_merge",
+                      "masses": [float(c.mass) for c in components]})
     _flag_harmonics(components)
     _flag_adduct_ambiguity(components, library)
     return components, residual_fraction, residual
 
 
-def _recenter_base(cand, coeffs, used, explained, residual, weights, grid, instrument,
-                   compound_class, states_full, library, mz_range, raw_mz=None, raw_int=None,
-                   noise_sigma: float = 0.0, max_steps: int = 3):
-    """Walk the candidate centre down the adduct ladder while observed peaks support it.
+def _recenter_base(cand, full, residual, weights, grid, instrument, compound_class,
+                   states_full, library, mz_range, raw_mz=None, raw_int=None,
+                   noise_sigma: float = 0.0, resolution: float = 30000.0, max_steps: int = 3,
+                   min_ratio: float = 0.5, min_gain: float = 0.01):
+    """Walk the candidate centre down the adduct ladder while the spectrum supports it.
 
-    Rather than refitting at every trial mass, this asks the cheap question directly: are there
-    observed peaks where the lighter form's charge states would be? Adducts only add mass, so a
-    centre that is one adduct too heavy leaves the base form unrepresentable, and the base form
-    is exactly what those peaks would show.
+    Returns ``(candidate, full_fit)``: the original pair when nothing better is found.
+
+    A step down by an adduct mass ``d`` is taken only when the lighter form's envelopes are
+    present on most of the same charge states *and* carry at least ``min_ratio`` of the current
+    form's height. Under any realistic adduct load the base form is the strongest member of its
+    ladder, so a much weaker envelope one adduct lower is a different species (an impurity
+    22 Da light, the next oligomer), not this species' base; walking onto it is what used to
+    report a main component two sodium ions too light. The walk is then confirmed by refitting
+    with the same adduct model at both centres and keeping the lighter one only if it explains
+    more of the spectrum.
     """
-    if raw_mz is None or raw_mz.size == 0 or not cand.charges:
-        return cand, coeffs, used, explained
+    if raw_mz is None or raw_mz.size == 0 or not cand.charges or full is None:
+        return cand, full
     deltas = sorted({d for d in library.deltas().values() if d > 0})
     if not deltas:
-        return cand, coeffs, used, explained
+        return cand, full
+    from .decode import envelope_geometry
+
     carrier = carrier_mass(grid.polarity)
     charges = sorted(cand.charges)[:12]
     thr = 3.0 * noise_sigma
 
-    def support(mass: float) -> int:
-        hits = 0
+    def heights(mass: float) -> tuple[int, float]:
+        env_sigma, offset = envelope_geometry(mass, compound_class)
+        hits, total = 0, 0.0
         for z in charges:
-            mz_pred = (mass + z * carrier) / z
-            tol = mz_pred * 3e-4
-            lo = int(np.searchsorted(raw_mz, mz_pred - tol))
-            hi = int(np.searchsorted(raw_mz, mz_pred + tol))
-            if hi - lo < 3:
+            mz_pred = (mass + offset + z * carrier) / z
+            half = max(0.5 * env_sigma / z, mz_pred / max(resolution, 1.0))
+            lo = int(np.searchsorted(raw_mz, mz_pred - half))
+            hi = int(np.searchsorted(raw_mz, mz_pred + half))
+            if hi - lo < 1:
                 continue
-            if raw_int[lo:hi].max() > thr:
+            h = float(raw_int[lo:hi].max())
+            if h > thr:
                 hits += 1
-        return hits
+                total += h
+        return hits, total
 
-    start_hits = support(cand.mass)
-    if start_hits < 2:
-        return cand, coeffs, used, explained
-    # Walk to the lightest mass in the adduct ladder that the spectrum still supports. Requiring
-    # *more* support would stop at the most abundant adducted form; requiring support to hold up
-    # reaches the base form, which is the one that carries a chemical identity.
+    start_hits, start_height = heights(cand.mass)
+    if start_hits < 2 or start_height <= 0:
+        return cand, full
     floor = max(2, int(round(0.6 * start_hits)))
     mass = cand.mass
+    current = start_height
     moved = False
     for _ in range(max_steps):
-        best_d, best_hits = None, -1
+        best_d, best_h = None, -1.0
         for d in deltas:
             if mass - d <= 0:
                 continue
-            h = support(mass - d)
-            if h >= floor and h > best_hits:
-                best_d, best_hits = d, h
+            hits, h = heights(mass - d)
+            if hits >= floor and h >= min_ratio * current and h > best_h:
+                best_d, best_h = d, h
         if best_d is None:
             break
         mass -= best_d
+        current = best_h
         moved = True
     if not moved:
-        return cand, coeffs, used, explained
+        return cand, full
     trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
                       intensity=cand.intensity)
-    c2, u2, e2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
-                                states_full, mz_range=mz_range)
-    if e2 >= explained:
-        return trial, c2, u2, e2
-    return cand, coeffs, used, explained
+    full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
+                           states_full, mz_range=mz_range)
+    if full2[2] >= full[2] * (1.0 + min_gain):
+        return trial, full2
+    return cand, full
 
 
-def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 200.0):
-    """Refine the mass from raw peak apexes.
+def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 200.0,
+                 resolution: float = 30000.0, link_ppm: float = 60.0, link_da: float = 1.5):
+    """Measure the mass on the raw spectrum, one charge state at a time.
 
-    The observed apex of an envelope is the most abundant isotopologue, which for large masses
-    sits well below the average mass (about -0.5 Da at 17 kDa), so the apex-derived mass is
-    corrected by the class pattern's average-minus-apex offset.
+    Each fitted charge state's envelope is located by a Gaussian-kernel mean shift as wide as
+    the envelope (see :func:`lcmsdeconv.deconv.decode.refine_candidate_masses`), which sees
+    resolved isotopologues as one envelope instead of hopping between them, and the envelope's
+    skew is corrected so the result estimates the average mass. The per-charge masses are
+    clustered and the cluster holding most of the fitted intensity gives the mass, so one charge
+    state that overlaps another species' envelope does not drag the result.
+    ``mass_spread_ppm`` is the weighted spread within that cluster.
     """
-    from ..chem.classes import class_isotope_pattern
+    from .decode import _mean_shift, envelope_geometry
 
-    pat = class_isotope_pattern(comp.mass, comp.compound_class)
-    apex_offset = pat.average_mass - pat.most_abundant_mass
-    masses = []
-    wts = []
+    order = np.argsort(raw_mz)
+    raw_mz = np.asarray(raw_mz)[order]
+    raw_int = np.clip(np.asarray(raw_int, dtype=float)[order], 0, None)
+    env_sigma, offset = envelope_geometry(comp.mass, comp.compound_class)
+    inst_sigma_da = comp.mass / max(resolution, 1.0) / 2.354820045
+    kern_da = float(np.sqrt(env_sigma ** 2 + inst_sigma_da ** 2))
+    carrier = carrier_mass(polarity)
+    masses, wts = [], []
     for z, inten in comp.charges.items():
-        mz_pred = template_mz(comp.mass, z, polarity, 0.0)
-        lo = np.searchsorted(raw_mz, mz_pred * (1 - tol_ppm * 1e-6))
-        hi = np.searchsorted(raw_mz, mz_pred * (1 + tol_ppm * 1e-6))
-        if hi <= lo:
+        if inten <= 0:
             continue
-        seg_mz = raw_mz[lo:hi]
-        seg_i = raw_int[lo:hi]
-        if seg_i.max() <= 0:
+        mz_pred = (comp.mass + offset + z * carrier) / z
+        pos, kw = _mean_shift(raw_mz, raw_int, mz_pred, kern_da / z)
+        if kw <= 0:
             continue
-        apex = seg_mz[int(np.argmax(seg_i))]
-        m = mass_from_mz(apex, z, polarity, 0.0) + apex_offset
+        m = z * (pos - carrier) - offset
+        if abs(m - comp.mass) > comp.mass * tol_ppm * 1e-6:
+            continue
         masses.append(m)
         wts.append(inten)
-    if masses:
-        masses = np.array(masses)
-        wts = np.array(wts)
-        mean = float(np.average(masses, weights=wts))
-        comp.mass = mean
-        if masses.size > 1:
-            comp.mass_spread_ppm = float(np.sqrt(np.average((masses - mean) ** 2, weights=wts)) / mean * 1e6)
+    if not masses:
+        return
+    ms = np.array(masses)
+    ws = np.array(wts)
+    srt = np.argsort(ms)
+    ms, ws = ms[srt], ws[srt]
+    link = max(comp.mass * link_ppm * 1e-6, link_da)
+    groups = np.split(np.arange(ms.size), np.nonzero(np.diff(ms) > link)[0] + 1)
+    best = max(groups, key=lambda g: ws[g].sum())
+    bm, bw = ms[best], ws[best]
+    mean = float(np.average(bm, weights=bw))
+    comp.mass = mean
+    comp.mass_spread_ppm = (float(np.sqrt(np.average((bm - mean) ** 2, weights=bw)) / mean * 1e6)
+                            if bm.size > 1 else 0.0)
 
 
 def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da: float = 0.4):
@@ -403,3 +459,101 @@ def _flag_harmonics(components: list[Component], tol_ppm: float = 100.0):
                     if c.intensity < 0.2 * bigger.intensity:
                         c.flags.append("possible_harmonic")
                     break
+
+
+def drop_shared_evidence(components: list[Component], library: AdductLibrary, polarity: int,
+                         resolution: float = 30000.0, shared_fraction: float = 0.8,
+                         trace: list | None = None) -> list[Component]:
+    """Remove components whose envelopes a stronger component already explains.
+
+    A charge misassignment reads a strong envelope as some other mass: charge 40 read as 39,
+    or a whole series read at a fraction of its charge. The resulting "species" has no ions of
+    its own; its envelopes sit on the stronger species' envelopes (any of its adduct forms
+    included), where a stronger fitted column already accounts for them. A genuine weak species
+    sits between them. When at least ``shared_fraction`` of a component's fitted intensity lies
+    within two envelope sigmas of a stronger column of a stronger component, the component is
+    dropped as an artefact. A real dimer survives, since its odd charge states are its own.
+    """
+    from .decode import envelope_geometry
+
+    if len(components) < 2:
+        return components
+    carrier = carrier_mass(polarity)
+    masses = {s.label or "base": s.mass for s in library.states()}
+    masses.setdefault("base", 0.0)
+    order = sorted(components, key=lambda c: -c.intensity)
+    kept: list[Component] = []
+    kept_cols: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []  # (mz, half-width, coef)
+    for c in order:
+        cols = [(z, lab, v) for (z, lab), v in c.columns.items() if v > 0]
+        if kept and cols:
+            total = sum(v for _z, _lab, v in cols)
+            shared = 0.0
+            for z, lab, v in cols:
+                mz = (c.mass + masses.get(lab or "base", 0.0) + z * carrier) / z
+                for kmz, khw, kcoef in kept_cols:
+                    hit = (np.abs(kmz - mz) <= khw) & (kcoef >= v)
+                    if hit.any():
+                        shared += v
+                        break
+            if total > 0 and shared >= shared_fraction * total:
+                if trace is not None:
+                    trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
+                                  "outcome": "shared_evidence", "mass": float(c.mass)})
+                continue
+        kept.append(c)
+        if cols:
+            env_sigma, _off = envelope_geometry(c.mass, c.compound_class)
+            zs = np.array([z for z, _lab, _v in cols], dtype=float)
+            mz = np.array([(c.mass + masses.get(lab or "base", 0.0) + z * carrier) / z
+                           for z, lab, _v in cols])
+            # two envelope sigmas hold 95 % of an isotope envelope's ions
+            hw = np.maximum(2.0 * env_sigma / zs, mz / max(resolution, 1.0))
+            kept_cols.append((mz, hw, np.array([v for _z, _lab, v in cols])))
+    return kept
+
+
+def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray, thr: float,
+                     polarity: int, compound_class: str, resolution: float,
+                     mz_range: tuple[float, float] | None = None, max_gap: int = 1,
+                     z_cap: int = 150) -> set[int]:
+    """Charges of a species' envelope that the spectrum shows, grown outward from ``charges``.
+
+    Starting from the charge band that voted for the species, each next charge outward is kept
+    while an envelope is observed (above ``thr``) where that charge would put the species,
+    tolerating ``max_gap`` missing states, and stopping at the edge of the measured m/z range.
+    """
+    from .decode import envelope_geometry
+
+    charges = {int(z) for z in charges if z >= 1}
+    if not charges:
+        return charges
+    env_sigma, offset = envelope_geometry(mass, compound_class)
+    carrier = carrier_mass(polarity)
+
+    def present(z: int) -> bool | None:
+        mz = (mass + offset + z * carrier) / z
+        if mz_range is not None and not (mz_range[0] <= mz <= mz_range[1]):
+            return None
+        half = max(0.5 * env_sigma / z, mz / max(resolution, 1.0))
+        lo = int(np.searchsorted(raw_mz, mz - half))
+        hi = int(np.searchsorted(raw_mz, mz + half))
+        return bool(hi > lo and raw_int[lo:hi].max() > thr)
+
+    out = set(charges)
+    for direction in (-1, 1):
+        z = (min(charges) - 1) if direction < 0 else (max(charges) + 1)
+        gap = 0
+        while 1 <= z <= z_cap:
+            p = present(z)
+            if p is None:
+                break
+            if p:
+                out.add(z)
+                gap = 0
+            else:
+                gap += 1
+                if gap > max_gap:
+                    break
+            z += direction
+    return out
