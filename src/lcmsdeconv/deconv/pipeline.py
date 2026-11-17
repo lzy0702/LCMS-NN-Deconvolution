@@ -7,9 +7,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..chem.adducts import AdductLibrary
-from ..chem.instrument import InstrumentModel, estimate_noise_sigma
+from ..chem.instrument import InstrumentModel
 from ..core.model import Component, FrameResult, Spectrum
-from ..nn.grid import LogMzGrid
+from ..nn.grid import spectrum_to_grid
 from ..nn.infer import ChargePredictor
 from .decode import (
     accumulate_mass_histogram,
@@ -43,6 +43,7 @@ class DeconvParams:
     adduct_exclude: tuple[str, ...] = ()
     adduct_max_total: int = 3
     adduct_max_per_type: int = 2
+    adduct_require_evidence: bool = True
 
 
 def choose_class_auto(mass: float, candidates) -> str:
@@ -65,23 +66,13 @@ def deconvolve_spectrum(
     lost. Passing nothing leaves the computation unchanged.
     """
     polarity = spectrum.polarity
-    # restrict the grid to the measured m/z range: empty grid costs inference time for nothing
-    if spectrum.mz.size:
-        lo = max(50.0, float(spectrum.mz.min()) * 0.995)
-        hi = min(params.grid_mz_max, float(spectrum.mz.max()) * 1.005)
-    else:
-        lo, hi = 50.0, params.grid_mz_max
-    if hi <= lo * 1.01:
-        lo, hi = 50.0, params.grid_mz_max
-    grid = LogMzGrid(lo, hi, params.grid_step, polarity)
     if instrument is None:
         instrument = InstrumentModel("tof", 30000.0)
-
-    if spectrum.is_profile is False:
-        observed = grid.render_centroids(spectrum.mz, spectrum.intensity, instrument)
-    else:
-        observed = grid.resample_profile(spectrum.mz, spectrum.intensity)
-    noise_sigma = estimate_noise_sigma(observed)
+    # the grid is restricted to the measured m/z range (empty grid costs inference time for
+    # nothing); training frames go through this same function
+    grid, observed, noise_sigma = spectrum_to_grid(
+        spectrum.mz, spectrum.intensity, polarity, params.grid_step, params.grid_mz_max,
+        spectrum.is_profile, instrument)
     if observed.max() <= 0:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0, meta={"grid": grid})
 
@@ -126,7 +117,9 @@ def deconvolve_spectrum(
                                         noise_sigma=noise_sigma, snr=params.snr,
                                         max_spread_ppm=params.max_mass_spread_ppm,
                                         compound_class=gate_class,
-                                        resolution=float(instrument.resolving_power(1000.0)))
+                                        resolution=float(instrument.resolving_power(1000.0)),
+                                        instrument=instrument,
+                                        profile=spectrum.is_profile is not False)
         snap("gated", cands, it)
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
@@ -143,6 +136,19 @@ def deconvolve_spectrum(
     candidates = detect(observed)
     if not candidates:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0, meta={"grid": grid})
+
+    if params.adduct_require_evidence and library.adducts:
+        names = evidenced_adducts(candidates, library, raw_mz, raw_int, polarity, noise_sigma,
+                                  params, gate_class, instrument, spectrum.is_profile is not False)
+        if trace is not None:
+            trace.append({"pass": 0, "stage": "adducts", "kept": sorted(names),
+                          "library": library.names()})
+        library = AdductLibrary.from_mode(params.adduct_mode, polarity,
+                                          include=params.adduct_include,
+                                          exclude=tuple(params.adduct_exclude)
+                                          + tuple(n for n in library.names() if n not in names),
+                                          max_per_type=params.adduct_max_per_type,
+                                          max_total=params.adduct_max_total)
 
     cls = params.compound_class
     auto_selected = cls == "auto"
@@ -239,3 +245,36 @@ def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, cl
         if score > best_score:
             best_score, best_cls = score, cls
     return best_cls
+
+
+def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polarity: int,
+                      noise_sigma: float, params: DeconvParams, compound_class: str,
+                      instrument, profile: bool, n_species: int = 2) -> set[str]:
+    """Adduct types whose envelopes the spectrum actually shows next to its strongest species.
+
+    An adduct library describes what a mobile phase *could* contribute. Fitting every
+    combination of five types (about fifty adduct columns per charge state for ion-pairing
+    methods) lets neighbouring species and adduct columns trade intensity, so abundances come
+    out wrong even when every mass is right. A type is kept when, for one of the
+    ``n_species`` strongest candidates, a candidate at M + delta with the same charges passes
+    :func:`refine_candidate_masses` - at least two charge states agreeing on the mass, with the
+    isotope comb checked where it is resolved.
+    """
+    from .decode import Candidate
+
+    kept: set[str] = set()
+    top = sorted(candidates, key=lambda c: -c.score)[:n_species]
+    for adduct in library.adducts:
+        for c in top:
+            trial = Candidate(mass=c.mass + adduct.mass, score=c.score, charges=set(c.charges))
+            ok = refine_candidate_masses([trial], raw_mz, raw_int, polarity,
+                                         noise_sigma=noise_sigma, snr=params.snr,
+                                         max_spread_ppm=params.max_mass_spread_ppm,
+                                         compound_class=compound_class,
+                                         resolution=float(instrument.resolving_power(1000.0)),
+                                         instrument=instrument, profile=profile,
+                                         tol_ppm=50.0)
+            if ok and abs(ok[0].mass - (c.mass + adduct.mass)) <= max(2e-5 * c.mass, 0.3):
+                kept.add(adduct.name)
+                break
+    return kept

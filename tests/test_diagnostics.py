@@ -161,7 +161,7 @@ def test_trace_records_every_stage(traced_run):
     assert trace and trace[0]["stages"]
     stages = {s["stage"] for s in trace[0]["stages"]}
     assert {"votes", "picked", "gated", "detected", "fit", "components"} <= stages
-    assert set(stages) - {"not_yet_found", "pre_merge"} <= set(STAGES)
+    assert set(stages) - {"not_yet_found", "pre_merge", "adducts"} <= set(STAGES)
 
 
 def test_loss_attribution_names_a_stage_for_every_miss(traced_run):

@@ -24,13 +24,19 @@ class CombPredictor:
     """Charge assignment by neighbour-spacing coincidence, with no neural network."""
 
     def __init__(self, z_max: int = 60, neighbours: tuple[int, ...] = (1, 2, 3),
-                 window: int = 65536, min_snr: float = 3.0):
+                 window: int = 65536, min_snr: float = 3.0, instrument=None,
+                 isotope_resolution_factor: float = 2.5, isotope_agreement: float = 0.6):
         self.z_max = z_max
         self.neighbours = neighbours
         self.window = window
         self.min_snr = min_snr
         self.backend = "comb"
         self.model_path = None
+        #: with an instrument model, charges are read from resolved isotope spacing wherever the
+        #: instrument resolves 1.00336/z at that m/z (see :meth:`isotope_charges`)
+        self.instrument = instrument
+        self.isotope_resolution_factor = isotope_resolution_factor
+        self.isotope_agreement = isotope_agreement
 
     def predict_grid(self, grid: LogMzGrid, intensity: np.ndarray, noise_sigma: float) -> ChargePrediction:
         B = intensity.size
@@ -80,6 +86,17 @@ class CombPredictor:
         top2_z[~active] = 0
         top2_p[~active] = 0.0
 
+        if self.instrument is not None:
+            zi, conf = self.isotope_charges(grid, s, active)
+            use = zi > 0
+            # resolved isotope spacing is direct evidence of the charge; it overrides the ladder
+            # comb, whose evidence is weakest exactly where isotopes are easiest to resolve (low
+            # charge states, few neighbours in the window)
+            top2_z[use] = np.where(top1_z[use] != zi[use], top1_z[use], top2_z[use])
+            top2_p[use] = np.where(top1_z[use] != zi[use], 1.0 - conf[use], top2_p[use])
+            top1_z[use] = zi[use]
+            top1_p[use] = conf[use]
+
         # apex map: local maxima of the measured signal
         mid = intensity[1:-1]
         ismax = (mid >= intensity[:-2]) & (mid > intensity[2:]) & (mid > self.min_snr * ns)
@@ -87,7 +104,64 @@ class CombPredictor:
         return ChargePrediction(top1_z, top1_p, top2_z, top2_p, apex, noise_sigma)
 
 
-def make_predictor(model_path: str | None, providers=None, z_max: int = 60):
+    def isotope_charges(self, grid: LogMzGrid, s: np.ndarray, active: np.ndarray):
+        """Charge per bin from resolved isotope spacing: (charge or 0, confidence).
+
+        For each charge z whose isotope spacing 1.00336/z the instrument resolves at a bin's m/z,
+        the evidence is the bin's log-SNR times the mean log-SNR one spacing either side. A z
+        envelope also scores at the divisors of z (two or more isotopes away) but not at 2z,
+        whose half-spacing positions fall between its peaks; the largest charge scoring within
+        ``isotope_agreement`` of the best is therefore the answer.
+        """
+        B = s.size
+        zout = np.zeros(B, dtype=np.int16)
+        conf = np.zeros(B, dtype=np.float32)
+        idx = np.nonzero(active)[0]
+        if idx.size == 0:
+            return zout, conf
+        mz = grid.bin_to_mz(idx)
+        fwhm = mz / np.asarray(self.instrument.resolving_power(mz), dtype=float)
+        off = np.abs(mz - grid.carrier)
+        # a peak is never narrower on the grid than about two bins, whatever the instrument
+        width_bins = np.maximum(np.log1p(fwhm / off) / grid.step, 2.0)
+
+        def at(x):  # linear interpolation of s at fractional bin positions
+            x = np.clip(x, 0, B - 1.000001)
+            i0 = np.floor(x).astype(np.int64)
+            f = x - i0
+            return s[i0] * (1.0 - f) + s[np.minimum(i0 + 1, B - 1)] * f
+
+        best = np.zeros(idx.size)
+        ev_all = []
+        for z in range(1, self.z_max + 1):
+            spacing = 1.0033548 / z
+            n = np.log1p(spacing / off) / grid.step  # spacing in (fractional) bins
+            resolved = n >= self.isotope_resolution_factor * width_bins
+            if not resolved.any():
+                break
+            # neighbours read at their exact fractional position: a hypothesis whose spacing is
+            # off by a bin or two lands on the flank of the next isotope, not on its top
+            up = at(idx + n)
+            dn = at(idx - n)
+            # the first and last isotopologue have a neighbour on one side only
+            near = 0.75 * np.maximum(up, dn) + 0.25 * np.minimum(up, dn)
+            ev = np.where(resolved, s[idx] * near, 0.0)
+            ev_all.append((z, ev))
+            best = np.maximum(best, ev)
+        if not ev_all:
+            return zout, conf
+        chosen = np.zeros(idx.size, dtype=np.int16)
+        for z, ev in ev_all:  # ascending z: the last one that agrees wins
+            ok = (ev >= self.isotope_agreement * best) & (best > 0)
+            chosen[ok] = z
+        strong = best >= 0.25 * s[idx] ** 2  # neighbours carry a real share of the bin's signal
+        chosen[~strong] = 0
+        zout[idx] = chosen
+        conf[idx] = np.where(chosen > 0, 0.9, 0.0)
+        return zout, conf
+
+
+def make_predictor(model_path: str | None, providers=None, z_max: int = 60, instrument=None):
     """Return a network predictor, or the deterministic comb predictor when asked for it.
 
     ``model_path`` of ``"comb"`` or ``"none"`` selects the deterministic estimator; ``None``
@@ -96,7 +170,7 @@ def make_predictor(model_path: str | None, providers=None, z_max: int = 60):
     from ..nn.infer import ChargePredictor, bundled_model_path
 
     if model_path in ("comb", "none", "classical"):
-        return CombPredictor(z_max=z_max)
+        return CombPredictor(z_max=z_max, instrument=instrument)
     if model_path is None and bundled_model_path() is None:
-        return CombPredictor(z_max=z_max)
+        return CombPredictor(z_max=z_max, instrument=instrument)
     return ChargePredictor(model_path, providers=providers)

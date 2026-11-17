@@ -18,6 +18,7 @@ def link_species(
     start_id: int = 0,
     edge_frames: int = 2,
     edge_fraction: float = 0.1,
+    flat_test: bool = True,
 ) -> list[Species]:
     """Group components with consistent mass across consecutive frames."""
     if not frame_results:
@@ -84,8 +85,7 @@ def link_species(
                 adducts.setdefault(a, np.zeros(times.size))[fi] = v
             for z, v in comp.charges.items():
                 charges[z] = charges.get(z, 0.0) + v
-        nz = inten[inten > 0]
-        if nz.size and np.median(nz) > 0 and inten.max() / np.median(nz) < noise_peak_ratio and inten.size > 6 * min_frames:
+        if flat_test and inten.size > 6 * min_frames and _is_flat(inten, noise_peak_ratio):
             # flat profile across the whole window: chemical background, not a chromatographic peak
             continue
         spread = tr["spread"] if np.isfinite(tr["spread"]) else 0.0
@@ -113,4 +113,69 @@ def merge_species_across_polarity(species: list[Species], tolerance_ppm: float =
             out.append(s)
         else:
             hit.flags.append(f"also seen in {'positive' if s.polarity > 0 else 'negative'} mode")
+    return out
+
+
+def _is_flat(trace: np.ndarray, ratio: float, edge_frames: int = 2) -> bool:
+    """True when a trace stays within ``ratio`` of its maximum at *both* ends of its window.
+
+    Regions are built around elution bands, so a real peak's trace falls well below its maximum
+    at one end of the window at least, while chemical background stays up at both. Comparing
+    the maximum with the median instead calls a broad real peak that fills its region flat
+    (its median is a third of its maximum), and that rule dropped the main species of real
+    oligonucleotide runs.
+    """
+    peak = float(trace.max()) if trace.size else 0.0
+    if peak <= 0:
+        return True
+    k = max(1, min(edge_frames, trace.size // 4))
+    low_end = min(float(trace[:k].mean()), float(trace[-k:].mean()))
+    return low_end * ratio >= peak
+
+
+def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
+                           tolerance_da: float = 0.5, max_gap_min: float = 0.2) -> list[Species]:
+    """Merge one species that was linked separately in neighbouring regions.
+
+    A broad elution band can be split into several regions; the same species is then found in
+    each and would be reported several times at nearly the same retention time. Species of the
+    same polarity and mass whose traces touch (within ``max_gap_min``) are merged into the
+    strongest, concatenating their traces.
+    """
+    out: list[Species] = []
+    for s in sorted(species, key=lambda x: -x.total_intensity):
+        hit = None
+        for k in out:
+            if k.polarity != s.polarity or not s.time.size or not k.time.size:
+                continue
+            if abs(k.mass - s.mass) > max(k.mass * tolerance_ppm * 1e-6, tolerance_da):
+                continue
+            gap = max(float(s.time.min()) - float(k.time.max()), float(k.time.min()) - float(s.time.max()))
+            if gap <= max_gap_min:
+                hit = k
+                break
+        if hit is None:
+            out.append(s)
+            continue
+        times = np.union1d(hit.time, s.time)
+
+        def on(t_src, y_src, t_dst=times):
+            y = np.zeros(t_dst.size)
+            idx = np.searchsorted(t_dst, t_src)
+            np.add.at(y, idx, y_src)
+            return y
+
+        merged_adducts = {}
+        for name in set(hit.adduct_intensity) | set(s.adduct_intensity):
+            y = np.zeros(times.size)
+            if name in hit.adduct_intensity:
+                y += on(hit.time, hit.adduct_intensity[name])
+            if name in s.adduct_intensity:
+                y += on(s.time, s.adduct_intensity[name])
+            merged_adducts[name] = y
+        hit.intensity = on(hit.time, hit.intensity) + on(s.time, s.intensity)
+        hit.adduct_intensity = merged_adducts
+        hit.time = times
+        for z, v in s.charges.items():
+            hit.charges[z] = hit.charges.get(z, 0.0) + v
     return out
