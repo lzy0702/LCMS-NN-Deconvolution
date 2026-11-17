@@ -65,6 +65,36 @@ Precision in this regime is far below the time-of-flight presets: of 90 false sp
 adduct-shifted copies and 70 unexplained. `single_charge: true` changes nothing here: the
 generator gives every species several charge states, unlike ion-pairing HILIC on the real runs.
 
+### Charge network (LadderNet)
+
+LadderNet (`docs/training.md`), `proof` size (9 500 parameters), trained on two CPU threads for
+45 minutes: 240 synthetic frames over 12 epochs, with singly charged ions either ignored by the
+loss (`--singly-charged ignore`) or absent from the spectra (`drop`). On held-out frames it
+assigns the right charge to 0.92 (ignore) and 0.90 (drop) of the ion intensity on bins of charge
+two or more, against 0.57 and 0.54 for the comb estimator on the same frames (0.84 against 0.25
+at z = 2-5). The same benchmark as above, with the network in place of the comb
+(`--predictor model.onnx`):
+
+| Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
+| --- | --- | --- | --- | --- | --- | --- |
+| comb estimator | protein_tof | 34 % (10/29) | 100 % (8/8) | 25 % (1/4) | 0 % (0/2) | 6.7 |
+| LadderNet, z = 1 ignored | protein_tof | 52 % (11/21) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
+| LadderNet, z = 1 dropped | protein_tof | 52 % (11/21) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 9.0 |
+| comb estimator | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
+| LadderNet, z = 1 ignored | oligo_iprp | 39 % (13/33) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 3.7 |
+| LadderNet, z = 1 dropped | oligo_iprp | 30 % (12/40) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 2.3 |
+| comb estimator | polymer | 39 % (12/31) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| LadderNet, z = 1 ignored | polymer | 31 % (13/42) | 100 % (8/8) | 80 % (4/5) | 33 % (1/3) | 1.8 |
+| LadderNet, z = 1 dropped | polymer | 55 % (12/22) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| comb estimator | oligo_orbitrap | 13 % (14/104) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 8.0 |
+| LadderNet, z = 1 ignored | oligo_orbitrap | 44 % (17/39) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 10.6 |
+| LadderNet, z = 1 dropped | oligo_orbitrap | 42 % (16/38) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
+
+Charge-harmonic false species, the comb's characteristic error, fell from 6, 5 and 4 (protein,
+oligo, polymer) to 0-3. The synthetic runs contain no singly charged background, so these
+tables cannot show what a network trained without z = 1 does with it; the real runs can (next
+section).
+
 ### Reading these tables
 
 - The **oracle** rows are the ceiling of everything downstream of charge assignment. Before the
