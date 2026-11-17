@@ -106,3 +106,60 @@ def test_comb_reads_charge_from_resolved_isotopes():
         b = int(grid.mz_to_bin(apex))
         j = b - 3 + int(np.argmax(obs[b - 3:b + 4]))
         assert with_iso.top1_z[j] == z
+
+
+def _single_charge_spectrum(mass=6448.7, z=4, height=1e5, extra=()):
+    """One isotope-resolved charge state of an oligonucleotide (Orbitrap, 140 000 at m/z 200)."""
+    inst = InstrumentModel("orbitrap", 140000.0, mz_ref=200.0)
+    mz, ab, centre = _envelope(mass, z)
+    fwhm = centre / inst.resolving_power(centre)
+    centres, heights = list(mz), list(height * ab)
+    for c, h in extra:
+        centres.append(c)
+        heights.append(h)
+    x, y = _profile(centres, heights, fwhm, centre - 4, centre + 4, step=fwhm / 8)
+    return inst, x, y, centre, fwhm
+
+
+def test_isotope_ladder_reads_the_charge_of_one_envelope():
+    from lcmsdeconv.deconv.decode import isotope_charge_unique, isotope_ladder_spacing
+
+    inst, x, y, centre, fwhm = _single_charge_spectrum()
+    d = isotope_ladder_spacing(centre, 1.0, x, y, 100.0, fwhm)
+    assert d is not None and abs(1.00336 / d - 4) < 0.1
+    assert isotope_charge_unique(6448.7, 4, centre, x, y, 100.0, -1, "dna", fwhm)
+    for wrong in (2, 3, 5, 8):  # the same envelope read at another charge
+        m = wrong * (centre + MP)
+        assert not isotope_charge_unique(m, wrong, centre, x, y, 100.0, -1, "dna", fwhm), wrong
+
+
+def test_gate_keeps_a_single_charge_species_only_when_asked():
+    from lcmsdeconv.deconv.decode import Candidate, refine_candidate_masses
+
+    inst, x, y, centre, fwhm = _single_charge_spectrum()
+    kw = dict(noise_sigma=100.0, compound_class="dna", resolution=50000.0, instrument=inst,
+              profile=True)
+    assert refine_candidate_masses([Candidate(6448.7, 1.0, {4})], x, y, -1, **kw) == []
+    out = refine_candidate_masses([Candidate(6448.7, 1.0, {4})], x, y, -1,
+                                  single_charge_ok=True, **kw)
+    assert len(out) == 1 and out[0].single_charge and out[0].charges == {4}
+    assert abs(out[0].mass - 6448.7) < 0.3
+
+
+def test_gate_pulls_a_candidate_from_the_edge_of_its_envelope():
+    """A strong unrelated peak on the isotope ladder can put the histogram peak 4 Da off."""
+    from lcmsdeconv.deconv.decode import Candidate, refine_candidate_masses
+
+    inst = InstrumentModel("orbitrap", 140000.0, mz_ref=200.0)
+    centres, heights = [], []
+    for z in (3, 4):
+        mz, ab, _c = _envelope(6448.7, z)
+        centres += list(mz)
+        heights += list(1e5 * ab)
+    x, y = _profile(centres, heights, 0.035, 1600, 2160, step=0.004)
+    kw = dict(noise_sigma=100.0, compound_class="dna", resolution=50000.0, instrument=inst,
+              profile=True)
+    assert refine_candidate_masses([Candidate(6444.3, 1.0, {3, 4})], x, y, -1, **kw) == []
+    out = refine_candidate_masses([Candidate(6444.3, 1.0, {3, 4})], x, y, -1,
+                                  envelope_move=True, **kw)
+    assert len(out) == 1 and abs(out[0].mass - 6448.7) < 0.3

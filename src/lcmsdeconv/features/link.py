@@ -89,11 +89,14 @@ def link_species(
             # flat profile across the whole window: chemical background, not a chromatographic peak
             continue
         spread = tr["spread"] if np.isfinite(tr["spread"]) else 0.0
+        flags = []
+        if len([z for z, v in charges.items() if v > 0]) == 1 and min(charges) > 1:
+            flags.append("one charge state: charge read from isotope spacing")
         species.append(Species(
             id=sid, mass=tr["mass"], mass_type="average", polarity=tr["polarity"],
             compound_class=tr["cls"], time=times.copy(), intensity=inten,
             adduct_intensity=adducts, charges=charges, score=tr["score"],
-            mass_spread_ppm=float(spread), region_id=region_id,
+            mass_spread_ppm=float(spread), region_id=region_id, flags=flags,
         ))
         sid += 1
     species.sort(key=lambda s: -s.total_intensity)

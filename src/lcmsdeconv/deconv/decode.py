@@ -39,6 +39,8 @@ class Candidate:
     score: float
     charges: set[int] = field(default_factory=set)
     intensity: float = 0.0
+    # seen at one charge state only, the charge fixed by resolved isotope spacing
+    single_charge: bool = False
 
 
 def accumulate_mass_histogram(
@@ -133,8 +135,14 @@ def pick_candidates(
     merge_ppm: float = 200.0,
     max_candidates: int = 200,
     smooth_da: float = 1.2,
+    single_charge_ok: bool = False,
 ) -> list[Candidate]:
-    """Peak-pick the mass histogram into candidate masses."""
+    """Peak-pick the mass histogram into candidate masses.
+
+    ``single_charge_ok`` keeps peaks voted for by a single charge state (z >= 2) as well; the
+    gate (:func:`refine_candidate_masses`) then accepts them only when resolved isotope spacing
+    fixes that charge.
+    """
     if hist.max() <= 0:
         return []
     sm = smooth_mass_histogram(lm_axis, hist, smooth_bins, smooth_da)
@@ -143,13 +151,15 @@ def pick_candidates(
     peaks = np.nonzero((mid > sm[:-2]) & (mid >= sm[2:]) & (mid > thr))[0] + 1
     step = float(lm_axis[1] - lm_axis[0])
     cands: list[Candidate] = []
+    singles: list[Candidate] = []
     for p in peaks:
         # the support window follows the smoothing width so that every vote that built the
         # peak is counted, plus the bins of the original fixed window
         hw = max(smooth_bins * 3, int(round(0.75 * smooth_da / (np.exp(lm_axis[p]) * step))))
         lo, hi = max(0, p - hw), min(len(hist), p + hw + 1)
         support = charge_support.charges_in(lo, hi)
-        if len(support) < min_charge_support and support != {1}:
+        single = len(support) < min_charge_support and support != {1}
+        if single and not (single_charge_ok and len(support) == 1):
             continue
         # sub-bin parabolic interpolation for a mass accurate to a few ppm
         lm = float(lm_axis[p])
@@ -160,10 +170,16 @@ def pick_candidates(
                 shift = 0.5 * (y0 - y2) / den
                 lm += float(np.clip(shift, -1.0, 1.0)) * step
         mass = float(np.exp(lm))
-        cands.append(Candidate(mass=mass, score=float(sm[p]), charges=support,
-                               intensity=float(hist[lo:hi].sum())))
+        (singles if single else cands).append(
+            Candidate(mass=mass, score=float(sm[p]), charges=support,
+                      intensity=float(hist[lo:hi].sum())))
     cands.sort(key=lambda c: -c.score)
     cands = cands[:max_candidates]
+    # Peaks voted for by one charge state are far more numerous (every noise envelope makes
+    # one) and must not push the regular candidates out of the list: they get a separate,
+    # smaller allowance after them, so a near-duplicate merges into the regular candidate.
+    singles.sort(key=lambda c: -c.score)
+    cands += singles[: max_candidates // 4]
     # merge near-duplicate masses
     merged: list[Candidate] = []
     for c in cands:
@@ -307,6 +323,70 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     return best < min_populated * major.sum()
 
 
+def isotope_ladder_spacing(centre_mz: float, half_width: float, raw_mz: np.ndarray,
+                           raw_int: np.ndarray, thr: float, fwhm: float,
+                           min_rel: float = 0.2, min_peaks: int = 4) -> float | None:
+    """Spacing of the isotopologue ladder around ``centre_mz``, measured from its peaks.
+
+    The local maxima of the profile within ``half_width`` that stand above ``thr`` and above
+    ``min_rel`` of the strongest are centroided; maxima closer than one ``fwhm`` are one peak.
+    When at least ``min_peaks`` of them form a ladder - consecutive gaps that agree with their
+    median within 10 % - the median gap is returned, else None. The spacing is 1.00336/z, so
+    it reads the charge directly, without assuming one.
+    """
+    lo = int(np.searchsorted(raw_mz, centre_mz - half_width))
+    hi = int(np.searchsorted(raw_mz, centre_mz + half_width))
+    if hi - lo < 5:
+        return None
+    x, y = raw_mz[lo:hi], raw_int[lo:hi]
+    level = max(thr, min_rel * float(y.max()))
+    idx = np.nonzero((y[1:-1] >= y[:-2]) & (y[1:-1] > y[2:]) & (y[1:-1] > level))[0] + 1
+    if idx.size < min_peaks:
+        return None
+    pos = []
+    for i in idx:
+        a, b = max(i - 2, 0), min(i + 3, y.size)
+        w = np.clip(y[a:b] - 0.5 * y[i], 0, None)
+        pos.append(float((x[a:b] * w).sum() / w.sum()) if w.sum() > 0 else float(x[i]))
+    peaks = [pos[0]]
+    for q in pos[1:]:
+        if q - peaks[-1] >= fwhm:
+            peaks.append(q)
+    if len(peaks) < min_peaks:
+        return None
+    gaps = np.diff(peaks)
+    d = float(np.median(gaps))
+    if d <= 0 or np.mean(np.abs(gaps - d) <= 0.1 * d) < 0.75:
+        return None
+    return d
+
+
+def isotope_charge_unique(mass: float, z: int, centre_mz: float, raw_mz: np.ndarray,
+                          raw_int: np.ndarray, thr: float, polarity: int, compound_class: str,
+                          fwhm: float, min_populated: float = 0.8) -> bool:
+    """True when resolved isotopes fix the envelope at ``centre_mz`` at charge ``z`` alone.
+
+    One charge state is evidence enough for a species when the instrument resolves its
+    isotopologue spacing, 1.00336/z: the peaks of the envelope must form a ladder whose
+    measured spacing is that of charge z rather than z - 1 or z + 1 (within a third of the
+    difference), and the comb of isotopologue positions at z must be filled (``min_populated``
+    of the major positions above ``thr``). A species at 2z would show a ladder of half the
+    spacing, one at z/2 double; an envelope made of several overlapping species shows no clean
+    ladder and is declined.
+    """
+    if z < 2 or ISOTOPE_SPACING / z < 2.0 * fwhm:
+        return False
+    env_sigma, _offset = envelope_geometry(mass, compound_class)
+    d = isotope_ladder_spacing(centre_mz, 2.0 * env_sigma / z, raw_mz, raw_int, thr, fwhm)
+    if d is None:
+        return False
+    expected = ISOTOPE_SPACING / z
+    if abs(d - expected) > expected / (3.0 * (z + 1)):
+        return False
+    return not isotopes_contradict_charge(mass, z, centre_mz, raw_mz, raw_int, thr, polarity,
+                                          compound_class, fwhm, min_populated=min_populated)
+
+
 def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarray,
                            raw_int: np.ndarray, fwhm: float, min_coverage: float = 0.35,
                            rel_level: float = 0.2) -> bool:
@@ -354,6 +434,8 @@ def refine_candidate_masses(
     min_cluster_weight: float = 0.5,
     instrument=None,
     profile: bool = False,
+    single_charge_ok: bool = False,
+    envelope_move: bool = False,
 ) -> list[Candidate]:
     """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
@@ -368,9 +450,15 @@ def refine_candidate_masses(
     envelopes of other species that happened to lie under one charge state's window, and no
     longer veto an otherwise consistent candidate.
 
-    A mean shift that has to travel further than ``tol_ppm`` belongs to some other envelope and
-    is discarded for that charge state. Candidates carried by the wings of a stronger envelope
+    A mean shift that has to travel further than ``tol_ppm`` (with ``envelope_move``, or 2.5
+    envelope widths if more) belongs to some other envelope and is discarded for that charge
+    state. Candidates carried by the wings of a stronger envelope
     converge onto that envelope and are removed by the later duplicate merge.
+
+    With ``single_charge_ok`` a candidate seen at one charge state only is kept when resolved
+    isotope spacing fixes that charge (:func:`isotope_charge_unique`); it is marked
+    ``single_charge``. Under ion pairing, oligonucleotides often carry one dominant charge state,
+    and an impurity at a few percent then shows that state alone above the noise.
     """
     from ..chem.adducts import carrier_mass
 
@@ -380,12 +468,33 @@ def refine_candidate_masses(
     order = np.argsort(raw_mz)
     raw_mz = raw_mz[order]
     raw_int = np.clip(raw_int[order].astype(float), 0, None)
+
+    def accept_single(c: Candidate, masses, matched_z, where, i: int) -> bool:
+        """Keep ``c`` on its one charge state ``i`` if resolved isotopes fix that charge."""
+        if not (single_charge_ok and instrument is not None):
+            return False
+        pos_i, fwhm_i = where[i]
+        if not isotope_charge_unique(masses[i], matched_z[i], pos_i, raw_mz, raw_int, thr,
+                                     polarity, compound_class, fwhm_i):
+            return False
+        c.mass = float(masses[i])
+        c.charges = {int(matched_z[i])}
+        c.single_charge = True
+        out.append(c)
+        return True
+
     for c in candidates:
         env_sigma, offset = envelope_geometry(c.mass, compound_class)
         inst_sigma_da = c.mass / max(resolution, 1.0) / 2.354820045
         kern_da = float(np.sqrt(env_sigma ** 2 + inst_sigma_da ** 2))
         max_move_da = c.mass * tol_ppm * 1e-6
-        masses, weights, matched_z = [], [], []
+        if envelope_move:
+            # a candidate anywhere within its envelope's half-width may climb to the envelope's
+            # centre: when charges are read from isotope spacing, a strong unrelated peak that
+            # sits on an envelope's isotope ladder inherits its charge and can pull the
+            # histogram peak several daltons off for small molecules
+            max_move_da = max(max_move_da, 2.5 * kern_da)
+        masses, weights, matched_z, where = [], [], [], []
         for z in sorted(c.charges):
             mz_pred = (c.mass + offset + z * carrier) / z
             pos, kw = _mean_shift(raw_mz, raw_int, mz_pred, kern_da / z)
@@ -413,7 +522,11 @@ def refine_candidate_masses(
             masses.append(m)
             weights.append(kw)
             matched_z.append(int(z))
+            where.append((pos, fwhm))
+
         if len(masses) < min_charges:
+            if len(masses) == 1 and accept_single(c, masses, matched_z, where, 0):
+                continue
             if drop_unsupported and c.charges != {1}:
                 continue
             out.append(c)
@@ -428,6 +541,9 @@ def refine_candidate_masses(
         groups = np.split(np.arange(ms.size), breaks)
         best = max(groups, key=lambda g: ws[g].sum())
         if best.size < min_charges or ws[best].sum() < min_cluster_weight * ws.sum():
+            if (best.size == 1 and ws[best].sum() >= min_cluster_weight * ws.sum()
+                    and accept_single(c, masses, matched_z, where, int(srt[best[0]]))):
+                continue
             if drop_unsupported:
                 continue
             out.append(c)
