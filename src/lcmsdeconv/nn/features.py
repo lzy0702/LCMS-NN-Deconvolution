@@ -19,6 +19,24 @@ def comb_shifts(step: float, z_max: int, ks=(1, 2, 3)) -> dict[int, list[int]]:
     return shifts
 
 
+def shifted(x: np.ndarray, sh: int) -> np.ndarray:
+    """``y[i] = x[i + sh]``, zero where ``i + sh`` falls outside the array.
+
+    ``np.roll`` wraps around instead, which made the comb at one edge of a window read the
+    spectrum at the other edge: features near window edges then depended on unrelated signal,
+    differently in a training crop than in an inference window.
+    """
+    L = x.size
+    out = np.zeros_like(x)
+    if sh == 0:
+        out[:] = x
+    elif 0 < sh < L:
+        out[: L - sh] = x[sh:]
+    elif -L < sh < 0:
+        out[-sh:] = x[: L + sh]
+    return out
+
+
 def comb_transform(logint: np.ndarray, step: float, z_max: int = 64, ks=(1, 2, 3)) -> tuple[np.ndarray, np.ndarray]:
     """Charge-evidence comb over a window. Returns (max_evidence[L], argmax_z[L]/z_max)."""
     L = logint.size
@@ -31,7 +49,7 @@ def comb_transform(logint: np.ndarray, step: float, z_max: int = 64, ks=(1, 2, 3
         for sh in shifts[z]:
             if sh == 0:
                 continue
-            acc += np.roll(logint, -sh)
+            acc += shifted(logint, sh)
             cnt += 1
         if cnt:
             ev = logint * (acc / cnt)

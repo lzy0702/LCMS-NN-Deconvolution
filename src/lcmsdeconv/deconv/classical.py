@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..nn.features import shifted
 from ..nn.grid import LogMzGrid
 from ..nn.infer import ChargePrediction
 
@@ -57,7 +58,7 @@ class CombPredictor:
                     shift = int(round(np.log(z / zz) / grid.step))
                     if shift == 0 or abs(shift) >= B:
                         continue
-                    acc += np.roll(s, -shift)
+                    acc += shifted(s, shift)
                     n += 1
             if n == 0:
                 continue
