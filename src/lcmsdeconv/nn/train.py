@@ -7,6 +7,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import numpy as np
+
 
 @dataclass
 class TrainConfig:
@@ -27,6 +29,10 @@ class TrainConfig:
     out: str = "models/charge_unet_proof.pt"
     max_seconds: float | None = None
     log_every: int = 20
+    threads: int | None = None
+    #: select the saved checkpoint by validation charge accuracy (``"accuracy"``) rather than
+    #: by validation loss: a loss can improve while the model drifts toward a constant answer
+    select_by: str = "accuracy"
 
 
 def _device(name: str):
@@ -75,6 +81,8 @@ def train(config: TrainConfig, synth_config=None):
     from .model import build_model
 
     synth_config = synth_config or SynthConfig(z_max=config.z_max)
+    if config.threads:
+        torch.set_num_threads(int(config.threads))
     device = _device(config.device)
     model = build_model(config.model_size, z_max=config.z_max).to(device)
     print(f"model {config.model_size}: {model.num_params()/1e6:.2f}M params on {device}")
@@ -91,8 +99,21 @@ def train(config: TrainConfig, synth_config=None):
     history = []
     best_state = None
     best_loss = float("inf")
+    best_key = None
     start = time.time()
     stop = False
+    log_path = Path(config.out).with_suffix(".log.jsonl")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Before spending hours: the true labels must beat every constant answer by a clear margin
+    # on real batches, or the optimiser will settle on the constant.
+    from .checks import degeneracy_report
+
+    first = next(iter(tl), None)
+    if first is not None:
+        rep = degeneracy_report(_batch_dict(first, "cpu"), loss_fn)
+        print(f"loss of constant predictors relative to the truth: {rep['margins']}")
+        _log(log_path, {"degeneracy": rep})
     for epoch in range(config.epochs):
         model.train()
         running = 0.0
@@ -118,12 +139,21 @@ def train(config: TrainConfig, synth_config=None):
                 break
         val_ema = evaluate(ema.shadow, vl, loss_fn, device)
         val_live = evaluate(model, vl, loss_fn, device)
-        best = "ema" if val_ema["val_loss"] <= val_live["val_loss"] else "live"
+
+        def key(v):
+            if config.select_by == "accuracy":
+                return (v["charge_acc"], -v["val_loss"])
+            return (-v["val_loss"],)
+
+        best = "ema" if key(val_ema) >= key(val_live) else "live"
         val = val_ema if best == "ema" else val_live
         history.append({"epoch": epoch, "train_loss": running / max(1, i + 1),
-                        "ema": val_ema, "live": val_live, "best": best})
+                        "ema": val_ema, "live": val_live, "best": best,
+                        "seconds": time.time() - start})
+        _log(log_path, history[-1])
         print(f"epoch {epoch}: ema={val_ema} live={val_live} -> keeping {best}")
-        if best_state is None or val["val_loss"] < best_loss:
+        if best_state is None or key(val) > best_key:
+            best_key = key(val)
             best_loss = val["val_loss"]
             best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
         if stop:
@@ -141,14 +171,29 @@ def train(config: TrainConfig, synth_config=None):
     return model, history
 
 
+def _log(path: Path, record: dict) -> None:
+    import json
+
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, default=float) + "\n")
+
+
 def evaluate(model, loader, loss_fn, device) -> dict:
+    """Validation loss and charge metrics (see :func:`lcmsdeconv.nn.checks.charge_metrics`).
+
+    ``charge_acc`` is the intensity-weighted top-1 charge accuracy over ion-bearing bins, the
+    quantity checkpoints are selected by.
+    """
     import torch
+
+    from .checks import charge_metrics
 
     model.eval()
     tot = 0.0
-    charge_acc = 0.0
-    n = 0
     nb = 0
+    sums: dict[str, float] = {}
+    bands: dict[str, list[float]] = {}
+    never = 0
     with torch.no_grad():
         for sample in loader:
             batch = _batch_dict(sample, device)
@@ -156,11 +201,17 @@ def evaluate(model, loader, loss_fn, device) -> dict:
             losses = loss_fn(out, batch)
             tot += float(losses["loss"])
             nb += 1
-            # intensity-weighted top-1 charge accuracy
-            pred = out["charge_logits"].argmax(1)  # [N, L]
-            true = batch["topk_z"][:, :, 0]  # dominant class
-            w = batch["features"][:, 0, :]
-            mask = w > 0.5
-            charge_acc += float(((pred == true) & mask).sum())
-            n += float(mask.sum())
-    return {"val_loss": tot / max(1, nb), "charge_acc": charge_acc / max(1.0, n)}
+            m = charge_metrics(out["charge_logits"], batch)
+            for k in ("weighted_accuracy", "harmonic_error", "neighbour_error",
+                      "missed_as_background", "background_called_ion"):
+                sums[k] = sums.get(k, 0.0) + m[k]
+            for k, v in m["bands"].items():
+                bands.setdefault(k, []).append(v)
+            never = max(never, m["classes_never_predicted"])
+    nb = max(1, nb)
+    res = {"val_loss": tot / nb, "charge_acc": sums.get("weighted_accuracy", 0.0) / nb}
+    for k in ("harmonic_error", "neighbour_error", "missed_as_background", "background_called_ion"):
+        res[k] = sums.get(k, 0.0) / nb
+    res["bands"] = {k: float(np.mean(v)) for k, v in bands.items()}
+    res["classes_never_predicted"] = never
+    return res

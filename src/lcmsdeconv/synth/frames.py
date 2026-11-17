@@ -10,7 +10,7 @@ from ..chem.adducts import AdductLibrary, AdductState
 from ..chem.instrument import InstrumentModel
 from ..nn.features import featurize
 from ..nn.grid import LogMzGrid
-from .adduct_sampler import adduct_fractions_for_charge, sample_run_propensities
+from .adduct_sampler import member_distributions, run_adduct_draw
 from .charge import charge_distribution
 from .compounds import choose_class, sample_compound
 from .config import SynthConfig
@@ -42,7 +42,7 @@ def sample_instrument(cfg: SynthConfig, rng: np.random.Generator) -> InstrumentM
 
 def sample_scene(cfg: SynthConfig, rng: np.random.Generator, library: AdductLibrary) -> Scene:
     n_main = int(rng.integers(cfg.n_main_range[0], cfg.n_main_range[1] + 1))
-    props = sample_run_propensities(rng, library, cfg.adduct_max_lambda)
+    props = run_adduct_draw(cfg, library, rng)
     components: list[ComponentInstance] = []
     cid = 0
     for _ in range(n_main):
@@ -52,10 +52,8 @@ def sample_scene(cfg: SynthConfig, rng: np.random.Generator, library: AdductLibr
                                                   np.log(cfg.base_intensity_range[1]))))
         members = [(main, 1.0)]
         members += sample_impurities(rng, main, cid, cfg.max_impurities, cfg.impurity_abundance)
-        for comp, rel in members:
-            cd = charge_distribution(comp.mass, comp.compound_class, cfg.esi_mode, cfg.polarity,
-                                     rng, z_max=cfg.z_max)
-            adducts = {z: adduct_fractions_for_charge(z, props, library, rng) for z in cd}
+        for (comp, rel), (cd, adducts) in zip(members,
+                                              member_distributions(cfg, members, library, props, rng)):
             components.append(ComponentInstance(comp, main_intensity * rel, cd, adducts))
         cid = len(components)
     if rng.random() < cfg.contaminant_prob:
@@ -86,6 +84,8 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     library = AdductLibrary.from_mode(
         cfg.mode, cfg.polarity, max_per_type=cfg.adduct_max_per_type, max_total=cfg.adduct_max_total
     )
+    if cfg.render_path == "profile":
+        return generate_frame_profile(cfg, rng, library)
     grid = LogMzGrid(50.0, cfg.grid_mz_max, cfg.grid_step, cfg.polarity)
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
@@ -112,3 +112,143 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     labels = build_labels(cmat, charges, noise)
     return FrameSample(feats, labels["topk_z"], labels["topk_w"], labels["heat"], b0,
                        scene.truths(), {"resolution": inst.resolution, "kind": inst.kind})
+
+
+# ----------------------------------------------------------------- inference-parity rendering
+def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: float, scale: float,
+                     polarity: int) -> list[ComponentInstance]:
+    """Singly charged chemical background (solvent clusters, plasticisers, column bleed)."""
+    from ..chem.classes import class_isotope_pattern
+    from .spec import Compound
+
+    out = []
+    for _ in range(n):
+        mz = float(np.exp(rng.uniform(np.log(max(mz_lo, 100.0)), np.log(max(mz_hi, 101.0)))))
+        mass = mz - float(polarity) * 1.00727646688
+        if mass <= 50:
+            continue
+        pat = class_isotope_pattern(mass, "small_molecule")
+        comp = Compound(mass, "small_molecule", pat.shifted(mass - pat.average_mass),
+                        name="background", kind="contaminant")
+        inten = scale * float(np.exp(rng.uniform(np.log(1e-4), np.log(3e-2))))
+        out.append(ComponentInstance(comp, inten, {1: 1.0}, {1: {AdductState(): 1.0}}))
+    return out
+
+
+def _resample_counts(axis, frames_int, grid):
+    """Sum thresholded scans and resample the sum onto the grid, as region summing does."""
+    total = np.sum(frames_int, axis=0) if len(frames_int) > 1 else frames_int[0]
+    keep = total > 0
+    return grid.resample_profile(axis[keep], total[keep]) if keep.any() else np.zeros(grid.size)
+
+
+def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
+                           library: AdductLibrary) -> FrameSample:
+    """One training sample rendered along the same path inference takes.
+
+    Inference deconvolves the summed spectrum of a chromatographic region: vendor-thresholded
+    profile scans, summed on their own m/z axis, resampled onto the logarithmic grid, with the
+    noise level estimated from that grid spectrum. Training features computed any other way
+    (rendered directly on the grid, with the generator's noise parameter standing in for the
+    estimate) describe a different input distribution, and a network trained on them is
+    evaluated on data it has never seen. Labels come from per-charge renders of the same scans
+    through the same resampling, so they stay consistent with the features.
+    """
+    from ..chem.instrument import estimate_noise_sigma
+    from ..nn.features import featurize
+    from .render import render_profile
+
+    inst = sample_instrument(cfg, rng)
+    scene = sample_scene(cfg, rng, library)
+    sticks = build_sticks(scene)
+    polarity = cfg.polarity
+    if len(sticks):
+        lo = max(60.0, float(sticks.mz.min()) * 0.98)
+        hi = min(cfg.grid_mz_max * 0.995, float(sticks.mz.max()) * 1.02)
+    else:
+        lo, hi = 300.0, 3000.0
+    if hi <= lo * 1.05:
+        lo, hi = max(60.0, lo / 1.5), min(cfg.grid_mz_max * 0.995, hi * 1.5)
+    # chemical background across the measured range
+    n_bg = int(rng.integers(cfg.background_ions_range[0], cfg.background_ions_range[1] + 1))
+    if n_bg:
+        base = max((c.intensity for c in scene.components), default=1e5)
+        bg = _background_ions(rng, n_bg, lo, hi, base, polarity)
+        if bg:
+            scene = Scene(scene.components + bg, polarity, library, meta=scene.meta)
+            sticks = build_sticks(scene)
+
+    axis = inst.profile_axis(lo, hi)
+    clean = render_profile(sticks, axis, inst) if len(sticks) else np.zeros(axis.size)
+
+    # scans summed over part of an elution peak: each scan sees a fraction of the signal
+    n_sum = int(rng.integers(cfg.sum_frames_range[0], cfg.sum_frames_range[1] + 1))
+    weights = np.exp(-0.5 * np.linspace(-1.5, 1.5, n_sum) ** 2) if n_sum > 1 else np.ones(1)
+    weights = weights / weights.sum()
+    gain = float(rng.uniform(*cfg.gain_range))
+    esig = float(rng.uniform(*cfg.electronic_sigma_range))
+    thr = esig * float(rng.uniform(*cfg.threshold_sigmas_range))
+    saturate = rng.random() < cfg.saturation_prob
+    sat_level = float(clean.max() * weights.max() * rng.uniform(0.3, 0.8)) if saturate else None
+    frames_int = []
+    for w in weights:
+        lam = np.clip(clean * w / gain, 0.0, None)
+        scan = rng.poisson(lam).astype(np.float64) * gain + np.abs(rng.normal(0.0, esig, axis.size))
+        if sat_level is not None:
+            scan = np.minimum(scan, sat_level)
+        scan[scan < thr] = 0.0
+        frames_int.append(scan)
+
+    # the grid inference would build for this spectrum: restricted to the measured range
+    measured = np.flatnonzero(np.sum(frames_int, axis=0) > 0)
+    if measured.size:
+        g_lo = max(50.0, float(axis[measured[0]]) * 0.995)
+        g_hi = min(cfg.grid_mz_max, float(axis[measured[-1]]) * 1.005)
+    else:
+        g_lo, g_hi = lo, hi
+    if g_hi <= g_lo * 1.01:
+        g_lo, g_hi = lo, hi
+    grid = LogMzGrid(g_lo, g_hi, cfg.grid_step, polarity)
+    observed = _resample_counts(axis, frames_int, grid)
+    noise_sigma = estimate_noise_sigma(observed)
+
+    L = cfg.crop_size
+    b0 = _choose_crop(scene, grid, cfg, rng) if grid.size > L else 0
+    b1 = b0 + L
+    window = np.zeros(L)
+    seg = observed[b0:min(b1, grid.size)]
+    window[: seg.size] = seg
+
+    # per-charge noise-free signal through the same resampling, on the crop only
+    crop_lo = float(grid.bin_to_mz(b0)) * 0.999
+    crop_hi = float(grid.bin_to_mz(min(b1, grid.size) - 1)) * 1.001
+    charges = np.unique(sticks.z) if len(sticks) else np.array([], dtype=int)
+    rows, zs = [], []
+    a0 = int(np.searchsorted(axis, crop_lo))
+    a1 = int(np.searchsorted(axis, crop_hi))
+    sub_axis = axis[max(0, a0 - 2):min(axis.size, a1 + 2)]
+    for z in charges:
+        sel = (sticks.z == z) & (sticks.mz > crop_lo * 0.995) & (sticks.mz < crop_hi * 1.005)
+        if not sel.any() or sub_axis.size < 2:
+            continue
+        sub = type(sticks)(sticks.mz[sel], sticks.intensity[sel], sticks.comp_id[sel],
+                           sticks.z[sel], sticks.adduct_mass[sel])
+        prof = render_profile(sub, sub_axis, inst)
+        if sat_level is not None:
+            prof = prof * 1.0  # labels stay unclipped: saturation does not change the charge
+        row = np.zeros(L)
+        res = grid.resample_profile(sub_axis, prof)[b0:min(b1, grid.size)]
+        row[: res.size] = res
+        if row.max() > 0:
+            rows.append(row)
+            zs.append(int(z))
+    cmat = np.array(rows) if rows else np.zeros((0, L))
+    # shares of the observed intensity: y * c_z / max(y, sum c), the remainder is non-ion
+    signal = cmat.sum(axis=0) if cmat.shape[0] else np.zeros(L)
+    noise_part = np.clip(window - signal, 0.0, None)
+    feats = featurize(window, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64))
+    labels = build_labels(cmat, np.array(zs, dtype=int), noise_part)
+    return FrameSample(feats, labels["topk_z"], labels["topk_w"], labels["heat"], b0,
+                       scene.truths(), {"resolution": inst.resolution, "kind": inst.kind,
+                                        "noise_sigma": noise_sigma, "n_sum": n_sum,
+                                        "gain": gain, "grid_lo": g_lo})

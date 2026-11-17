@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import SynthConfig
 from .frames import generate_frame
 
 try:
@@ -18,20 +17,34 @@ except Exception:  # pragma: no cover
 
 
 class FrameDataset(Dataset):
-    """Deterministic per-index synthetic frames (seed = base_seed + index)."""
+    """Deterministic per-index synthetic frames (seed = base_seed + index).
 
-    def __init__(self, config: SynthConfig, length: int, base_seed: int = 0, k: int = 3):
+    ``config`` is one :class:`SynthConfig` or a list of ``(weight, SynthConfig)`` pairs; with a
+    list each sample draws its configuration (polarity, chromatography mode, compound classes)
+    from the mixture, deterministically from its index.
+    """
+
+    def __init__(self, config, length: int, base_seed: int = 0, k: int = 3):
         self.config = config
         self.length = length
         self.base_seed = base_seed
         self.k = k
+        if isinstance(config, (list, tuple)):
+            w = np.array([float(wc[0]) for wc in config])
+            self._weights = w / w.sum()
+            self._configs = [wc[1] for wc in config]
+        else:
+            self._weights = None
+            self._configs = [config]
 
     def __len__(self) -> int:
         return self.length
 
     def __getitem__(self, idx: int):
         rng = np.random.default_rng(self.base_seed + idx)
-        fs = generate_frame(self.config, rng)
+        cfg = self._configs[0] if self._weights is None else \
+            self._configs[int(rng.choice(len(self._configs), p=self._weights))]
+        fs = generate_frame(cfg, rng)
         x = torch.from_numpy(fs.features)
         topk_z = torch.from_numpy(fs.topk_z.astype(np.int64))
         topk_w = torch.from_numpy(fs.topk_w.astype(np.float32))
@@ -39,7 +52,7 @@ class FrameDataset(Dataset):
         return x, topk_z, topk_w, heat
 
 
-def make_dataloaders(config: SynthConfig, train_len: int, val_len: int, batch_size: int = 8,
+def make_dataloaders(config, train_len: int, val_len: int, batch_size: int = 8,
                      num_workers: int = 1, base_seed: int = 0):
     from torch.utils.data import DataLoader
 
