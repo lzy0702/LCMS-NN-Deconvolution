@@ -90,3 +90,39 @@ def test_training_script_exit_codes(tmp_path):
     done = subprocess.run(args + ["--resume"], capture_output=True, text=True, timeout=900)
     assert done.returncode == 0, done.stdout + done.stderr
     assert out.exists()
+
+
+def test_one_pool_of_workers_at_a_time(tmp_path, monkeypatch):
+    """The comb is scored before the persistent training workers start, so that the two pools
+    never hold memory together (that would breach the RAM budget at every stage start)."""
+    psutil = pytest.importorskip("psutil")
+    import lcmsdeconv.nn.train as tr
+
+    seen = []
+    original = tr.comb_baseline
+
+    def counting(loader, num_workers=None):
+        kids = [p for p in psutil.Process().children(recursive=True)
+                if "resource_tracker" not in " ".join(p.cmdline())]
+        seen.append(len(kids))
+        return original(loader, num_workers=num_workers)
+
+    monkeypatch.setattr(tr, "comb_baseline", counting)
+    monkeypatch.setenv("LCMSDECONV_MP_CONTEXT", "spawn")
+    tr.train(tr.TrainConfig(**_cfg(tmp_path / "net.pt", num_workers=2, epochs=1)),
+             synth_config=_synth())
+    assert seen == [0]
+
+
+def test_training_leaves_a_status_the_orchestrator_reads_without_torch(tmp_path):
+    import json
+
+    from lcmsdeconv.nn.train import TrainConfig, train
+
+    out = tmp_path / "net.pt"
+    train(TrainConfig(max_seconds=1e-6, **_cfg(out)), synth_config=_synth())
+    st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
+    assert (st["epoch"], st["step"], st["epochs"], st["stop_reason"]) == (0, 1, 2, "time")
+    train(TrainConfig(resume=True, **_cfg(out)), synth_config=_synth())
+    st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
+    assert (st["epoch"], st["stop_reason"]) == (2, "finished")

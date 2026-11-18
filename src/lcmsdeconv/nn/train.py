@@ -60,6 +60,9 @@ class TrainConfig:
     #: cap on the memory of this process and its data workers together (GB); when it is
     #: exceeded the run pauses, saving its state, so that it can resume with fewer workers
     max_ram_gb: float | None = None
+    #: remove PAUSE files left over at the start; gpu_training/train_all.py clears them itself
+    #: and turns this off, so that a pause asked for while a stage starts up is not lost
+    clear_pause_files: bool = True
 
 
 def _device(name: str):
@@ -198,16 +201,19 @@ def train(config: TrainConfig, synth_config=None):
                   f"{steps_per_epoch}")
     elif config.resume:
         print(f"nothing to resume at {resume_path}; starting from the beginning")
-    for f in pause_files():
-        f.unlink()
-        print(f"removed {f} left from the last pause")
+    if config.clear_pause_files:
+        for f in pause_files():
+            f.unlink()
+            print(f"removed {f} left from the last pause")
 
     if comb is None:
         # Before spending hours: the true labels must beat every constant answer by a clear
         # margin on real batches, or the optimiser will settle on the constant.
         from .checks import degeneracy_report
 
-        first = next(iter(tl), None)
+        # from the validation spectra, which are in memory: iterating the training loader here
+        # would start its persistent workers while the comb's workers below are running too
+        first = next(iter(vl), None)
         if first is not None:
             rep = degeneracy_report(_batch_dict(first, "cpu"), loss_fn)
             print(f"loss of constant predictors relative to the truth: {rep['margins']}")
@@ -231,6 +237,7 @@ def train(config: TrainConfig, synth_config=None):
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
                  "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason}
         _atomic_save(state, resume_path)
+        _write_status(out_path, epoch, step, config.epochs, stop_reason)
 
     # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
     # A second Ctrl+C aborts at once. A file named PAUSE next to the output does the same.
@@ -384,6 +391,27 @@ def _warm_up(synth_config) -> None:
         generate_frame(cfg, _np.random.default_rng(0))
 
 
+def _write_status(out_path: Path, epoch: int, step: int, epochs: int,
+                  stop_reason: str | None) -> None:
+    """``<out>.status.json``: where the run stands, for gpu_training/train_all.py (which then
+    does not need to load the resume state, and PyTorch with it)."""
+    import json
+    import os
+
+    path = out_path.with_suffix(".status.json")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"epoch": epoch, "step": step, "epochs": epochs,
+                               "stop_reason": stop_reason}) + "\n", encoding="utf-8")
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
+
+
 def _cap_gpu_memory(torch, max_gb: float, context_gb: float = 0.75) -> None:
     """Keep this process's GPU memory below ``max_gb``: PyTorch's caching allocator gets
     ``max_gb`` less an allowance for the CUDA context, and raises out-of-memory rather than
@@ -410,11 +438,13 @@ class _KeepAwake:
         try:
             import ctypes
 
-            f = ctypes.windll.kernel32.SetThreadExecutionState
-            f.argtypes = [ctypes.c_uint32]
-            f.restype = ctypes.c_uint32
+            # a private, typed handle on kernel32: the shared ctypes.windll one has untyped
+            # prototypes that other libraries may rely on
+            self.fn = ctypes.WinDLL("kernel32").SetThreadExecutionState
+            self.fn.argtypes = [ctypes.c_uint32]
+            self.fn.restype = ctypes.c_uint32
             # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
-            self.active = f(0x80000000 | 0x00000001) != 0
+            self.active = self.fn(0x80000000 | 0x00000001) != 0
         except Exception:  # pragma: no cover - only a convenience
             self.active = False
 
@@ -422,9 +452,7 @@ class _KeepAwake:
         if not self.active:
             return
         try:
-            import ctypes
-
-            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)  # ES_CONTINUOUS
+            self.fn(0x80000000)  # ES_CONTINUOUS alone: sleep is allowed again
         except Exception:  # pragma: no cover
             pass
         self.active = False

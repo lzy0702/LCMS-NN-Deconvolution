@@ -61,16 +61,25 @@ def on_ctrl_c(signum, frame):
 
 
 def stage_status(out: Path) -> str:
-    """'new', 'paused' (a state to resume) or 'done'."""
-    resume = out.with_suffix(".resume.pt")
-    if not resume.exists():
+    """'new', 'paused' (a state to resume) or 'done', from the small status file training
+    writes next to its state (so that this process never loads PyTorch: it would sit outside
+    the RAM budget the training watches)."""
+    if not out.with_suffix(".resume.pt").exists():
         return "new"
-    import torch
-
-    st = torch.load(resume, map_location="cpu", weights_only=False)
-    if st.get("stop_reason") == "finished" or st.get("epoch", 0) >= st["config"]["epochs"]:
+    try:
+        st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "paused"  # resuming a finished run is harmless: it ends at once
+    if st.get("stop_reason") == "finished" or st.get("epoch", 0) >= st.get("epochs", 1 << 30):
         return "done" if out.exists() else "paused"
     return "paused"
+
+
+def pause_files() -> list[Path]:
+    """PAUSE files in the runs folder (Explorer names a new text file PAUSE.txt)."""
+    if not RUNS.exists():
+        return []
+    return [f for f in RUNS.iterdir() if f.is_file() and f.name.lower() in ("pause", "pause.txt")]
 
 
 def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool,
@@ -94,7 +103,8 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool,
         flag = ["--resume"] if status == "paused" else ["--restart"]
         workers = pool["workers"]
         cmd = [sys.executable, "scripts/train_charge_net.py", "--device", device, *COMMON,
-               *stage["args"], "--workers", str(workers), *limits, "--out", stage["out"], *flag]
+               *stage["args"], "--workers", str(workers), *limits, "--out", stage["out"],
+               "--keep-pause-files", *flag]
         word = "resuming" if status == "paused" else "starting"
         print(f"[train_all] {stage['name']}: {word} with {workers} data workers", flush=True)
         env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
@@ -120,6 +130,27 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool,
                   flush=True)
             return PAUSED
         return rc
+
+
+def single_instance(lock_path: Path):
+    """Hold an exclusive lock for as long as this process runs, or return None if another
+    train_all already holds it (two runs would share state files and double the RAM)."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh  # the lock lasts while this handle is open
 
 
 def _remember_workers(workers: int) -> None:
@@ -190,12 +221,28 @@ def main() -> int:
 
         workers = auto_workers(ram)
     stages = SMOKE if args.smoke else STAGES
+    after_only = None
     if args.only:
+        if args.only == 2:
+            first = ROOT / stages[0]["out"]
+            if stage_status(first) != "done":
+                print("[train_all] stage 1 is not finished: run train_all.bat (or run_stage1.bat) "
+                      "first.", flush=True)
+                return 1
+            after_only = first
         stages = [stages[args.only - 1]]
+    lock = single_instance(RUNS / ".train_all.lock")
+    if lock is None:
+        print("[train_all] a training is already running in another window; this one stops.",
+              flush=True)
+        return 1
     limits = ["--max-ram-gb", f"{ram:g}"]
     if args.device == "cuda":
         limits += ["--max-gpu-memory-gb", f"{gpu:g}"]
     RUNS.mkdir(exist_ok=True)
+    for f in pause_files():  # left from an earlier pause; a new one pauses this run
+        f.unlink()
+        print(f"[train_all] removed {f.name} left from the last pause", flush=True)
     rate = machine.get("spectra_per_second")
     print(f"[train_all] GPU training, {workers} data workers, RAM budget {ram:g} GB, GPU memory "
           f"cap {gpu:g} GB", flush=True)
@@ -208,9 +255,11 @@ def main() -> int:
     pool = {"workers": int(workers)}
     try:
         for k, stage in enumerate(stages):
-            after = ROOT / stages[k - 1]["out"] if k > 0 else None
+            after = ROOT / stages[k - 1]["out"] if k > 0 else after_only
             rc = run_stage(stage, pool, limits, args.device, args.restart, after)
-            if rc == PAUSED or (rc != 0 and interrupted["count"]):
+            # a pause asked for while the stage was finishing (its last validation) or
+            # starting up still stops here, before the next stage
+            if rc == PAUSED or interrupted["count"] or (rc == 0 and pause_files()):
                 print(f"[train_all] paused in {stage['name']}. Run train_all again to continue.",
                       flush=True)
                 return PAUSED

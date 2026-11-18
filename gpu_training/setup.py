@@ -92,20 +92,38 @@ def driver() -> dict:
     return info
 
 
-def torch_on_gpu() -> str | None:
-    """'version, CUDA version, GPU' if the environment's PyTorch computes on the GPU, else None."""
+#: what a PyTorch build that does not match this GPU or driver says; anything else (a missing
+#: DLL, the paging file, a virus scanner) is not fixed by another 3 GB download
+CUDA_MISMATCH = ("CUDA is not available", "no kernel image", "driver version is insufficient",
+                 "not compiled with CUDA", "CUDA driver", "cudaGetDeviceCount", "sm_",
+                 "No module named 'torch'")
+
+
+def torch_on_gpu() -> tuple[str | None, str]:
+    """('version | CUDA version | GPU', '') if the environment's PyTorch computes on the GPU,
+    else (None, the reason); the reason is also written to the log."""
     if not VPY.exists():
-        return None
-    code = ("import torch; assert torch.cuda.is_available(); "
-            "x = torch.randn(2048, 2048, device='cuda'); y = (x @ x).sum().item(); "
-            "torch.cuda.synchronize(); "
+        return None, "no environment yet"
+    code = ("import torch, sys\n"
+            "if not torch.cuda.is_available(): sys.exit('CUDA is not available to this PyTorch "
+            "' + torch.__version__)\n"
+            "x = torch.randn(2048, 2048, device='cuda'); y = (x @ x).sum().item()\n"
+            "torch.cuda.synchronize()\n"
             "print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0), sep=' | ')")
     try:
-        out = subprocess.run([str(VPY), "-c", code], capture_output=True, text=True, timeout=300,
+        out = subprocess.run([str(VPY), "-c", code], capture_output=True, text=True, timeout=900,
                              cwd=ROOT)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip() if out.returncode == 0 else None
+    except subprocess.TimeoutExpired:
+        reason = "the GPU check did not finish within 15 minutes"
+    except OSError as exc:
+        reason = f"the GPU check could not run: {exc}"
+    else:
+        if out.returncode == 0:
+            return out.stdout.strip(), ""
+        reason = (out.stderr or out.stdout).strip()[-1500:] or f"exit code {out.returncode}"
+    with open(LOG, "a", encoding="utf-8") as fh:
+        fh.write(f"GPU check failed: {reason}\n")
+    return None, reason
 
 
 def main() -> int:
@@ -157,7 +175,7 @@ def main() -> int:
     run([VPY, "-m", "pip", "install", "--upgrade", "pip"], quiet=True)
 
     # 3. PyTorch for CUDA
-    current = None if args.reinstall_torch else torch_on_gpu()
+    current, reason = (None, "") if args.reinstall_torch else torch_on_gpu()
     if current:
         say(f"PyTorch already computes on the GPU: {current}")
     else:
@@ -166,22 +184,34 @@ def main() -> int:
                 f"3 GB) ...")
             rc = run([VPY, "-m", "pip", "install", "--upgrade", "--force-reinstall", "torch",
                       "--index-url", TORCH_INDEX.format(build)], check=False)
-            current = torch_on_gpu() if rc == 0 else None
+            if rc != 0:
+                say(f"pip could not install the {build} build (exit code {rc}); trying the next "
+                    f"one.")
+                continue
+            current, reason = torch_on_gpu()
             if current:
                 say(f"PyTorch computes on the GPU: {current}")
                 break
-            say(f"The {build} build did not work here; trying the next one.")
+            say(f"The {build} build does not compute on the GPU here:\n    {reason[-600:]}")
+            if not any(m in reason for m in CUDA_MISMATCH):
+                say("That is not a mismatch between PyTorch and the driver, so another build would "
+                    "not help. Fix the cause above (for example install the Microsoft Visual C++ "
+                    "Redistributable, or let Windows manage the paging file size), then run this "
+                    "again.")
+                return 1
+            say("Trying the next build.")
         if not current:
-            say("No PyTorch CUDA build worked. Check the driver (nvidia-smi), then run this again; "
-                f"details are in {LOG}.")
+            say("No PyTorch CUDA build worked. Update the NVIDIA driver (nvidia-smi), then run "
+                f"this again; details are in {LOG}.")
             return 1
 
     # 4. this package
     say("Installing this package for training (numba, onnx, psutil) ...")
     run([VPY, "-m", "pip", "install", "-e", ".[train,fast]"])
-    if torch_on_gpu() is None:  # a dependency must never have replaced the CUDA build
-        say("PyTorch lost its CUDA build while installing the package; run this again with "
-            "--reinstall-torch.")
+    current, reason = torch_on_gpu()  # a dependency must never have replaced the CUDA build
+    if current is None:
+        say(f"PyTorch no longer computes on the GPU after installing the package:\n    "
+            f"{reason[-600:]}\nRun this again with --reinstall-torch.")
         return 1
 
     # 5. measure the machine within the limits
