@@ -18,3 +18,4 @@ results/
 htmlcov/
 src/lcmsdeconv/models/*.pt
 /models/
+gpu_training/machine.json
