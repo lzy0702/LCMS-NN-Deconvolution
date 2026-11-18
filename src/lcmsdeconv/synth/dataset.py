@@ -159,9 +159,15 @@ def worker_init(_worker_id: int) -> None:
     try:
         if sys.platform == "win32":
             import ctypes
+            from ctypes import wintypes
 
+            # typed prototypes: untyped, the 64-bit pseudo-handle of GetCurrentProcess is cut
+            # to 32 bits and the call silently fails
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel32.SetPriorityClass.restype = wintypes.BOOL
             below_normal = 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
-            kernel32 = ctypes.windll.kernel32
             kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal)
         else:
             os.nice(5)

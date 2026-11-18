@@ -97,7 +97,10 @@ The best checkpoint is saved whenever it improves. Logs of every epoch are writt
 
 - **Pause:** press **Ctrl+C once** in the training window, or create an empty file named
   `PAUSE` (or `PAUSE.txt`, as Windows Explorer names a new text file) in the `runs` folder. The
-  current step finishes, the complete training state is saved, and the program ends.
+  current step finishes, the complete training state is saved, and the program ends. After
+  Ctrl+C, Windows then asks "Terminate batch job (Y/N)?": the state is already saved, so either
+  answer is safe (N keeps the window open so you can read the last messages). The PAUSE file
+  pauses without that question.
 - **Continue:** run `gpu_training\train_all.bat` again. A finished stage is skipped, and an
   interrupted one continues from the saved epoch and step with the same learning-rate schedule.
   The same works after a crash, a reboot or a power cut. The state is saved every 10 minutes
@@ -107,6 +110,8 @@ The best checkpoint is saved whenever it improves. Logs of every epoch are writt
   also started afresh by itself when the stage before it has been trained again.
 - **Earlier package versions:** a run they started is refused, because its training spectra
   differ. Start again with `--restart`.
+- **One at a time:** a second `train_all.bat` started while one is running stops at once; two
+  runs would share their files and double the memory.
 
 ## The two stages
 

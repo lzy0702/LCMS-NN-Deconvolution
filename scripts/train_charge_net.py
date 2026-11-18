@@ -113,6 +113,9 @@ def main():
                     help="continue a paused or interrupted run from <out>.resume.pt")
     ap.add_argument("--restart", action="store_true",
                     help="discard a paused run's saved state and start again")
+    ap.add_argument("--keep-pause-files", action="store_true",
+                    help="do not remove PAUSE files found at the start (gpu_training/train_all.py "
+                         "clears them itself)")
     ap.add_argument("--save-every", type=float, default=10.0,
                     help="minutes between saves of the resumable training state")
     ap.add_argument("--out", default="runs/ladder.pt")
@@ -141,6 +144,7 @@ def main():
                       fresh_each_epoch=not args.repeat_frames, cache_frames=args.repeat_frames,
                       init=args.init, resume=args.resume, restart=restart,
                       save_every_minutes=args.save_every, max_ram_gb=args.max_ram_gb,
+                      clear_pause_files=not args.keep_pause_files,
                       max_gpu_memory_gb=args.max_gpu_memory_gb)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
