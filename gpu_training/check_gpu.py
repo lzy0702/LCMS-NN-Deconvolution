@@ -1,6 +1,7 @@
 """Check that PyTorch sees the GPU and that one LadderNet training step runs on it.
 
-    python gpu_training/check_gpu.py
+    .venv\\Scripts\\python gpu_training\\check_gpu.py      (Windows)
+    .venv/bin/python gpu_training/check_gpu.py          (Linux)
 """
 
 import sys
@@ -11,7 +12,8 @@ def main() -> int:
     try:
         import torch
     except ImportError:
-        print("PyTorch is not installed. See gpu_training/README.md, step 3.")
+        print("PyTorch is not installed in this Python. Run this with the environment's Python "
+              "(.venv\\Scripts\\python on Windows), or run gpu_training\\setup_windows.bat.")
         return 1
     print(f"python {sys.version.split()[0]}, torch {torch.__version__}")
     try:
@@ -23,7 +25,8 @@ def main() -> int:
         print('Install it with: pip install -e ".[train,fast]"   (or: pip install numba)')
     if not torch.cuda.is_available():
         print("CUDA is NOT available: this torch build is CPU-only or the NVIDIA driver is missing.")
-        print("Reinstall torch with the CUDA command from https://pytorch.org/get-started/locally/")
+        print("Reinstall PyTorch for CUDA with: gpu_training\\setup_windows.bat --reinstall-torch "
+              "(Linux: bash gpu_training/setup_linux.sh --reinstall-torch)")
         return 1
     dev = torch.device("cuda")
     props = torch.cuda.get_device_properties(dev)

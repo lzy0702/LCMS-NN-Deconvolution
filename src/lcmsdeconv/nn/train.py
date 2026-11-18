@@ -121,9 +121,10 @@ def train(config: TrainConfig, synth_config=None):
     device = _device(config.device)
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit(
-            "CUDA is not available, and this run is set to train on the GPU only. Check that "
-            "the NVIDIA driver is installed and that PyTorch is a CUDA build "
-            "(python gpu_training/check_gpu.py); a CPU run needs --device cpu.")
+            "CUDA is not available, and this run is set to train on the GPU only. Check with "
+            "'.venv\\Scripts\\python gpu_training\\check_gpu.py' (Linux: .venv/bin/python "
+            "gpu_training/check_gpu.py); to reinstall PyTorch for CUDA, run "
+            "'gpu_training\\setup_windows.bat --reinstall-torch'.")
     if device.startswith("cuda") and config.max_gpu_memory_gb:
         _cap_gpu_memory(torch, config.max_gpu_memory_gb)
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
@@ -459,10 +460,9 @@ class _KeepAwake:
 
 
 class _RamWatch:
-    """Memory of this process and its data workers together, checked at most every 15 s.
-
-    Windows counts each process's private bytes (memory no other process shares), elsewhere
-    its resident set; either errs on the high side of what the task manager shows."""
+    """RAM of this process and its data workers together, checked at most every 15 s: the sum
+    of their unique sets (on Windows, private working sets), as the task manager shows them
+    (:func:`lcmsdeconv.nn.machine.process_ram_gb`)."""
 
     def __init__(self, limit_gb: float | None, every: float = 15.0):
         self.limit = limit_gb
@@ -481,18 +481,17 @@ class _RamWatch:
     def used_gb(self) -> float:
         if self.proc is None:
             return 0.0
-        import sys
-
         import psutil
 
-        total = 0
+        from .machine import process_ram_gb
+
+        total = 0.0
         for p in [self.proc, *self.proc.children(recursive=True)]:
             try:
-                mi = p.memory_info()
-                total += getattr(mi, "private", 0) if sys.platform == "win32" else mi.rss
+                total += process_ram_gb(p)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        return total / 2**30
+        return total
 
     def over(self) -> bool:
         if not self.limit or self.proc is None or time.time() - self.last < self.every:

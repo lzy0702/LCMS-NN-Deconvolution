@@ -47,8 +47,9 @@ def say(msg: str = "") -> None:
         fh.write(msg + "\n")
 
 
-def run(cmd: list, check: bool = True, quiet: bool = False) -> int:
-    """Run ``cmd``, showing and logging its output; returns its exit code."""
+def run(cmd: list, check: bool = True, quiet: bool = False, tail: list | None = None) -> int:
+    """Run ``cmd``, showing and logging its output; returns its exit code. ``tail``, if given,
+    receives the last lines of the output."""
     say("> " + " ".join(str(c) for c in cmd))
     env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
     proc = subprocess.Popen([str(c) for c in cmd], cwd=ROOT, stdout=subprocess.PIPE,
@@ -57,6 +58,9 @@ def run(cmd: list, check: bool = True, quiet: bool = False) -> int:
     with open(LOG, "a", encoding="utf-8") as fh:
         for line in proc.stdout:
             fh.write(line)
+            if tail is not None:
+                tail.append(line)
+                del tail[:-40]
             if not quiet:
                 print(line, end="", flush=True)
     rc = proc.wait()
@@ -182,12 +186,20 @@ def main() -> int:
         for build in builds:
             say(f"Installing PyTorch for CUDA ({build}) from download.pytorch.org (about "
                 f"3 GB) ...")
+            tail: list = []
             rc = run([VPY, "-m", "pip", "install", "--upgrade", "--force-reinstall", "torch",
-                      "--index-url", TORCH_INDEX.format(build)], check=False)
+                      "--index-url", TORCH_INDEX.format(build)], check=False, tail=tail)
             if rc != 0:
-                say(f"pip could not install the {build} build (exit code {rc}); trying the next "
-                    f"one.")
-                continue
+                text = "".join(tail)
+                if ("No matching distribution found for torch" in text
+                        or "Could not find a version that satisfies the requirement torch" in text):
+                    say(f"There is no {build} build for this Python; trying the next one.")
+                    continue
+                say("pip could not download or install PyTorch (see the error above). Usual "
+                    "causes: no access to download.pytorch.org (a proxy or firewall), less than "
+                    "about 10 GB free on the disk, or another program still using .venv (close "
+                    f"other Python windows). The full output is in {LOG}.")
+                return 1
             current, reason = torch_on_gpu()
             if current:
                 say(f"PyTorch computes on the GPU: {current}")
@@ -201,8 +213,8 @@ def main() -> int:
                 return 1
             say("Trying the next build.")
         if not current:
-            say("No PyTorch CUDA build worked. Update the NVIDIA driver (nvidia-smi), then run "
-                f"this again; details are in {LOG}.")
+            say("No PyTorch CUDA build worked with this driver: update the NVIDIA driver "
+                f"(nvidia-smi), then run this again. Details are in {LOG}.")
             return 1
 
     # 4. this package
