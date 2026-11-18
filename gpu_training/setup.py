@@ -39,6 +39,13 @@ VPY = VENV / ("Scripts/python.exe" if WINDOWS else "bin/python")
 #: PyTorch CUDA builds, newest first, with the CUDA version the driver must support
 TORCH_BUILDS = [("cu132", (13, 2)), ("cu130", (13, 0)), ("cu128", (12, 8)), ("cu126", (12, 6))]
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"
+#: pip output that means download.pytorch.org could not be reached (pip then also says it found
+#: no matching distribution, as it does when an index has no build for this Python)
+NETWORK_TROUBLE = ("Tunnel connection failed", "ProxyError", "Max retries exceeded",
+                   "Failed to establish a new connection", "ConnectionError", "Connection reset",
+                   "Read timed out", "SSLError", "certificate verify failed",
+                   "Temporary failure in name resolution", "getaddrinfo failed",
+                   "Retrying (Retry(")
 
 
 def say(msg: str = "") -> None:
@@ -183,6 +190,7 @@ def main() -> int:
     if current:
         say(f"PyTorch already computes on the GPU: {current}")
     else:
+        missing = []  # builds the index has none of for this Python
         for build in builds:
             say(f"Installing PyTorch for CUDA ({build}) from download.pytorch.org (about "
                 f"3 GB) ...")
@@ -191,9 +199,16 @@ def main() -> int:
                       "--index-url", TORCH_INDEX.format(build)], check=False, tail=tail)
             if rc != 0:
                 text = "".join(tail)
+                if any(m in text for m in NETWORK_TROUBLE):
+                    say("pip could not reach download.pytorch.org (see the messages above): a "
+                        "proxy or firewall blocks it, or the connection is down. Check that "
+                        "https://download.pytorch.org/whl/ opens in a browser on this computer, "
+                        "then run this again.")
+                    return 1
                 if ("No matching distribution found for torch" in text
                         or "Could not find a version that satisfies the requirement torch" in text):
                     say(f"There is no {build} build for this Python; trying the next one.")
+                    missing.append(build)
                     continue
                 say("pip could not download or install PyTorch (see the error above). Usual "
                     "causes: no access to download.pytorch.org (a proxy or firewall), less than "
@@ -212,6 +227,12 @@ def main() -> int:
                     "again.")
                 return 1
             say("Trying the next build.")
+        if not current and len(missing) == len(builds):
+            say(f"PyTorch has no CUDA build for Python {v.major}.{v.minor} on "
+                f"download.pytorch.org ({', '.join(builds)}). Install Python 3.12 "
+                "(winget install -e --id Python.Python.3.12), delete the .venv folder and run "
+                "this again.")
+            return 1
         if not current:
             say("No PyTorch CUDA build worked with this driver: update the NVIDIA driver "
                 f"(nvidia-smi), then run this again. Details are in {LOG}.")
