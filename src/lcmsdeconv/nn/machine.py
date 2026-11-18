@@ -57,6 +57,17 @@ def auto_workers(ram_budget_gb: float | None = None, worker_gb: float = WORKER_G
     return max(1, min(by_cpu, by_ram))
 
 
+def process_ram_gb(proc) -> float:
+    """RAM a process holds for itself, as the task manager's memory column shows it: its unique
+    set (on Windows the private working set). Memory merely reserved - Windows charges every
+    process that loads the CUDA libraries of PyTorch several GB of commit it never touches - and
+    libraries shared between processes are not counted. ``proc`` is a psutil.Process."""
+    try:
+        return proc.memory_full_info().uss / 2**30
+    except Exception:  # access denied, or a platform without it: the resident set
+        return proc.memory_info().rss / 2**30
+
+
 def single_threaded_workers() -> None:
     """One thread per data worker: the workers are processes, and numerical libraries that
     each start a thread per core would make them fight over the processor. Spawned workers

@@ -38,7 +38,8 @@ from a terminal in the `lcmsdeconv` folder. It:
 At the end it prints the expected training time. Its output is also in `gpu_training\setup.log`.
 Other limits: `gpu_training\setup_windows.bat --ram-gb 12 --gpu-memory-gb 12`.
 
-**2. Train (about 2-3 hours):** double-click `gpu_training\train_all.bat`. It runs stage 1 and
+**2. Train (about 2-3 hours; setup prints the estimate for your computer):** double-click
+`gpu_training\train_all.bat`. It runs stage 1 and
 stage 2 (below), exports both networks to ONNX and packs the results. You can pause at any
 time and continue later (see "Pausing and resuming").
 
@@ -50,10 +51,12 @@ networks, their ONNX exports, the training logs, `machine.json` and `setup.log`.
 - **GPU memory, at most 14 GB:** PyTorch's memory is capped at 14 GB less an allowance for the
   CUDA context. A training step needs about 4 GB, so the cap is never close. It also keeps the
   Windows driver from spilling GPU memory into system RAM.
-- **RAM, at most 16 GB:** the training process plus its data workers. Setup measures what one
-  worker takes on your machine and starts as many as fit, with a 1.5 GB margin. If the budget is
-  reached anyway, the run pauses safely and resumes at once with two workers fewer (this is
-  remembered in `machine.json`). To change it: `train_all.bat --ram-gb 20`.
+- **RAM, at most 16 GB:** the training process plus its data workers, counted as Task Manager
+  counts memory (each process's private working set). Setup measures what one worker takes on
+  your machine and starts as many as fit, with a 1.5 GB margin. If the budget is reached
+  anyway, the run pauses safely and resumes at once with two workers fewer (this is remembered
+  in `machine.json`). For another budget, `train_all.bat --ram-gb 20` starts as many workers as
+  the measured sizes allow, or re-measure with `setup_windows.bat --ram-gb 20`.
 - **Processor:** the workers run at below-normal priority, so the computer stays responsive for
   other work; when it is idle, they use the cores fully. With the 16 GB budget, about 8 to 12 of
   the 24 cores are busy. To leave more free, use fewer workers (slower):
@@ -157,13 +160,16 @@ bash gpu_training/train_all.sh
 
 - **"Python 3.12 was not found"** (from `setup_windows.bat`): install it as in the quick start,
   then open a new terminal so that PATH is updated.
-- **"nvidia-smi was not found"** or **"No PyTorch CUDA build worked"**: install or update the
-  NVIDIA driver and run the setup again. The setup downloads PyTorch from
-  `download.pytorch.org`, which a company firewall or proxy may block.
+- **"nvidia-smi was not found"** or **"No PyTorch CUDA build worked with this driver"**:
+  install or update the NVIDIA driver and run the setup again.
+- **"pip could not download or install PyTorch"**: the setup downloads PyTorch from
+  `download.pytorch.org`, which a company proxy or firewall may block; it also needs about
+  10 GB of free disk, and no other program may be using `.venv` (close other Python windows).
 - **"CUDA is not available, and this run is set to train on the GPU only"**: PyTorch lost its
   CUDA build. Run `gpu_training\setup_windows.bat --reinstall-torch`.
-- **"The RAM budget was reached with 1 worker(s)"**: something else on the computer uses much
-  memory, or the budget is very low. Raise it with `--ram-gb`.
+- **"the training process and 1 worker already need more than the RAM budget"**: the budget is
+  too low for this training (`gpu_training\machine.json` lists what the training process and
+  one worker need). Raise it with `--ram-gb`.
 - **`[WinError 1455] The paging file is too small`** while workers start: let Windows manage
   the paging file size (System > About > Advanced system settings > Performance > Advanced >
   Virtual memory), or use fewer workers (`--workers 6`). The setup's measurement already halves

@@ -125,9 +125,10 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool,
             _remember_workers(pool["workers"])
             continue
         if rc == MEMORY:
-            print(f"[train_all] {stage['name']}: the RAM budget was reached with "
-                  f"{workers} worker(s); raise it with --ram-gb, then run train_all again.",
-                  flush=True)
+            print(f"[train_all] {stage['name']}: the training process and {workers} worker "
+                  f"already need more than the RAM budget; it is too low for this training "
+                  f"(see gpu_training/machine.json). Raise it with --ram-gb, then run "
+                  f"train_all again.", flush=True)
             return PAUSED
         return rc
 
@@ -214,11 +215,18 @@ def main() -> int:
     machine = json.loads(MACHINE.read_text(encoding="utf-8")) if MACHINE.exists() else {}
     ram = args.ram_gb or machine.get("ram_budget_gb") or 16.0
     gpu = args.gpu_memory_gb or machine.get("gpu_memory_gb") or 14.0
-    workers = args.workers or machine.get("workers")
-    if workers is None:
-        sys.path.insert(0, str(ROOT / "src"))
-        from lcmsdeconv.nn.machine import auto_workers
+    sys.path.insert(0, str(ROOT / "src"))
+    from lcmsdeconv.nn.machine import MARGIN_GB, auto_workers, cpu_cores
 
+    workers = args.workers or machine.get("workers")
+    if not args.workers and machine.get("worker_gb") and ram != machine.get("ram_budget_gb"):
+        # another budget than setup measured for: as many workers as it holds, by the
+        # memory measured for the training process and for one worker
+        cores = cpu_cores()
+        by_cpu = cores - 2 if cores <= 8 else cores - 4
+        fit = int((ram - machine.get("main_gb", 3.5) - MARGIN_GB) // machine["worker_gb"])
+        workers = max(1, min(by_cpu, fit))
+    if workers is None:
         workers = auto_workers(ram)
     stages = SMOKE if args.smoke else STAGES
     after_only = None
@@ -243,13 +251,18 @@ def main() -> int:
     for f in pause_files():  # left from an earlier pause; a new one pauses this run
         f.unlink()
         print(f"[train_all] removed {f.name} left from the last pause", flush=True)
-    rate = machine.get("spectra_per_second")
     print(f"[train_all] GPU training, {workers} data workers, RAM budget {ram:g} GB, GPU memory "
           f"cap {gpu:g} GB", flush=True)
-    if rate and not args.smoke:
-        hours = sum(s["spectra"] for s in stages) / rate / 3600 * 1.1
-        print(f"[train_all] about {hours:.1f} h in all at the measured {rate:.0f} spectra/s",
-              flush=True)
+    measured_workers = machine.get("workers") or workers
+    rates = [machine.get(f"spectra_per_second_stage{k}") or machine.get("spectra_per_second")
+             for k in (1, 2)]
+    if all(rates) and not args.smoke:
+        scale = workers / max(measured_workers, 1)
+        hours = 1.1 * sum(st["spectra"] / (rates[STAGES.index(st)] * scale)
+                          for st in stages if st in STAGES) / 3600
+        print(f"[train_all] about {hours:.1f} h of training from the start (the rates setup "
+              f"measured, {rates[0]:.0f} and {rates[1]:.0f} spectra/s); each epoch then reports "
+              f"the time left", flush=True)
     signal.signal(signal.SIGINT, on_ctrl_c)
 
     pool = {"workers": int(workers)}

@@ -25,10 +25,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def process_gb(proc) -> float:
-    """Memory of one process: private bytes on Windows (what no other process shares), the
-    resident set elsewhere."""
-    mi = proc.memory_info()
-    return (getattr(mi, "private", 0) if sys.platform == "win32" else mi.rss) / 2**30
+    """RAM of one process as the task manager shows it (its private working set)."""
+    from lcmsdeconv.nn.machine import process_ram_gb
+
+    return process_ram_gb(proc)
+
+
+def commit_gb(proc) -> float:
+    """Memory Windows has promised the process (private bytes), reserved or used; only for the
+    record: it is not RAM, but RAM plus the paging file must hold it."""
+    return getattr(proc.memory_info(), "private", 0) / 2**30
 
 
 def gpu_step(gpu_memory_gb: float, batch_size: int = 8) -> dict:
@@ -71,46 +77,49 @@ def gpu_step(gpu_memory_gb: float, batch_size: int = 8) -> dict:
             "torch": torch.__version__, "torch_cuda": torch.version.cuda}
 
 
-def workers_run(n: int, rounds: int = 4, batch_size: int = 8) -> dict:
-    """Start ``n`` workers as training does and measure their speed and memory."""
+def workers_run(n: int, stage: int, rounds: int = 4, batch_size: int = 8) -> dict:
+    """Start ``n`` workers as training does on the spectra of ``stage`` (1, or 2 with dense
+    background) and measure their speed and memory. Speed is timed from the moment every
+    worker has delivered its first batch, so that start-up does not count."""
     import psutil
     from torch.utils.data import DataLoader
     from train_charge_net import mixture
 
     from lcmsdeconv.synth.dataset import FrameDataset, mp_context, worker_init
 
-    mix = mixture(background_ions=200)
+    mix = mixture(background_ions=200 if stage == 2 else None)
     for _w, c in mix:
-        c.singly_charged = "keep"
-    ds = FrameDataset(mix, n * rounds * batch_size, base_seed=4242)
+        c.singly_charged = "keep" if stage == 2 else "ignore"
+    ds = FrameDataset(mix, n * rounds * batch_size, base_seed=4242 + stage)
     loader = DataLoader(ds, batch_size=batch_size, num_workers=n, worker_init_fn=worker_init,
                         **mp_context(n))
     me = psutil.Process()
     started = time.time()
-    first = None
+    warm = None
     spectra = 0
-    per_worker = 0.0
-    total_workers = 0.0
+    per_worker = commit = total_workers = 0.0
     for k, (x, *_rest) in enumerate(loader):
-        if first is None:
-            first = time.time()  # workers are up and the first batch is done
-        else:
+        if k == n - 1:
+            warm = time.time()  # every worker is up and has delivered a batch
+        elif k >= n:
             spectra += x.shape[0]
         if k % max(1, n // 2) == 0:
-            kids = me.children(recursive=True)
             sizes = []
-            for p in kids:
+            for p in me.children(recursive=True):
                 try:
-                    sizes.append(process_gb(p))
+                    sizes.append((process_gb(p), commit_gb(p)))
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             if sizes:
-                per_worker = max(per_worker, max(sizes))
-                total_workers = max(total_workers, sum(sizes))
-    elapsed = time.time() - (first or started)
-    return {"workers": n, "startup_seconds": round((first or started) - started, 1),
+                per_worker = max(per_worker, max(a for a, _b in sizes))
+                commit = max(commit, max(b for _a, b in sizes))
+                total_workers = max(total_workers, sum(a for a, _b in sizes))
+    elapsed = time.time() - (warm or started)
+    return {"stage": stage, "workers": n,
+            "startup_seconds": round((warm or started) - started, 1),
             "spectra_per_second": round(spectra / max(elapsed, 1e-9), 1),
-            "worker_gb": round(per_worker, 2), "workers_total_gb": round(total_workers, 2)}
+            "worker_gb": round(per_worker, 2), "worker_commit_gb": round(commit, 2),
+            "workers_total_gb": round(total_workers, 2)}
 
 
 def main() -> int:
@@ -147,37 +156,46 @@ def main() -> int:
     single_threaded_workers()
     cores = cpu_cores()
     n = args.workers or auto_workers(args.ram_gb, main_gb=max(main_gb, 1.0))
-    run = None
-    while n >= 1:
-        print(f"Measuring {n} data workers ...", flush=True)
-        try:
-            run = workers_run(n)
-            break
-        except (OSError, RuntimeError) as exc:  # e.g. Windows error 1455: paging file too small
-            print(f"  {n} workers failed to run ({exc}); trying {n // 2}", flush=True)
-            n //= 2
-    if run is None:
-        print("No data worker could be started.")
-        return 1
-    worker_gb = max(run["worker_gb"], 0.3)
+    runs = {}
+    for stage in (1, 2):
+        while n >= 1:
+            print(f"Measuring {n} data workers on stage-{stage} spectra ...", flush=True)
+            try:
+                runs[stage] = workers_run(n, stage)
+                break
+            except (OSError, RuntimeError) as exc:  # e.g. Windows error 1455: paging file
+                print(f"  {n} workers failed to run ({exc}); trying {n // 2}", flush=True)
+                n //= 2
+        if stage not in runs:
+            print("No data worker could be started.")
+            return 1
+        r = runs[stage]
+        print(f"  {r['workers']} workers: {r['spectra_per_second']:.0f} spectra/s after "
+              f"{r['startup_seconds']:.0f} s to start; {r['worker_gb']:.2f} GB of RAM each at "
+              f"most ({r['workers_total_gb']:.1f} GB together; {r['worker_commit_gb']:.1f} GB "
+              f"committed each)", flush=True)
+    worker_gb = max(max(r["worker_gb"] for r in runs.values()), 0.3)
     fit = int((args.ram_gb - main_gb - MARGIN_GB) // worker_gb)
     by_cpu = cores - 2 if cores <= 8 else cores - 4
     chosen = args.workers or max(1, min(by_cpu, fit))
-    rate = run["spectra_per_second"] * chosen / max(run["workers"], 1)
-    print(f"  {run['workers']} workers: {run['spectra_per_second']:.0f} spectra/s after "
-          f"{run['startup_seconds']:.0f} s to start; {worker_gb:.2f} GB each at most "
-          f"({run['workers_total_gb']:.1f} GB together)", flush=True)
+    rates = {s: r["spectra_per_second"] * chosen / max(r["workers"], 1) for s, r in runs.items()}
+    # train_all.py: stage 1 is 40 x 6000 spectra, stage 2 16 x 6000; 10 % for validation
+    hours = 1.1 * (240_000 / max(rates[1], 1e-6) + 96_000 / max(rates[2], 1e-6)) / 3600
     gpu_rate = 8 / max(gpu["step_seconds"], 1e-6)
     info = {"workers": chosen, "ram_budget_gb": args.ram_gb, "gpu_memory_gb": args.gpu_memory_gb,
             "main_gb": round(main_gb, 2), "worker_gb": round(worker_gb, 2),
             "expected_ram_gb": round(main_gb + chosen * worker_gb, 1),
-            "spectra_per_second": round(rate, 1), "gpu_spectra_per_second": round(gpu_rate, 1),
-            "cores": cores, "measured": run, **gpu}
+            "spectra_per_second": round(min(rates.values()), 1),
+            "spectra_per_second_stage1": round(rates[1], 1),
+            "spectra_per_second_stage2": round(rates[2], 1),
+            "expected_hours": round(hours, 1), "gpu_spectra_per_second": round(gpu_rate, 1),
+            "cores": cores, "measured": list(runs.values()), **gpu}
     args.out.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     print(f"Chosen: {chosen} data workers (about {info['expected_ram_gb']:.1f} GB of RAM with "
           f"the training process, budget {args.ram_gb:g} GB; {cores} cores). Expected "
-          f"{rate:.0f} spectra/s; the GPU could take {gpu_rate:.0f}/s, so the workers set the "
-          f"pace. Written to {args.out}", flush=True)
+          f"{rates[1]:.0f} spectra/s in stage 1 and {rates[2]:.0f} in stage 2, about "
+          f"{hours:.1f} h of training in all; the GPU could take {gpu_rate:.0f} spectra/s, so "
+          f"the workers set the pace. Written to {args.out}", flush=True)
     return 0
 
 
