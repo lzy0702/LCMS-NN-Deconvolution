@@ -2,197 +2,168 @@
 
 This folder trains **LadderNet**, the charge-assignment network of `lcmsdeconv`, on synthetic
 spectra generated on the fly. Nothing needs to be downloaded except Python packages, and no
-data leaves your computer. When it is done, upload the files listed in step 8.
+data leaves your computer. When it is done, you upload one zip file.
 
-## What is being trained
+The network trains on the **GPU only**: the scripts refuse to start rather than fall back to the
+processor. The training spectra are synthesised by data-worker processes on the processor
+while the GPU trains; that part cannot run on the GPU. By default everything stays within
+**16 GB of RAM** and **14 GB of GPU memory**, leaving the rest to Windows.
 
-For every bin of a spectrum on a logarithmic m/z grid, the network decides which charge state
-the ions there carry. A species' charge states lie at fixed offsets on that grid (ln(z/(z±k))),
-so LadderNet reads each candidate charge's "ladder" at exactly those offsets, plus the positions
-that only a doubled charge would fill, and learns how to weigh what it finds. It starts as an
-exact copy of the deterministic comb estimator and learns corrections to it. It has about
-22 000 parameters (the `full` size). The work is in generating the training spectra, which
-happens on your CPU cores while the GPU trains.
+## Quick start (Windows 11, RTX 4080 Super)
 
-Singly charged ions (chemical background) are the most common ions per bin and a network
-otherwise learns them first. Stage 1 therefore gives them **no weight** in the loss
-(`--singly-charged ignore`): they stay in the spectra, but predicting them is neither rewarded
-nor penalised. The alternative, `--singly-charged drop`, removes them from the spectra
-altogether.
+**Before you start**
 
-## Requirements
+- **NVIDIA driver.** In a terminal, `nvidia-smi` shows "CUDA Version" at the top right. 13.2 or
+  higher lets PyTorch use its main build; with 13.0 or 13.1 the setup uses the CUDA 13.0 build
+  instead. To update, install the current Game Ready or Studio driver. The CUDA toolkit is
+  **not** needed: PyTorch brings its own CUDA libraries.
+- **Python 3.12.** If you don't have it, install it with `winget install -e --id Python.Python.3.12`
+  (or from python.org, ticking "Add python.exe to PATH"). Python 3.11, 3.13 and 3.14 also work.
+- **Folder.** Unzip the package to a short path on the SSD, for example `C:\lcms`, so that
+  `C:\lcms\lcmsdeconv\gpu_training` exists. Avoid folders that OneDrive synchronises (on many
+  Windows 11 PCs, the Desktop and Documents): syncing slows checkpoint writing and can lock files.
+- **Disk.** About 10 GB free (PyTorch with CUDA is large).
 
-- An NVIDIA GPU with 6 GB or more and a recent driver (an RTX 4080 Super is plenty). A
-  `full`-size training step with a batch of 8 needs about 4 GB; with less, add
-  `--batch-size 4`.
-- Python 3.10, 3.11 or 3.12.
-- As many CPU cores as possible: spectrum generation, not the GPU, sets the pace. Each
-  spectrum-generating worker needs about 1 GB of memory; the scripts start up to 8.
-- About 8 GB of free disk: PyTorch with CUDA is large (its download is cached by pip).
+**1. Set up (once, 10-20 minutes):** double-click `gpu_training\setup_windows.bat`, or run it
+from a terminal in the `lcmsdeconv` folder. It:
 
-## 1. Unpack and open a terminal in this repository's top folder
+- creates the Python environment `.venv` and installs PyTorch for CUDA and this package;
+- checks that PyTorch computes on the GPU;
+- measures your machine: a real training step on the GPU under the 14 GB cap, and how much
+  memory each data worker takes and how many spectra per second they deliver;
+- chooses the number of workers that keeps the training within 16 GB of RAM (written to
+  `gpu_training\machine.json`);
+- runs a two-minute training to check everything end to end.
 
-The folder that contains `pyproject.toml`, `src/`, `scripts/` and `gpu_training/`.
+At the end it prints the expected training time. Its output is also in `gpu_training\setup.log`.
+Other limits: `gpu_training\setup_windows.bat --ram-gb 12 --gpu-memory-gb 12`.
 
-## 2. Create a Python environment
+**2. Train (about 2-3 hours):** double-click `gpu_training\train_all.bat`. It runs stage 1 and
+stage 2 (below), exports both networks to ONNX and packs the results. You can pause at any
+time and continue later (see "Pausing and resuming").
 
-Windows (PowerShell):
+**3. Upload** the file it names at the end: `runs\upload_YYYYMMDD-HHMM.zip`. It holds the two
+networks, their ONNX exports, the training logs, `machine.json` and `setup.log`.
 
-```powershell
-py -3.12 -m venv .venv
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # once: allows the activation script
-.venv\Scripts\Activate.ps1
-```
+## The limits, and how they are kept
 
-(In the old Command Prompt, `cmd.exe`, activate with `.venv\Scripts\activate.bat` instead;
-it needs no policy change.) Activation lasts for that terminal window only: in a new window,
-for example after a reboot, activate again before typing training commands. The run scripts of
-steps 6 and 7 find `.venv` by themselves.
+- **GPU memory, at most 14 GB:** PyTorch's memory is capped at 14 GB less an allowance for the
+  CUDA context. A training step needs about 4 GB, so the cap is never close. It also keeps the
+  Windows driver from spilling GPU memory into system RAM.
+- **RAM, at most 16 GB:** the training process plus its data workers. Setup measures what one
+  worker takes on your machine and starts as many as fit, with a 1.5 GB margin. If the budget is
+  reached anyway, the run pauses safely and resumes at once with two workers fewer (this is
+  remembered in `machine.json`). To change it: `train_all.bat --ram-gb 20`.
+- **Processor:** the workers run at below-normal priority, so the computer stays responsive for
+  other work; when it is idle, they use the cores fully. With the 16 GB budget, about 8 to 12 of
+  the 24 cores are busy. To leave more free, use fewer workers (slower):
+  `train_all.bat --workers 6`.
+- **Sleep:** while training, Windows is kept from going to sleep (the screen may still turn off).
+  A forced restart by Windows Update would interrupt the run (it then resumes from the last
+  saved state). Pause updates for the day, or set active hours, before a long run.
 
-Linux or macOS:
+## What the output means
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-## 3. Install PyTorch with CUDA
-
-Pick the command for your system at <https://pytorch.org/get-started/locally/> (Stable, your
-OS, Pip, Python, the newest CUDA version your driver supports). For example, for CUDA 12.4:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-```
-
-## 4. Install this package
-
-```bash
-pip install -e ".[train,fast]"
-```
-
-`fast` installs numba, which generates the training spectra about 20 times faster; without it
-the training takes days instead of hours.
-
-## 5. Check the installation (one minute)
-
-```bash
-python gpu_training/check_gpu.py
-python scripts/train_charge_net.py --smoke --device cuda
-```
-
-The first prints your GPU, confirms numba is installed and runs three training steps on the
-GPU (with a smaller batch if a batch of 8 does not fit; it then tells you which
-`--batch-size` to use). The second trains one tiny epoch
-end to end and should finish with `saved runs/smoke.pt`. If either fails, see
-**Troubleshooting** below.
-
-## 6. Stage 1: train without singly charged ions in the loss (2-4 hours)
-
-Stage 1 and stage 2 (step 7) are the two runs to do; together they take about 3-6 hours, and
-both can be paused and resumed at any time.
-
-Windows: `gpu_training\run_stage1.bat`. Linux or macOS: `bash gpu_training/run_stage1.sh`.
-Any option you add is passed on (for example `--workers 6` or `--batch-size 4`). Both run:
-
-```bash
-python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
-    --singly-charged ignore --epochs 30 --train-len 4000 --val-len 128 --batch-size 8 \
-    --workers 8 --out runs/ladder_full_ignore.pt
-```
-
-`--workers` is the number of processes generating spectra: the scripts use the number of
-CPU cores minus two, at most 8. Before the first epoch the run scores the comb estimator on the
-validation spectra (a minute or two), then every epoch prints lines such as
+Before the first epoch, each stage scores the comb estimator on the validation spectra (a
+minute). Then every epoch prints lines such as
 
 ```text
 epoch 8: charge_acc_given_ion_z2 ema 0.903 live 0.907 (comb 0.668) -> keeping live; bands {...}
   charge of z >= 2 ion bins read right (log-SNR / intensity weighted):
     time-of-flight  network 0.895 / 0.931   comb 0.689 / 0.844
     Orbitrap        network 0.850 / 0.917   comb 0.237 / 0.290
+  epoch took 2.1 min; 48 spectra/s; RAM 11.8 GB of 16; GPU 3.9 GB reserved; about 1.1 h to go
 ```
 
-(from a 45-minute CPU run of the small model). The number in brackets is the comb estimator as
-the pipeline runs it (over the whole spectrum, with charges read from isotope spacing on
-Orbitrap spectra), scored the same way on the same validation spectra. The two lines below
-split that comparison by kind of spectrum, each spectrum counting the same, with bins weighted
-by log-SNR (the training metric, which counts weak ions as much as strong ones) and by
-intensity (what the decoder's mass votes weigh). A network worth uploading beats the comb in
-all four numbers, as this one does; whether that carries over to species is decided afterwards,
-on the strongest spectra (where the comb still does well), on synthetic species and on the real
-runs (step 8). The best checkpoint is saved whenever it improves, so you can stop the run at any
-time (Ctrl+C) and still have the best model so far. A log of every epoch is written next to it
-(`runs/ladder_full_ignore.log.jsonl`).
+These example numbers come from a 45-minute CPU run of the small model; the last line is
+illustrative.
 
-### Pausing and resuming
+- **The number in brackets** is the comb estimator, scored the same way on the same validation
+  spectra. The comb is run as the pipeline runs it: over the whole spectrum, with charges read
+  from isotope spacing on Orbitrap spectra.
+- **The two lines below it** split that comparison by kind of spectrum, each spectrum counting
+  the same. Bins are weighted by log-SNR (the training metric, which counts weak ions as much
+  as strong ones) and by intensity (what the decoder's mass votes weigh). A network worth
+  uploading beats the comb in all four numbers. Whether that carries over to species is decided
+  after you upload: on the strongest spectra (where the comb still does well), on synthetic
+  species and on the real runs.
+- **The last line** gives speed, memory and the time left. "spectra/s" is set by the data
+  workers; the GPU could go several times faster.
 
-You can stop a run at any time and continue later, even in the middle of an epoch:
+The best checkpoint is saved whenever it improves. Logs of every epoch are written to
+`runs\*.log.jsonl` and the full console output to `runs\*.console.log`.
+
+## Pausing and resuming
 
 - **Pause:** press **Ctrl+C once** in the training window, or create an empty file named
-  `PAUSE` (or `PAUSE.txt`, as Windows Explorer names a new text file) in the `runs` folder,
-  useful if the window is hidden. The current step finishes,
-  the complete training state is saved to `runs/ladder_full_ignore.resume.pt`, and the
-  program ends with `paused: state saved ...`. Pressing Ctrl+C a second time aborts at once
-  without saving.
-- **Resume:** run exactly the same command again with `--resume` added, for example
-  `gpu_training\run_stage1.bat --resume` on Windows or `bash gpu_training/run_stage1.sh --resume`
-  on Linux. It continues from the saved epoch and step with the same learning-rate schedule,
-  and refuses to resume if you changed a setting that would alter the run (epochs, batch size,
-  spectra per epoch, learning rate, model). A leftover `PAUSE` file is removed automatically.
-- If you start the command **without** `--resume` while a paused run's state exists, it stops
-  with a message instead of overwriting it; add `--restart` to deliberately start over.
-- A run is only resumed on the same synthetic spectra it started with. A run started with an
-  earlier version of this package (whose Orbitrap spectra were rendered at too low a resolving
-  power) is refused: finish it with that version, or start again with `--restart`.
-- The state is also saved every 10 minutes (`--save-every` changes that) and after every
-  epoch, so a crash, a reboot or a power cut loses at most a few minutes of training: resume
-  the same way.
+  `PAUSE` (or `PAUSE.txt`, as Windows Explorer names a new text file) in the `runs` folder. The
+  current step finishes, the complete training state is saved, and the program ends.
+- **Continue:** run `gpu_training\train_all.bat` again. A finished stage is skipped, and an
+  interrupted one continues from the saved epoch and step with the same learning-rate schedule.
+  The same works after a crash, a reboot or a power cut. The state is saved every 10 minutes
+  and after every epoch, so at most a few minutes are lost.
+- **Abort:** pressing Ctrl+C twice stops at once. The last saved state is kept.
+- **Start over:** `gpu_training\train_all.bat --restart` discards the saved states. A stage is
+  also started afresh by itself when the stage before it has been trained again.
+- **Earlier package versions:** a run they started is refused, because its training spectra
+  differ. Start again with `--restart`.
 
-## 7. Stage 2: add singly charged ions and dense background (1-2 hours)
+## The two stages
 
-Stage 1 never penalises calling a singly charged ion multiply charged, and on real runs the
-column wash is full of singly charged background: a stage-1 network reads some of it as small
-multiply charged species. Stage 2 continues from stage 1 with singly charged ions trained on and
-up to 200 background ions per spectrum. Windows: `gpu_training\run_stage2.bat`. Linux or macOS:
-`bash gpu_training/run_stage2.sh`. Both run:
+Singly charged ions (chemical background) are the most common ions per bin, and a network learns
+them first. Training therefore has two stages:
 
-```bash
-python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
-    --singly-charged keep --background-ions 200 --init runs/ladder_full_ignore.pt \
-    --epochs 12 --lr 5e-4 --train-len 4000 --val-len 128 --batch-size 8 \
-    --workers 8 --out runs/ladder_full_stage2.pt
-```
+- **Stage 1** (`runs\ladder_full_ignore.pt`), 40 epochs of 6 000 new spectra: singly charged
+  ions stay in the spectra but get **no weight** in the loss. Predicting them is neither
+  rewarded nor penalised.
+- **Stage 2** (`runs\ladder_full_stage2.pt`), 16 epochs of 6 000, continuing from stage 1:
+  singly charged ions are trained on, with up to 200 background ions per spectrum. On the real
+  runs, the column wash is full of singly charged background that a stage-1 network reads as
+  small multiply charged species.
 
-Pausing and resuming work the same way (`--resume`). Here the printed accuracy covers all ion
-bins, singly charged ones included, so it is lower than stage 1's. Watch the `'z=1'` entry of
-`bands` rise over the epochs: it is what this stage is for. A six-epoch CPU version reached 0.3
-to 0.8 on it; if yours stays low after half the epochs, tell me when you upload.
+In stage 2 the printed accuracy covers all ion bins, singly charged ones included, so it is
+lower than stage 1's. Watch the `'z=1'` entry of `bands` rise over the epochs; that is what this
+stage is for. If it stays low after half the epochs, mention it when you upload.
 
-### Optional: the "drop" variant, for comparison
-
-Stage 1 with singly charged ions removed from the spectra altogether:
+The training spectra mix positive-mode proteins and polymers, negative-mode ion-pairing
+oligonucleotides on a time-of-flight instrument, the same on an Orbitrap at 35 000-280 000
+resolving power (a quarter of the spectra; your runs are at 140 000), and a general mix. Each
+stage runs `scripts/train_charge_net.py`, for example for stage 1:
 
 ```bash
 python scripts/train_charge_net.py --device cuda --arch ladder --model-size full \
-    --singly-charged drop --epochs 30 --train-len 4000 --val-len 128 --batch-size 8 \
-    --workers 8 --out runs/ladder_full_drop.pt
+    --singly-charged ignore --epochs 40 --train-len 6000 --lr 2e-3 --val-len 128 \
+    --batch-size 8 --workers 10 --max-ram-gb 16 --max-gpu-memory-gb 14 \
+    --out runs/ladder_full_ignore.pt
 ```
 
-## 8. What to upload
+`gpu_training\run_stage1.bat` and `run_stage2.bat` run one stage only, with the settings of
+`train_all.bat`. The script's exit code is 0 when a run finished, 3 when it paused, and 4 when it
+stopped at the memory budget.
 
-The `.pt` checkpoints and `.log.jsonl` logs from the `runs` folder (each checkpoint is well under
-1 MB): `runs/ladder_full_ignore.pt`, `runs/ladder_full_stage2.pt` and their `.log.jsonl` files
-(and `runs/ladder_full_drop.*` if you ran it). The `.resume.pt` files are not needed. Zip
-the `runs` folder if that is easier. The checkpoint is converted to ONNX and scored on the
-synthetic benchmark and on the four real runs after you upload it.
+## Linux
+
+```bash
+bash gpu_training/setup_linux.sh
+bash gpu_training/train_all.sh
+```
 
 ## Troubleshooting
 
-- `CUDA is NOT available`: the installed torch is a CPU build or the NVIDIA driver is missing.
-  Uninstall torch (`pip uninstall torch`) and install it again with the CUDA command of step 3.
-- The GPU is mostly idle: expected, spectrum generation is the bottleneck. More `--workers`
-  helps up to the number of cores.
-- Workers crash or the computer runs out of memory: lower `--workers` (each worker uses about
-  1 GB) or `--batch-size`.
-- On Windows a run seems to hang at the start: the first spectra take a while with many
-  workers; give it a minute.
+- **"Python 3.12 was not found"** (from `setup_windows.bat`): install it as in the quick start,
+  then open a new terminal so that PATH is updated.
+- **"nvidia-smi was not found"** or **"No PyTorch CUDA build worked"**: install or update the
+  NVIDIA driver and run the setup again. The setup downloads PyTorch from
+  `download.pytorch.org`, which a company firewall or proxy may block.
+- **"CUDA is not available, and this run is set to train on the GPU only"**: PyTorch lost its
+  CUDA build. Run `gpu_training\setup_windows.bat --reinstall-torch`.
+- **"The RAM budget was reached with 1 worker(s)"**: something else on the computer uses much
+  memory, or the budget is very low. Raise it with `--ram-gb`.
+- **`[WinError 1455] The paging file is too small`** while workers start: let Windows manage
+  the paging file size (System > About > Advanced system settings > Performance > Advanced >
+  Virtual memory), or use fewer workers (`--workers 6`). The setup's measurement already halves
+  the number of workers if they fail to start.
+- **Slow starts or saves:** real-time virus scanning of the folder can slow them. If you wish,
+  exclude it from an administrator PowerShell: `Add-MpPreference -ExclusionPath C:\lcms`.
+- **Re-measure the machine** after changing the limits or hardware: `.venv\Scripts\python
+  gpu_training\probe.py --ram-gb 16 --gpu-memory-gb 14`.

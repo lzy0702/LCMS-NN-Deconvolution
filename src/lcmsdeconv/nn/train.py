@@ -54,6 +54,12 @@ class TrainConfig:
     #: or ``resume`` such a run refuses to start rather than overwrite a paused run's state
     restart: bool = False
     save_every_minutes: float = 10.0
+    #: cap on this process's GPU memory (GB, CUDA context included); None leaves PyTorch's
+    #: default, the whole card
+    max_gpu_memory_gb: float | None = None
+    #: cap on the memory of this process and its data workers together (GB); when it is
+    #: exceeded the run pauses, saving its state, so that it can resume with fewer workers
+    max_ram_gb: float | None = None
 
 
 def _device(name: str):
@@ -110,6 +116,13 @@ def train(config: TrainConfig, synth_config=None):
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise SystemExit(
+            "CUDA is not available, and this run is set to train on the GPU only. Check that "
+            "the NVIDIA driver is installed and that PyTorch is a CUDA build "
+            "(python gpu_training/check_gpu.py); a CPU run needs --device cpu.")
+    if device.startswith("cuda") and config.max_gpu_memory_gb:
+        _cap_gpu_memory(torch, config.max_gpu_memory_gb)
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
                         comb_prior=config.comb_prior, arch=config.arch).to(device)
     if config.init:
@@ -119,11 +132,15 @@ def train(config: TrainConfig, synth_config=None):
     print(f"model {config.arch}/{config.model_size}: {model.num_params()/1e6:.3f}M params "
           f"on {device}; singly charged ions: {config.singly_charged}")
 
+    if config.num_workers > 0:
+        _warm_up(synth_config)
     tl, vl = make_dataloaders(synth_config, config.train_len, config.val_len,
                               batch_size=config.batch_size, num_workers=config.num_workers,
-                              base_seed=config.base_seed, cache=config.cache_frames)
+                              base_seed=config.base_seed, cache=config.cache_frames,
+                              pin_memory=device.startswith("cuda"))
+    steps_per_epoch = len(tl)
     opt = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    steps = max(1, len(tl)) * config.epochs
+    steps = max(1, steps_per_epoch) * config.epochs
     sched = OneCycleLR(opt, max_lr=config.lr, total_steps=steps, pct_start=0.2)
     loss_fn = ChargeLoss(heat_weight=config.heat_weight,
                          ignore_charges=(1,) if config.singly_charged == "ignore" else ())
@@ -177,7 +194,8 @@ def train(config: TrainConfig, synth_config=None):
         if epoch0 >= config.epochs:
             print(f"{resume_path}: this run already finished all {config.epochs} epochs")
         else:
-            print(f"resumed from {resume_path}: epoch {epoch0}, step {step0} of {len(tl)}")
+            print(f"resumed from {resume_path}: epoch {epoch0}, step {step0} of "
+                  f"{steps_per_epoch}")
     elif config.resume:
         print(f"nothing to resume at {resume_path}; starting from the beginning")
     for f in pause_files():
@@ -199,19 +217,19 @@ def train(config: TrainConfig, synth_config=None):
         # charges on Orbitrap spectra) on the validation frames, scored as a network is
         print("scoring the comb estimator, as the pipeline runs it, on the validation frames ...",
               flush=True)
-        comb = comb_baseline(vl)
+        comb = comb_baseline(vl, num_workers=config.num_workers)
         _log(log_path, {"comb_baseline": {k: v for k, v in comb.items() if k != "kinds"}})
     bands = {k: round(v, 3) for k, v in comb["bands_given_ion"].items()}
     print(f"comb estimator ({comb['estimator']}): {metric} {comb[metric]:.3f} bands {bands}")
     for line in by_kind_lines(None, comb.get("by_kind")):
         print(line)
 
-    def save_state(epoch: int, step: int) -> None:
+    def save_state(epoch: int, step: int, stop_reason: str | None = None) -> None:
         state = {"model": model.state_dict(), "ema": ema.shadow.state_dict(),
                  "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
-                 "running": (run_sum, run_n), "synth": synth_key}
+                 "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason}
         _atomic_save(state, resume_path)
 
     # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
@@ -234,8 +252,8 @@ def train(config: TrainConfig, synth_config=None):
     def paused() -> bool:
         return pause["requested"] or bool(pause_files())
 
-    def stop_here(epoch: int, step: int, why: str) -> tuple:
-        save_state(epoch, step)
+    def stop_here(epoch: int, step: int, why: str, reason: str = "paused") -> tuple:
+        save_state(epoch, step, reason)
         print(f"{why}: state saved to {resume_path}; run the same command with --resume to "
               f"continue (epoch {epoch}, step {step})", flush=True)
         if best_state is not None:
@@ -244,18 +262,23 @@ def train(config: TrainConfig, synth_config=None):
 
     session_start = time.time()
     last_save = time.time()
+    ram = _RamWatch(config.max_ram_gb)
+    pace = {"steps": 0, "seconds": 0.0}  # training steps done in this session, and their time
+    awake = _KeepAwake()
+    awake.start()
     try:
         for epoch in range(epoch0, config.epochs):
             model.train()
             if epoch != epoch0:
                 run_sum, run_n = 0.0, 0
-            if config.fresh_each_epoch:
-                tl.dataset.base_seed = config.base_seed + epoch * config.train_len
             first_step = step0 if epoch == epoch0 else 0
-            loader = tl if first_step == 0 else _loader_from(tl, first_step * config.batch_size)
+            # new spectra every epoch: epoch e reads items e * train_len ... (EpochSampler)
+            tl.sampler.epoch = epoch if config.fresh_each_epoch else 0
+            tl.sampler.start = first_step * config.batch_size
+            epoch_start = time.time()
             i = first_step - 1
             try:
-                for i, sample in enumerate(loader, start=first_step):
+                for i, sample in enumerate(tl, start=first_step):
                     batch = _batch_dict(sample, device)
                     out = model(batch["features"])
                     losses = loss_fn(out, batch)
@@ -270,13 +293,17 @@ def train(config: TrainConfig, synth_config=None):
                     run_sum += loss_val
                     run_n += 1
                     if i % config.log_every == 0:
-                        print(f"  epoch {epoch} step {i}/{len(tl)} loss {loss_val:.4f} "
+                        print(f"  epoch {epoch} step {i}/{steps_per_epoch} loss {loss_val:.4f} "
                               f"ce {float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
                               flush=True)
                     if paused():
                         return stop_here(epoch, i + 1, "paused")
                     if config.max_seconds and (time.time() - session_start) > config.max_seconds:
-                        return stop_here(epoch, i + 1, "time budget reached")
+                        return stop_here(epoch, i + 1, "time budget reached", "time")
+                    if ram.over():
+                        return stop_here(epoch, i + 1,
+                                         f"memory budget of {config.max_ram_gb:g} GB reached "
+                                         f"({ram.used_gb():.1f} GB in use)", "memory")
                     if time.time() - last_save > 60.0 * config.save_every_minutes:
                         save_state(epoch, i + 1)
                         last_save = time.time()
@@ -286,6 +313,8 @@ def train(config: TrainConfig, synth_config=None):
                 if pause["requested"]:
                     return stop_here(epoch, i + 1, "paused")
                 raise
+            pace["steps"] += i + 1 - first_step
+            pace["seconds"] += time.time() - epoch_start
             try:
                 val_ema = evaluate(ema.shadow, vl, loss_fn, device, kinds=comb.get("kinds"))
                 val_live = evaluate(model, vl, loss_fn, device, kinds=comb.get("kinds"))
@@ -293,7 +322,7 @@ def train(config: TrainConfig, synth_config=None):
                 # interrupted while validating: the epoch's training is done, so resuming
                 # starts with this validation
                 if pause["requested"]:
-                    return stop_here(epoch, len(tl), "paused")
+                    return stop_here(epoch, steps_per_epoch, "paused")
                 raise
 
             def key(v):
@@ -315,6 +344,8 @@ def train(config: TrainConfig, synth_config=None):
                   f"bands {bands}", flush=True)
             for line in by_kind_lines(val.get("by_kind"), comb.get("by_kind")):
                 print(line, flush=True)
+            print("  " + _pace_line(pace, epoch, epoch_start, config, steps_per_epoch, ram,
+                                    device), flush=True)
             if best_state is None or key(val) > best_key:
                 best_key = key(val)
                 best_loss = val["val_loss"]
@@ -322,11 +353,12 @@ def train(config: TrainConfig, synth_config=None):
                 _save(out_path, best_state, config, in_ch, val, comb, metric)
                 print(f"  saved {out_path} ({metric} {val[metric]:.3f})")
             run_sum, run_n = 0.0, 0
-            save_state(epoch + 1, 0)
+            save_state(epoch + 1, 0, "finished" if epoch + 1 >= config.epochs else None)
             last_save = time.time()
             if paused() and epoch + 1 < config.epochs:
                 return stop_here(epoch + 1, 0, "paused")
     finally:
+        awake.stop()
         if old_handler is not None:
             signal.signal(signal.SIGINT, old_handler)
 
@@ -338,13 +370,127 @@ def train(config: TrainConfig, synth_config=None):
     return model, history
 
 
-def _loader_from(loader, start: int):
-    """``loader`` over its dataset from item ``start`` on (resuming inside an epoch)."""
-    from torch.utils.data import DataLoader, Subset
+def _warm_up(synth_config) -> None:
+    """Generate one spectrum of every configuration in this process before the data workers
+    start, so that the compiled numba functions are cached once instead of being compiled by
+    every worker at the same time."""
+    import numpy as _np
 
-    ds = Subset(loader.dataset, range(start, len(loader.dataset)))
-    return DataLoader(ds, batch_size=loader.batch_size, num_workers=loader.num_workers,
-                      shuffle=False, drop_last=True)
+    from ..synth.frames import generate_frame
+
+    configs = ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
+               else [synth_config])
+    for cfg in configs:
+        generate_frame(cfg, _np.random.default_rng(0))
+
+
+def _cap_gpu_memory(torch, max_gb: float, context_gb: float = 0.75) -> None:
+    """Keep this process's GPU memory below ``max_gb``: PyTorch's caching allocator gets
+    ``max_gb`` less an allowance for the CUDA context, and raises out-of-memory rather than
+    spill into shared system memory, which Windows drivers otherwise do."""
+    total = torch.cuda.get_device_properties(0).total_memory
+    frac = min(1.0, max(0.05, (max_gb - context_gb) * 2**30 / total))
+    torch.cuda.set_per_process_memory_fraction(frac, 0)
+    print(f"GPU memory capped at {max_gb:g} GB of {total / 2**30:.1f} GB "
+          f"({frac * total / 2**30:.1f} GB for tensors, the rest for the CUDA context)")
+
+
+class _KeepAwake:
+    """Keeps Windows from going to sleep while a run trains (the screen may still switch off).
+    Elsewhere it does nothing."""
+
+    def __init__(self):
+        self.active = False
+
+    def start(self) -> None:
+        import sys
+
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            f = ctypes.windll.kernel32.SetThreadExecutionState
+            f.argtypes = [ctypes.c_uint32]
+            f.restype = ctypes.c_uint32
+            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            self.active = f(0x80000000 | 0x00000001) != 0
+        except Exception:  # pragma: no cover - only a convenience
+            self.active = False
+
+    def stop(self) -> None:
+        if not self.active:
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)  # ES_CONTINUOUS
+        except Exception:  # pragma: no cover
+            pass
+        self.active = False
+
+
+class _RamWatch:
+    """Memory of this process and its data workers together, checked at most every 15 s.
+
+    Windows counts each process's private bytes (memory no other process shares), elsewhere
+    its resident set; either errs on the high side of what the task manager shows."""
+
+    def __init__(self, limit_gb: float | None, every: float = 15.0):
+        self.limit = limit_gb
+        self.every = every
+        self.last = 0.0
+        self.proc = None
+        try:
+            import psutil
+
+            self.proc = psutil.Process()
+        except ImportError:
+            if limit_gb:
+                print("psutil is not installed, so the memory budget cannot be watched "
+                      "(pip install psutil)")
+
+    def used_gb(self) -> float:
+        if self.proc is None:
+            return 0.0
+        import sys
+
+        import psutil
+
+        total = 0
+        for p in [self.proc, *self.proc.children(recursive=True)]:
+            try:
+                mi = p.memory_info()
+                total += getattr(mi, "private", 0) if sys.platform == "win32" else mi.rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return total / 2**30
+
+    def over(self) -> bool:
+        if not self.limit or self.proc is None or time.time() - self.last < self.every:
+            return False
+        self.last = time.time()
+        return self.used_gb() > self.limit
+
+
+def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epoch: int,
+               ram: _RamWatch, device: str) -> str:
+    """Duration and speed of the epoch, memory in use, and the time left."""
+    import torch
+
+    took = time.time() - epoch_start
+    per_step = pace["seconds"] / max(1, pace["steps"])
+    left = per_step * steps_per_epoch * (config.epochs - epoch - 1)
+    parts = [f"epoch took {took / 60:.1f} min",
+             f"{config.batch_size / max(per_step, 1e-9):.0f} spectra/s"]
+    if ram.proc is not None:
+        parts.append(f"RAM {ram.used_gb():.1f} GB" + (f" of {ram.limit:g}" if ram.limit else ""))
+    if device.startswith("cuda"):
+        parts.append(f"GPU {torch.cuda.max_memory_reserved() / 2**30:.1f} GB reserved")
+    if config.epochs - epoch - 1 > 0:
+        parts.append(f"about {left / 3600:.1f} h to go" if left >= 3600
+                     else f"about {left / 60:.0f} min to go")
+    return "; ".join(parts)
 
 
 def synth_fingerprint(synth_config) -> str:
@@ -395,7 +541,7 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None
                   "val": val, "comb_baseline": comb}, path)
 
 
-def comb_baseline(loader) -> dict:
+def comb_baseline(loader, num_workers: int | None = None) -> dict:
     """Charge metrics of the comb estimator, as the pipeline runs it, on ``loader``'s frames.
 
     Every validation frame is generated again with its whole spectrum, which CombPredictor reads
@@ -411,11 +557,15 @@ def comb_baseline(loader) -> dict:
     import torch
     from torch.utils.data import DataLoader
 
-    from ..synth.dataset import CombBarFrames
+    from ..synth.dataset import CombBarFrames, mp_context, worker_init
     from .checks import ChargeScoreboard, charge_metrics
 
-    frames = DataLoader(CombBarFrames(loader.dataset), batch_size=loader.batch_size,
-                        num_workers=loader.num_workers, shuffle=False)
+    source = getattr(loader.dataset, "frames", loader.dataset)  # CachedFrames keeps it
+    workers = loader.num_workers if num_workers is None else num_workers
+    frames = DataLoader(CombBarFrames(source), batch_size=loader.batch_size,
+                        num_workers=workers, shuffle=False,
+                        worker_init_fn=worker_init if workers else None,
+                        **mp_context(workers))
     sums: dict[str, float] = {}
     bands: dict[str, list[float]] = {}
     kinds: list[str] = []

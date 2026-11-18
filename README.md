@@ -75,10 +75,8 @@ NVIDIA GPU, follow **`gpu_training/README.md`**: installation, a GPU check, two 
 as run scripts for Windows and Linux, pausing and resuming at any time, and what to send back.
 
 ```bash
-python scripts/train_charge_net.py --smoke                      # installation check
-bash gpu_training/run_stage1.sh                                 # Windows: gpu_training\run_stage1.bat
-bash gpu_training/run_stage2.sh
-lcmsdeconv export-onnx runs/ladder_full_stage2.pt -o runs/ladder_full_stage2.onnx
+bash gpu_training/setup_linux.sh        # Windows: gpu_training\setup_windows.bat
+bash gpu_training/train_all.sh          # Windows: gpu_training\train_all.bat
 python scripts/eval_charge_bins.py runs/ladder_full_stage2.onnx  # against the comb, same spectra
 ```
 

@@ -1,0 +1,2 @@
+# Windows batch files keep their CRLF line endings, byte for byte
+*.bat -text

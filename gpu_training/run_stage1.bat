@@ -1,16 +1,9 @@
 @echo off
-rem Stage 1: LadderNet (full size), singly charged ions kept in the spectra but ignored by the loss.
-rem Usage: gpu_training\run_stage1.bat [--resume] [--workers N] [other train_charge_net.py options]
-rem   --resume       continue a paused or interrupted run
-rem   --workers N    processes generating spectra (default: cores minus 2, at most 8)
+rem Stage 1 only (gpu_training\train_all.bat runs both stages and packs the results).
+setlocal
 cd /d "%~dp0\.."
-rem the environment of README step 2 if it exists, so the scripts work in a fresh window too
-set PY=python
-if exist .venv\Scripts\python.exe set PY=.venv\Scripts\python.exe
-set /a WORKERS=%NUMBER_OF_PROCESSORS%-2
-if %WORKERS% LSS 1 set WORKERS=1
-if %WORKERS% GTR 8 set WORKERS=8
-rem options given on the command line come last and win (argparse keeps the last value)
-%PY% scripts\train_charge_net.py --device cuda --arch ladder --model-size full ^
-    --singly-charged ignore --epochs 30 --train-len 4000 --val-len 128 --batch-size 8 ^
-    --workers %WORKERS% --out runs\ladder_full_ignore.pt %*
+if not exist ".venv\Scripts\python.exe" (
+    echo The training environment is missing: run gpu_training\setup_windows.bat first.
+    exit /b 1
+)
+".venv\Scripts\python.exe" gpu_training\train_all.py --only 1 %*
