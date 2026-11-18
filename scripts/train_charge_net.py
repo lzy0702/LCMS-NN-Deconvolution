@@ -22,9 +22,9 @@ Examples:
     # quick check that everything works (a few minutes)
     python scripts/train_charge_net.py --smoke
 
-    # a stage-1 run on a GPU, singly charged ions ignored, eight data workers
-    python scripts/train_charge_net.py --device cuda --singly-charged ignore \\
-        --epochs 40 --train-len 4000 --batch-size 8 --workers 8 --out runs/ladder_stage1.pt
+    # a stage-1 run on the GPU, singly charged ions ignored, within 16 GB of RAM
+    python scripts/train_charge_net.py --singly-charged ignore --epochs 40 --train-len 6000 \\
+        --batch-size 8 --max-ram-gb 16 --max-gpu-memory-gb 14 --out runs/ladder_stage1.pt
 
     # stage 2: continue from stage 1 with singly charged ions included
     python scripts/train_charge_net.py --device cuda --singly-charged keep \\
@@ -45,8 +45,9 @@ unless ``--restart`` says to discard it.
 from __future__ import annotations
 
 import argparse
-import os
+from pathlib import Path
 
+from lcmsdeconv.nn.machine import auto_workers, single_threaded_workers
 from lcmsdeconv.nn.train import TrainConfig, train
 from lcmsdeconv.synth.compounds import DEFAULT_CLASSES, ClassConfig
 from lcmsdeconv.synth.config import SynthConfig
@@ -87,10 +88,16 @@ def main():
     ap.add_argument("--train-len", type=int, default=2000, help="frames per epoch")
     ap.add_argument("--val-len", type=int, default=64)
     ap.add_argument("--batch-size", type=int, default=4)
-    ap.add_argument("--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) - 2)),
-                    help="processes generating frames (the bottleneck on a GPU; each needs about "
-                         "1 GB of memory)")
-    ap.add_argument("--device", default="auto", help="auto | cuda | cpu")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="processes generating spectra, the bottleneck on a GPU (default: as "
+                         "many as the cores and --max-ram-gb allow; each needs about 1 GB)")
+    ap.add_argument("--max-ram-gb", type=float, default=None,
+                    help="memory budget of the training process and its workers together: "
+                         "sets the default --workers, and the run pauses if it is exceeded")
+    ap.add_argument("--max-gpu-memory-gb", type=float, default=None,
+                    help="cap on this process's GPU memory, CUDA context included")
+    ap.add_argument("--device", default="cuda",
+                    help="cuda (default: the network trains on the GPU only), cpu, or auto")
     ap.add_argument("--threads", type=int, default=None, help="CPU threads for torch")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--minutes", type=float, default=None, help="stop after this long")
@@ -117,6 +124,10 @@ def main():
         print("WARNING: numba is not installed, so spectra are generated about 20 times slower. "
               "Install it with: pip install numba", flush=True)
     restart = args.restart
+    if args.workers is None:
+        args.workers = auto_workers(args.max_ram_gb)
+    if args.workers > 0:
+        single_threaded_workers()
     if args.smoke:
         args.epochs, args.train_len, args.val_len, args.batch_size = 1, 16, 8, 2
         args.out = "runs/smoke.pt"
@@ -129,8 +140,28 @@ def main():
                       singly_charged=args.singly_charged,
                       fresh_each_epoch=not args.repeat_frames, cache_frames=args.repeat_frames,
                       init=args.init, resume=args.resume, restart=restart,
-                      save_every_minutes=args.save_every)
+                      save_every_minutes=args.save_every, max_ram_gb=args.max_ram_gb,
+                      max_gpu_memory_gb=args.max_gpu_memory_gb)
+    print(f"{args.workers} data workers; spectra are generated on the processor, the network "
+          f"trains on {args.device}", flush=True)
     train(cfg, synth_config=mixture(background_ions=args.background_ions))
+    raise SystemExit(exit_code(Path(cfg.out)))
+
+
+#: exit codes: the run finished; it was paused (Ctrl+C, a PAUSE file, --minutes); it stopped at
+#: the memory budget (resume it with fewer workers)
+FINISHED, PAUSED, MEMORY = 0, 3, 4
+
+
+def exit_code(out: Path) -> int:
+    """How the run whose checkpoint is ``out`` ended, from the state it left."""
+    import torch
+
+    resume = out.with_suffix(".resume.pt")
+    if not resume.exists():
+        return FINISHED
+    reason = torch.load(resume, map_location="cpu", weights_only=False).get("stop_reason")
+    return {"paused": PAUSED, "time": PAUSED, "memory": MEMORY}.get(reason, FINISHED)
 
 
 if __name__ == "__main__":

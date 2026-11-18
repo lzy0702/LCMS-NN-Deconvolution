@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-train = ["torch>=2.1", "onnx>=1.14"]
+train = ["torch>=2.1", "onnx>=1.14", "psutil>=5.9"]
 gui = ["PySide6>=6.5", "pyqtgraph>=0.13"]
 accel = ["onnxruntime-openvino; sys_platform != 'darwin'", "onnxruntime-directml; sys_platform == 'win32'"]
 fast = ["numba>=0.58"]

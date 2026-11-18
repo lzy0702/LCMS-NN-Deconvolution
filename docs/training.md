@@ -67,13 +67,22 @@ generated about 20 times slower (0.26 against 4.9 seconds per spectrum here).
 
 ```bash
 python scripts/train_charge_net.py --smoke                    # a two-minute installation check
-python scripts/train_charge_net.py --device cuda --model-size full --singly-charged ignore \
-    --epochs 30 --train-len 4000 --batch-size 8 --workers 8 --out runs/ladder_full_ignore.pt
+python scripts/train_charge_net.py --model-size full --singly-charged ignore --epochs 40 \
+    --train-len 6000 --batch-size 8 --max-ram-gb 16 --max-gpu-memory-gb 14 \
+    --out runs/ladder_full_ignore.pt
 lcmsdeconv export-onnx runs/ladder_full_ignore.pt -o runs/ladder_full_ignore.onnx
 ```
 
-`gpu_training/README.md` is a step-by-step guide for training on your own GPU (installation,
-a check script, run scripts for Windows and Linux, what to send back).
+The script trains on the GPU unless told `--device cpu`. Data workers default to as many as the
+cores and `--max-ram-gb` allow (`lcmsdeconv.nn.machine`), run at lowered priority, and stay
+alive for the whole run: the epoch travels with the item indices (`EpochSampler`), so
+Windows, which starts every worker as a fresh process, starts them once. The validation spectra
+are generated once and kept in memory. A run stopped at the memory budget pauses like Ctrl+C;
+the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
+
+`gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
+`setup_linux.sh`) installs and measures the machine, `train_all.bat` runs both stages within
+the RAM and GPU memory limits, resumes after any interruption and packs what to send back.
 
 **Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
 the run after the current step and saves the whole training state (model, moving average,
