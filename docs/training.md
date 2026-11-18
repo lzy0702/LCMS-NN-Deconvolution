@@ -25,7 +25,17 @@ bins lets the bins of one peak agree.
 It has 9 500 (`proof`) to 22 000 (`full`) parameters. Ladders are read at the 6 144 strongest
 bins of a window (ions occupy a few percent of the bins), which a sparse gather makes cheap in
 training; the ONNX export computes the same function densely with static shifts, for a fixed
-32 768-bin window, which is what inference uses.
+32 768-bin window, which is what inference uses. That window spans a factor of 1.93 in m/z, so
+it cannot hold the z = 1 and z = 3 neighbours of a doubly charged ion (34 657 and 20 273 bins
+away); the comb, which reads the whole spectrum, has the edge there on strong spectra.
+
+`scripts/train_charge_net.py` trains on a mixture of positive-mode proteins and polymers
+(30 %), negative-mode ion-pairing oligonucleotides on a time-of-flight instrument (25 %) and on
+an Orbitrap at 35 000-280 000 resolving power at m/z 200 (25 %; the real runs of `benchmarks.md`
+were recorded at 140 000), and a general positive-mode mix (20 %). The Orbitrap share used to be
+15 % at 30 000-63 000, a regime no instrument the package has been tested on works in: there
+isotopologues of a 5 kDa oligonucleotide are barely resolved, on the real runs ten grid bins
+apart.
 
 ### Singly charged ions
 

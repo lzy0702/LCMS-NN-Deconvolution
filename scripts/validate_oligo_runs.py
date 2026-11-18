@@ -25,13 +25,13 @@ listed but not scored.
 Every reported species that matches no expected one is first compared with the species found:
 a form of one (+Na, +K, their combinations, or the unassigned +201.4 Da form), a charge harmonic
 of one (half, a third, double or triple its mass at the same time), or the same molecule at
-another time (within 0.3 Da). The rest are checked the model-free way: "EIC-confirmed" when two
-of their charge states have extracted-ion chromatograms with a peak within 0.25 min of the
-reported apex, standing out from their surroundings (three times the median within 1.5 min),
-and co-vary (r >= 0.7 within 0.6 min). This is a consistency check, not truth - a false charge
-ladder built from co-eluting background can pass it, and a species whose strongest charge
-states share their m/z windows with other signal can fail it - but every species here is
-lighter than 8 kDa, where it is informative.
+another time (within 0.3 Da). The rest are checked the model-free way: "EIC-confirmed" when the
+two strongest of their charge states whose extracted-ion chromatograms peak within 0.25 min of
+the reported apex - a maximum over 0.1 min either side, carried by three scans or more and
+three times the trace's median within 1.5 min - co-vary (r >= 0.7 within 0.6 min). This is a
+consistency check, not truth - a false charge ladder built from co-eluting background can pass
+it, and a species whose strongest charge states share their m/z windows with other signal can
+fail it - but every species here is lighter than 8 kDa, where it is informative.
 
     python scripts/validate_oligo_runs.py IPRPLC_NC_mix.raw IPHILIC_NC_mix.raw ... \
         [--single-charge] [--model charge_net.onnx]
@@ -142,25 +142,30 @@ def run_key(path: Path) -> str:
     return f"{lc}_{'GalNAc' if 'GALNAC' in name else 'NC'}"
 
 
-#: the extracted-ion check (minutes): a charge state counts when its trace peaks (is highest
-#: within EIC_LOCAL) within EIC_APEX of the reported apex, at EIC_CONTRAST times the trace's
-#: median within EIC_WINDOW or more; the two strongest such charge states must co-vary
-#: (Pearson r >= EIC_R within EIC_COVARY), as the charge states of one molecule do
-EIC_WINDOW, EIC_APEX, EIC_LOCAL, EIC_CONTRAST, EIC_COVARY, EIC_R = 1.5, 0.25, 0.1, 3.0, 0.6, 0.7
+#: the extracted-ion check (minutes): a charge state counts when the highest point of its trace
+#: within EIC_APEX of the reported apex is also the highest within EIC_LOCAL of itself, at least
+#: EIC_SCANS scans there carry signal (vendor-thresholded traces are zero most of the time, so a
+#: single stray scan would otherwise pass), and it stands EIC_CONTRAST times above the trace's
+#: median within EIC_WINDOW; the two strongest such charge states must co-vary (Pearson r >= EIC_R
+#: within EIC_COVARY), as the charge states of one molecule do
+EIC_WINDOW, EIC_APEX, EIC_LOCAL, EIC_SCANS = 1.5, 0.25, 0.1, 3
+EIC_CONTRAST, EIC_COVARY, EIC_R = 3.0, 0.6, 0.7
 
 
 def joint_eic_peak(run, mass: float, rt: float) -> bool:
-    """Two charge states of ``mass`` (negative mode) elute together, with a peak at ``rt``.
+    """Two charge states of ``mass`` elute together, with a chromatographic peak at ``rt``.
 
-    Each charge state's extracted-ion chromatogram (m/z 400-2500, +-1.2 Da) is judged against
-    its own surroundings: it must have a peak within EIC_APEX of ``rt`` standing EIC_CONTRAST
-    times above its median within EIC_WINDOW. Neither the strongest signal its m/z window
-    carries elsewhere in the run (the injection peak, the column wash) nor an isomer eluting
-    a few tenths of a minute away counts against it. The two strongest charge states that pass
-    must co-vary. On the four runs this confirms 47 of the 51 tabulated species at their
-    tabulated times and 4 of 240 random (mass, time) pairs.
+    Each charge state's extracted-ion chromatogram (m/z 400-2500, +-1.2 Da, at the run's
+    polarity) is judged against its own surroundings by the EIC_* rules above, so neither the
+    strongest signal its m/z window carries elsewhere in the run (the injection peak, the
+    column wash) nor an isomer eluting a few tenths of a minute away counts against it. The two
+    strongest charge states that pass must co-vary. On the four runs this confirms 47 of the 51
+    tabulated species at their tabulated times and none of 240 random (mass, time) pairs.
     """
     frames = run.frames()
+    if not frames:
+        return False
+    pol = -1 if frames[0].polarity < 0 else 1
     times = np.array([f.rt for f in frames])
     idx = np.flatnonzero(np.abs(times - rt) <= EIC_WINDOW)
     if idx.size < 3:
@@ -171,14 +176,17 @@ def joint_eic_peak(run, mass: float, rt: float) -> bool:
         return False
     passing = []
     for z in range(1, 80):
-        if not 400 <= (mass - z * MP) / z <= 2500:
+        centre = (mass + pol * z * MP) / z
+        if not 400 <= centre <= 2500:
             continue
-        lo, hi = (mass - z * MP - 1.2) / z, (mass - z * MP + 1.2) / z
+        lo, hi = centre - 1.2 / z, centre + 1.2 / z
         trace = np.array([float(frames[i].intensity[np.searchsorted(frames[i].mz, lo):
                                                     np.searchsorted(frames[i].mz, hi)].sum())
                           for i in idx])
         j = near[int(np.argmax(trace[near]))]
-        if (trace[j] > 0 and trace[j] >= trace[np.abs(tt - tt[j]) <= EIC_LOCAL].max()
+        around = trace[np.abs(tt - tt[j]) <= EIC_LOCAL]
+        if (trace[j] > 0 and trace[j] >= around.max()
+                and np.count_nonzero(around) >= EIC_SCANS
                 and trace[j] >= EIC_CONTRAST * np.median(trace)):
             passing.append((trace[j], z, trace))
     if len(passing) < 2:

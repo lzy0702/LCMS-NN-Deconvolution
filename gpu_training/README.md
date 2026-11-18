@@ -106,21 +106,23 @@ CPU cores minus two, at most 8. Before the first epoch the run scores the comb e
 validation spectra (a minute or two), then every epoch prints lines such as
 
 ```text
-epoch 3: charge_acc_given_ion_z2 ema 0.902 live 0.895 (comb 0.635) -> keeping ema; bands {...}
+epoch 8: charge_acc_given_ion_z2 ema 0.903 live 0.907 (comb 0.668) -> keeping live; bands {...}
   charge of z >= 2 ion bins read right (log-SNR / intensity weighted):
-    time-of-flight  network 0.910 / 0.935   comb 0.732 / 0.945
-    Orbitrap        network 0.860 / 0.930   comb 0.110 / 0.340
+    time-of-flight  network 0.895 / 0.931   comb 0.689 / 0.844
+    Orbitrap        network 0.850 / 0.917   comb 0.237 / 0.290
 ```
 
-The number in brackets is the comb estimator as the pipeline runs it (over the whole spectrum,
-with charges read from isotope spacing on Orbitrap spectra), scored the same way on the same
-validation spectra. The two lines below split that comparison by kind of spectrum, with bins
-weighted by log-SNR (the training metric, which counts weak ions as much as strong ones) and by
-intensity (what the decoder's mass votes weigh). On time-of-flight spectra the comb already
-reads most of the intensity right, so the intensity-weighted column there is the one a network
-has to win; the numbers above are an illustration, not a target. The best checkpoint is saved
-whenever it improves, so you can stop the run at any time (Ctrl+C) and still have the best
-model so far. A log of every epoch is written next to it (`runs/ladder_full_ignore.log.jsonl`).
+(from a 45-minute CPU run of the small model). The number in brackets is the comb estimator as
+the pipeline runs it (over the whole spectrum, with charges read from isotope spacing on
+Orbitrap spectra), scored the same way on the same validation spectra. The two lines below
+split that comparison by kind of spectrum, each spectrum counting the same, with bins weighted
+by log-SNR (the training metric, which counts weak ions as much as strong ones) and by
+intensity (what the decoder's mass votes weigh). A network worth uploading beats the comb in
+all four numbers, as this one does; whether that carries over to species is decided afterwards,
+on the strongest spectra (where the comb still does well), on synthetic species and on the real
+runs (step 8). The best checkpoint is saved whenever it improves, so you can stop the run at any
+time (Ctrl+C) and still have the best model so far. A log of every epoch is written next to it
+(`runs/ladder_full_ignore.log.jsonl`).
 
 ### Pausing and resuming
 
@@ -139,6 +141,9 @@ You can stop a run at any time and continue later, even in the middle of an epoc
   spectra per epoch, learning rate, model). A leftover `PAUSE` file is removed automatically.
 - If you start the command **without** `--resume` while a paused run's state exists, it stops
   with a message instead of overwriting it; add `--restart` to deliberately start over.
+- A run is only resumed on the same synthetic spectra it started with. A run started with an
+  earlier version of this package (whose Orbitrap spectra were rendered at too low a resolving
+  power) is refused: finish it with that version, or start again with `--restart`.
 - The state is also saved every 10 minutes (`--save-every` changes that) and after every
   epoch, so a crash, a reboot or a power cut loses at most a few minutes of training: resume
   the same way.
@@ -159,7 +164,9 @@ python scripts/train_charge_net.py --device cuda --arch ladder --model-size full
 ```
 
 Pausing and resuming work the same way (`--resume`). Here the printed accuracy covers all ion
-bins, singly charged ones included, so it is lower than stage 1's.
+bins, singly charged ones included, so it is lower than stage 1's. Watch the `'z=1'` entry of
+`bands` rise over the epochs: it is what this stage is for. A six-epoch CPU version reached 0.3
+to 0.8 on it; if yours stays low after half the epochs, tell me when you upload.
 
 ### Optional: the "drop" variant, for comparison
 

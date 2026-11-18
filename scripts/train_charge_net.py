@@ -2,7 +2,8 @@
 
 Frames are rendered along the inference path (summed, vendor-thresholded profile scans
 resampled onto the logarithmic grid) from a mixture of positive-mode proteins and polymers,
-negative-mode ion-pairing oligonucleotides and a general positive-mode mix. Every epoch prints
+negative-mode ion-pairing oligonucleotides on time-of-flight and on Orbitrap instruments (35 000
+to 280 000 resolving power at m/z 200) and a general positive-mode mix. Every epoch prints
 the charge accuracy on ion bins next to that of the comb estimator as the pipeline runs it (over
 the whole spectrum, isotope-spacing charges on Orbitrap spectra) on the same validation frames,
 by kind of spectrum and weighted by log-SNR and by intensity: the bar a network has to clear
@@ -60,13 +61,15 @@ def mixture(crop: int = 32768, background_ions: int | None = None) -> list[tuple
                                   ClassConfig("ps_dna", (2000.0, 25000.0)),
                                   ClassConfig("ps_rna", (2000.0, 25000.0))],
                          mode="iprp", polarity=-1, crop_size=crop)
+    # resolving power at m/z 200 from 35 000 to 280 000, the common Orbitrap settings: the real
+    # Q Exactive Plus runs of docs/benchmarks.md were recorded at 140 000 (155 000 measured)
     orbitrap_oligos = SynthConfig(classes=[ClassConfig("ps_dna", (1500.0, 12000.0)),
                                            ClassConfig("ps_rna", (1500.0, 12000.0))],
                                   mode="iprp", polarity=-1, crop_size=crop,
                                   instrument_kind="orbitrap",
-                                  resolution_range=(30000.0, 63000.0))
+                                  resolution_range=(35000.0, 280000.0))
     general = SynthConfig(classes=list(DEFAULT_CLASSES), mode="rplc", polarity=1, crop_size=crop)
-    mix = [(0.35, proteins), (0.3, oligos), (0.15, orbitrap_oligos), (0.2, general)]
+    mix = [(0.3, proteins), (0.25, oligos), (0.25, orbitrap_oligos), (0.2, general)]
     if background_ions is not None:
         # real column-wash regions carry far more singly charged background than the default
         # 0-40 ions per spectrum; a network that must learn to reject it has to see it

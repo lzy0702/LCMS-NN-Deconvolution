@@ -73,7 +73,7 @@ deaminated form; ion-pairing reversed phase and ion-pairing HILIC; negative mode
 Tutiš et al., Anal. Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407),
 whose Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run against
 them, and checks every other report with extracted-ion chromatograms. Of 20 known species the
-original code found 2 among 87 reports; the current code finds 13 among 41, with 15 of 20 when
+original code found 2 among 87 reports; the current code finds 13 among 39, with 15 of 20 when
 species seen at one charge state are accepted (`deconvolution.single_charge`). Details, mass
 errors and what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what
 the truth table changed, are in `lessons.md`, section 11.

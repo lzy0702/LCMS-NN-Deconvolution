@@ -292,8 +292,9 @@ What remains open:
   about 5 % by extracted-ion chromatogram). A +201.4 Da form accompanies every major species and
   is reported separately. Average masses are reported; a monoisotopic pattern fit would also
   separate a deaminated form from its parent inside one envelope.
-- On synthetic Orbitrap data (`--presets oligo_orbitrap`) precision is 13 %: isotope-resolved
-  envelopes give many more adduct-shifted and unexplained false species than time-of-flight ones.
+- On synthetic Orbitrap data (`--presets oligo_orbitrap`) precision is 30 % at the real runs'
+  resolving power, with 26 unexplained false species in four runs. (It read 13 % while the
+  preset rendered 30 000-63 000 and decoded that with a method for 140 000; see section 13.)
 - Close impurities inside an unresolved envelope (deamidation at +1 Da, oxidation at +16 Da on
   a 75 kDa protein) are physically unresolvable at time-of-flight resolving power and are
   reported as part of the main component.
@@ -341,19 +342,22 @@ part is initialised to zero; a test checks the equality) and has 9 500 parameter
 
 Trained on two CPU threads for 45 minutes (240 synthetic spectra, 12 epochs), with singly
 charged ions either ignored by the loss or absent from the spectra, it read the right charge on
-fresh spectra at charges two and up for 0.90 of the ion bins weighted by log-SNR, against 0.64
-for the comb as the pipeline runs it on time-of-flight spectra (0.84-0.88 against 0.23 on
-Orbitrap ones), and for 0.95-0.96 of each spectrum's ion intensity against 0.86. Pooled over
-spectra, though, so that the strongest few decide, the comb led on time-of-flight data (0.89
-against 0.82-0.86), at z = 2-5 above all: a 32 768-bin window cannot hold the nearest
-neighbours of a doubly charged ion, which the comb, reading the whole spectrum, sees. Getting
-that comparison fair took three corrections, two of them found by independent reviews: the two
-variants had first been validated on different spectra; training printed as its bar the comb's
-answer in feature channel 3, computed inside the crop (0.57 where the pipeline's comb scores
-0.64); and the "pipeline comb" of the first fair measurement had itself been run on the crop
-(0.46). `lcmsdeconv.nn.baseline` now runs every estimator, during training and in
-`scripts/eval_charge_bins.py`, the way `process_run` does. In the synthetic benchmark that
-became species: precision 34 → 52 % (protein), 28 → 39 % (oligo), 14 → 47 % (Orbitrap oligo),
+fresh spectra at charges two and up for 0.88-0.90 of the ion bins weighted by log-SNR, against
+0.65 for the comb as the pipeline runs it on time-of-flight spectra (0.83-0.87 against 0.36 on
+Orbitrap ones), and for 0.95-0.96 of each spectrum's ion intensity against 0.84. Pooled over
+spectra, so that the strongest few decide, it still led at z >= 2 (0.94 against 0.86) but not
+at z = 2-5 on time-of-flight data (0.71-0.73 against 0.87): a 32 768-bin window cannot hold the
+nearest neighbours of a doubly charged ion, which the comb, reading the whole spectrum, sees.
+Getting that comparison fair took four corrections, three of them found by independent reviews:
+the two variants had first been validated on different spectra; training printed as its bar
+the comb's answer in feature channel 3, computed inside the crop (0.57 where the pipeline's comb
+scores 0.64); the "pipeline comb" of the first fair measurement had itself been run on the crop
+(0.46); and the evaluation drew each spectrum's mixture component and resolving power from one
+random number, so that each component covered a sliver of its range. `lcmsdeconv.nn.baseline`
+now runs every estimator, during training and in `scripts/eval_charge_bins.py`, the way
+`process_run` does, on spectra drawn as training draws them. In the synthetic benchmark that
+became species: precision 34 → 52 % (protein), 28 → 39 % (oligo), 30 → 48 % (Orbitrap oligo at
+the real runs' resolving power; 14 → 47 % at the too low one first rendered, see point 4 below),
 impurity recall up, charge-harmonic false species almost gone (`benchmarks.md`).
 
 On the four real runs it was not better than the comb: one known species fewer and 13-21 more
@@ -363,8 +367,9 @@ background read as z = 2-3. What it shows:
 1. **Structure beats data at this scale.** A 9 500-parameter network with the right inductive
    bias learned in 45 CPU minutes what a 1 M-parameter U-Net could not approach.
 2. **Per-bin accuracy, synthetic species and real species are three different measurements.** A
-   26-point per-bin gain (log-SNR weighted; 10 points of intensity per spectrum, and a loss on
-   the strongest spectra) became 10-30 points of synthetic precision and a small loss on real
+   23-25-point per-bin gain (log-SNR weighted; 11-12 points of intensity per spectrum, and a
+   loss at low charges on the strongest spectra) became 10-30 points of synthetic precision and a
+   small loss on real
    runs, because of what the synthetic spectra do not contain: the dense singly charged
    background of a column wash. Which per-bin number to quote is itself a choice to make
    explicit: log-SNR weighting rewards reading weak ions, intensity weighting reading the
@@ -375,7 +380,22 @@ background read as z = 2-3. What it shows:
    showed - but it needs a second stage that trains on z = 1 among dense background. A short
    CPU version of that stage (`--singly-charged keep --background-ions 200`) cut the unconfirmed
    reports from 28 to 20 and lifted synthetic precision further (protein 65 %, Orbitrap oligo
-   55 %), the right direction; the full version is the GPU run in `gpu_training/`.
+   57 %), the right direction; the full version is the GPU run in `gpu_training/`.
+
+4. **Check the generator's instrument against the real one.** The synthetic Orbitrap spectra
+   were rendered at 30 000-63 000 resolving power (m/z 200); the real runs were recorded on a
+   Q Exactive Plus at 140 000 (155 000 measured from their peak widths), and the synthetic
+   benchmark decoded its spectra with the real runs' method, which assumes 140 000. Rendered at
+   the real resolving power, the comb's synthetic Orbitrap precision is 30 %, not 14 %. The same
+   mismatch made the comb's isotope-spacing charges look broken per bin (on 16 spectra at
+   30 000-63 000, right for 0.19 of the intensity at z >= 2, against 0.80 without them); a guard
+   that repaired the per-bin score cost three to five of the thirteen paper species found on the
+   real runs and was not kept (`benchmarks.md`, "Isotope-spacing charges"). The training mixture
+   now renders Orbitrap spectra at 35 000-280 000, a quarter of all spectra instead of 15 %.
+   CPU probes trained on it are no better on synthetic Orbitrap spectra; on the real runs the
+   first stage drops four column-wash reports (28 to 24) and finds one more SI-listed impurity,
+   while the second, in six short epochs, learned singly charged ions far less than before and
+   kept 27. The GPU run, thirty times longer, decides.
 
 No model is shipped and the comb remains the default. A trained network replaces it only when
 it finds at least what the comb finds on the four real runs without adding reports.

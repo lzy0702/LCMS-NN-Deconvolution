@@ -154,9 +154,18 @@ def train(config: TrainConfig, synth_config=None):
             f"{resume_path} holds the state of a paused or interrupted run. Add --resume to "
             f"continue it, or --restart to discard it and start again (this overwrites "
             f"{out_path} too).")
+    synth_key = synth_fingerprint(synth_config)
     if config.resume and resume_path.exists():
         st = torch.load(resume_path, map_location=device, weights_only=False)
         _check_same_run(st.get("config", {}), asdict(config))
+        if st.get("synth") != synth_key:
+            why = ("was written by an earlier version of this package, which did not record its "
+                   "synthetic spectra (and whose training mixture differed)"
+                   if st.get("synth") is None else
+                   "was written by a run that trained on other synthetic spectra")
+            raise SystemExit(
+                f"cannot resume: {resume_path} {why}; continuing would mix the two. Finish it "
+                f"with the version that started it, or start again with --restart.")
         model.load_state_dict(st["model"])
         ema.shadow.load_state_dict(st["ema"])
         opt.load_state_dict(st["opt"])
@@ -202,7 +211,7 @@ def train(config: TrainConfig, synth_config=None):
                  "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
-                 "running": (run_sum, run_n)}
+                 "running": (run_sum, run_n), "synth": synth_key}
         _atomic_save(state, resume_path)
 
     # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
@@ -336,6 +345,14 @@ def _loader_from(loader, start: int):
     ds = Subset(loader.dataset, range(start, len(loader.dataset)))
     return DataLoader(ds, batch_size=loader.batch_size, num_workers=loader.num_workers,
                       shuffle=False, drop_last=True)
+
+
+def synth_fingerprint(synth_config) -> str:
+    """A short digest of the synthetic-data settings (the whole mixture), kept in the resume
+    state so that a run is never continued on other spectra than it started with."""
+    import hashlib
+
+    return hashlib.sha256(repr(synth_config).encode()).hexdigest()[:16]
 
 
 def _check_same_run(saved: dict, now: dict) -> None:

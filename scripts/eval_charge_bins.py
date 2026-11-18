@@ -5,18 +5,24 @@ Every estimator reads the same freshly generated spectra of the training mixture
 (scripts/train_charge_net.py) the way ``process_run`` would - over the whole spectrum, a network
 in its 32 768-bin tiles, the comb all at once - and is scored on the frame's labelled crop:
 
-    comb                        the CombPredictor the pipeline uses, with charges read from
-                                resolved isotope spacing on Orbitrap spectra (isotope mode)
+    comb                        the CombPredictor the pipeline uses (charges up to 60, the
+                                pipeline's ceiling; the oligonucleotide methods stop at 40),
+                                with charges read from resolved isotope spacing on Orbitrap
+                                spectra (isotope mode)
     comb, no isotope charges    the same without them (Orbitrap spectra)
     <model file>                a trained network (.onnx or .pt) through ChargePredictor
 
+The spectra are drawn as training draws its validation spectra (synth.dataset.FrameDataset).
 The score is the share of the ion bins whose charge an estimator reads correctly (a network's
 most probable charge among the ion classes, as the decoder takes it; no answer counts as
-wrong). Every spectrum counts the same; within a spectrum bins count by log-SNR (feature channel
-0, bins above 0.5: what training selects checkpoints by) or by intensity (bins above three
-sigma: what the decoder's mass votes weigh). A third table pools the intensity-weighted bins of
-all spectra, so that the few strongest spectra decide it. Charges two and up, singly charged
-ions and four charge bands are reported apart, and so are time-of-flight and Orbitrap spectra.
+wrong). In every column each spectrum counts the same: its share read right in that charge band
+is averaged over the spectra with signal in it. Within a spectrum bins count by log-SNR
+(feature channel 0, bins above 0.5: what training selects checkpoints by; this includes bins
+at 2-3 sigma, where the comb gives no answer and the decoder casts no vote) or by intensity
+(bins above three sigma: what the decoder's mass votes weigh). A third table pools the
+intensity-weighted bins of all spectra instead, so that the few strongest spectra decide it.
+Charges two and up, singly charged ions and four charge bands are reported apart, and so are
+time-of-flight and Orbitrap spectra.
 
     python scripts/eval_charge_bins.py --frames 96 runs/ladder_full_ignore.onnx runs/ladder_full_stage2.pt
 """
@@ -26,8 +32,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -47,21 +51,23 @@ def main():
     from lcmsdeconv.nn import baseline as bl
     from lcmsdeconv.nn.checks import BIN_BANDS, POOLED, WEIGHTINGS, ChargeScoreboard
     from lcmsdeconv.nn.infer import ChargePredictor
-    from lcmsdeconv.synth.frames import generate_frame
+    from lcmsdeconv.synth.dataset import FrameDataset
 
     mix = mixture(background_ions=args.background_ions)
     for _w, c in mix:
         c.singly_charged = args.singly_charged
-    weights = np.array([w for w, _c in mix])
-    weights = weights / weights.sum()
-    predictors = {Path(m).name: ChargePredictor(m) for m in args.models}
+    # drawn the way training draws them: one random stream per spectrum picks the mixture
+    # component and then renders it, so each component spans its whole parameter range
+    frames = FrameDataset(mix, args.frames, base_seed=args.seed)
+    names = [Path(m).name for m in args.models]
+    labels = [str(Path(m)) if names.count(Path(m).name) > 1 else Path(m).name
+              for m in args.models]
+    predictors = {lab: ChargePredictor(m) for lab, m in zip(labels, args.models)}
     board = ChargeScoreboard()
     order = ["comb", "comb, no isotope charges", *predictors]
     n_kind: dict[str, int] = {}
     for i in range(args.frames):
-        seed = args.seed + i
-        cfg = mix[int(np.random.default_rng(seed).choice(len(mix), p=weights))][1]
-        fs = generate_frame(cfg, np.random.default_rng(seed))
+        cfg, fs = frames.frame(i)
         grid = bl.frame_grid(cfg, fs)
         if grid is None:
             raise SystemExit("frames rendered without a whole spectrum cannot be scored this way")

@@ -126,6 +126,24 @@ def test_paused_run_is_neither_overwritten_nor_resumed_with_other_settings(tmp_p
     assert [h["epoch"] for h in history] == [0, 1]
 
 
+def test_paused_run_is_not_resumed_on_other_synthetic_spectra(tmp_path):
+    from lcmsdeconv.nn.train import TrainConfig, train
+    from lcmsdeconv.synth.compounds import ClassConfig
+    from lcmsdeconv.synth.config import SynthConfig
+
+    def synth(hi):
+        return SynthConfig(classes=[ClassConfig("peptide", (8000.0, hi))], mode="rplc",
+                           polarity=1)
+    out = tmp_path / "net.pt"
+    cfg = dict(arch="ladder", model_size="small", epochs=2, train_len=4, val_len=2,
+               batch_size=2, num_workers=0, threads=1, out=str(out), log_every=100)
+    train(TrainConfig(max_seconds=1e-6, **cfg), synth_config=synth(20000.0))
+    with pytest.raises(SystemExit, match="synthetic"):
+        train(TrainConfig(resume=True, **cfg), synth_config=synth(30000.0))
+    _m, history = train(TrainConfig(resume=True, **cfg), synth_config=synth(20000.0))
+    assert [h["epoch"] for h in history] == [0, 1]
+
+
 def test_predictor_rejects_a_grid_the_ladder_model_was_not_built_for(tmp_path):
     from lcmsdeconv.nn.grid import LogMzGrid
     from lcmsdeconv.nn.infer import ChargePredictor
