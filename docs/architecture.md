@@ -37,9 +37,29 @@ takes a different path and is placed on the grid with the instrument line shape.
 
 ## 2. The charge network
 
-`ChargeUNet` is a 1D U-Net with six stride-2 levels, 7-wide kernels and a dilated residual
-bottleneck, giving a receptive field of roughly 50 000 bins (about a factor 2.7 in charge). It
-reads four channels over a 32 768-bin window:
+Until a trained network has beaten it on the real runs, charges are assigned by the
+deterministic **comb estimator** (`CombPredictor`): for every bin and candidate charge z it
+multiplies the bin's log-SNR by the mean log-SNR at the positions of the same species' charge
+states z ± 1..3 on the grid, takes the best charge, and on isotope-resolved spectra (Orbitrap,
+FT-ICR) overrides it with the charge read from the isotopologue spacing 1.00336/z where that
+spacing is resolved. It reads the whole spectrum at once.
+
+The network meant to replace it is **LadderNet** (`build_model(..., arch="ladder")`,
+`training.md`). For each candidate charge it reads a learned four-layer dilated-convolution
+description of the spectrum (peak shape, isotope spacing) at the bin, at the bin's z ± 1..3
+neighbours (fixed offsets ln(z/(z ± k))) and at the two positions only a reading at 2z would
+fill; a small network shared by all charges, with a learned bias per charge, scores the
+reading, and the comb's own score is added with a learnable weight. Its learned part starts at
+zero, so the untrained network is the comb (a test checks it), and training learns
+corrections. It has 9 500 (`proof`) to 22 000 (`full`) parameters, works on 32 768-bin windows
+(a factor 1.93 in m/z, too narrow to hold a doubly charged ion's z = 1 and z = 3 neighbours),
+and is exported to ONNX with static shifts. It is trained in two stages - singly charged ions
+first without weight in the loss, then with them and dense singly charged background - on
+synthetic spectra rendered along the inference path (`gpu_training/README.md`).
+
+The first network, `ChargeUNet`, is a 1D U-Net with six stride-2 levels, 7-wide kernels and a
+dilated residual bottleneck, giving a receptive field of roughly 50 000 bins (about a factor
+2.7 in charge). Both networks read the same four channels over a 32 768-bin window:
 
 | Channel | Content |
 | --- | --- |
@@ -48,12 +68,14 @@ reads four channels over a 32 768-bin window:
 | 2 | charge-evidence comb: for each hypothesised `z`, the spectrum shifted onto that charge's neighbours, reduced to its maximum |
 | 3 | the charge that maximised the comb, scaled to [0, 1] |
 
-It predicts two things per bin: a softmax over 101 classes (0 = non-ion, 1…100 = charge) and an
-apex heatmap. The charge head is trained on *soft* targets — the fraction of the bin's intensity
+Each predicts two things per bin: a softmax over 101 classes (0 = non-ion, 1…100 = charge) and
+an apex heatmap. The charge head is trained on *soft* targets — the fraction of the bin's intensity
 belonging to each charge — because two charge states can coincide exactly (a dimer at `2z` lies
 on the monomer at `z`) and a hard label could not represent that.
 
-Deployment runs on ONNX Runtime. PyTorch is only needed for training.
+Deployment runs on ONNX Runtime; the decoder takes the most probable charge among the ion
+classes (whether a bin is signal is decided by its intensity). PyTorch is only needed for
+training.
 
 ## 3. From charge maps to candidate masses
 
