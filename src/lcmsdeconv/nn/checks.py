@@ -158,10 +158,11 @@ def bin_weights_by(f0: np.ndarray, how: str) -> np.ndarray:
 class ChargeScoreboard:
     """Per-bin charge accuracy of several estimators over many spectra, by kind of spectrum.
 
-    Each spectrum's bin weights are scaled to sum to one over its ion bins, so every spectrum
-    counts the same whatever its signal level; within a spectrum, bins count by log-SNR or by
-    intensity (see :data:`WEIGHTINGS`; :data:`POOLED` skips the scaling). A charge of 0 or less
-    means "no answer" and counts as wrong.
+    In every charge band each spectrum counts the same whatever its signal level: the band's
+    accuracy is the mean, over the spectra with signal in the band, of the share of that signal
+    read right. Within a spectrum, bins count by log-SNR or by intensity (see
+    :data:`WEIGHTINGS`); :data:`POOLED` instead pools the intensity-weighted bins of all
+    spectra. A charge of 0 or less means "no answer" and counts as wrong.
     """
 
     def __init__(self):
@@ -173,18 +174,17 @@ class ChargeScoreboard:
         ok = pred_z == true_z
         for how in (*WEIGHTINGS, POOLED):
             w = bin_weights_by(f0, "intensity" if how == POOLED else how) * (true_z > 0)
-            tot = float(w.sum())
-            if tot <= 0:
-                continue
-            if how != POOLED:
-                w = w / tot
             for band, lo, hi in BIN_BANDS:
-                m = (true_z >= lo) & (true_z <= hi)
-                t = float((w * m).sum())
-                if t > 0:
-                    s = self.sums.setdefault((kind, estimator, how, band), [0.0, 0.0])
-                    s[0] += float((w * m * ok).sum())
-                    s[1] += t
+                wb = w * ((true_z >= lo) & (true_z <= hi))
+                t = float(wb.sum())
+                if t <= 0:
+                    continue
+                c = float((wb * ok).sum())
+                if how != POOLED:
+                    c, t = c / t, 1.0
+                s = self.sums.setdefault((kind, estimator, how, band), [0.0, 0.0])
+                s[0] += c
+                s[1] += t
 
     def accuracy(self, kind: str, estimator: str, how: str, band: str = "z>=2") -> float | None:
         c, t = self.sums.get((kind, estimator, how, band), (0.0, 0.0))

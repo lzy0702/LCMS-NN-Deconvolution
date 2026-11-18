@@ -56,11 +56,16 @@ PRESETS = {
     "polymer": (dict(classes=[ClassConfig("peg", (1500.0, 12000.0))], mode="polymer",
                      polarity=1, instrument_kind="tof",
                      resolution_range=(20000.0, 40000.0)), "polymer_pos"),
-    # resolved isotopes, the regime of the real Orbitrap runs (resolving power at m/z 1000,
-    # 67 000-140 000 at m/z 200); not in the default preset list
+    # resolved isotopes at the resolving power of the real Orbitrap runs (140 000 at m/z 200,
+    # the reference m/z of InstrumentModel for Orbitraps), which the decoding method assumes;
+    # "_lowres" keeps the 30 000-63 000 this preset first rendered. Neither is in the default
+    # preset list
     "oligo_orbitrap": (dict(classes=[ClassConfig("ps_rna", (3000.0, 9000.0))], mode="iprp",
                             polarity=-1, instrument_kind="orbitrap",
-                            resolution_range=(30000.0, 63000.0)), "orbitrap_iprp_neg_oligo"),
+                            resolution_range=(120000.0, 160000.0)), "orbitrap_iprp_neg_oligo"),
+    "oligo_orbitrap_lowres": (dict(classes=[ClassConfig("ps_rna", (3000.0, 9000.0))], mode="iprp",
+                                   polarity=-1, instrument_kind="orbitrap",
+                                   resolution_range=(30000.0, 63000.0)), "orbitrap_iprp_neg_oligo"),
 }
 DEFAULT_PRESETS = ("protein_tof", "oligo_iprp", "polymer")
 

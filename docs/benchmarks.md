@@ -52,19 +52,56 @@ generator's elution-profile fix and one-to-one scoring applied to it):
 
 ### Orbitrap regime
 
-`--presets oligo_orbitrap` (not in the default list): phosphorothioate RNA of 3-9 kDa at 30 000
-to 63 000 resolving power at m/z 200 (the real runs below were recorded at 140 000), decoded
-with the `orbitrap_iprp_neg_oligo` method, so
-charges are also read from resolved isotope spacing.
+`--presets oligo_orbitrap` (not in the default list): phosphorothioate RNA of 3-9 kDa at
+120 000-160 000 resolving power at m/z 200, as on the real runs below (recorded at 140 000; 155 000
+measured from their peak widths), decoded with the `orbitrap_iprp_neg_oligo` method, so charges
+are also read from resolved isotope spacing. Until that was measured the preset rendered
+30 000-63 000 (kept as `oligo_orbitrap_lowres`) and decoded it with the 140 000 method:
 
-| Code | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | 0.01-0.1 % | Median ppm |
-| --- | --- | --- | --- | --- | --- | --- |
-| before the truth table | 13 % (12/94) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 0 % (0/2) | 4.1 |
-| now | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 50 % (1/2) | 8.0 |
+| Code | Resolving power | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | 0.01-0.1 % | Median ppm |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before the truth table | 30 000-63 000 | 13 % (12/94) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 0 % (0/2) | 4.1 |
+| after it | 30 000-63 000 | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 50 % (1/2) | 8.0 |
+| now | 120 000-160 000 | 30 % (14/47) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 50 % (1/2) | 2.8 |
 
-Precision in this regime is far below the time-of-flight presets: of 85 false species, 16 are
-adduct-shifted copies and 67 unexplained. `single_charge: true` changes nothing here: the
-generator gives every species several charge states, unlike ion-pairing HILIC on the real runs.
+At the real resolving power precision is in line with the time-of-flight presets and the mass
+error a third of what it was: of 33 false species, 5 are adduct-shifted copies, 2 mass errors
+and 26 unexplained. `single_charge: true` changes nothing here: the generator gives every
+species several charge states, unlike ion-pairing HILIC on the real runs.
+
+#### Isotope-spacing charges
+
+On isotope-resolved data the comb also reads charges from isotope spacing (`architecture.md`,
+section 3). Per bin, on synthetic Orbitrap spectra of 1.5-12 kDa phosphorothioate
+oligonucleotides, it is wrong for most ions of charge four and up (see the per-bin table in the
+next section): a hypothesis one or two charges too high lands on the flank of the neighbouring
+isotopologue, and the rule that keeps the largest charge within 0.6 of the best evidence,
+compared in log-SNR, accepts it; where a charge's own spacing is unresolved, a lower charge whose
+spacing is resolved is read instead (z = 10 as 6, z = 14 as 11). A guard that keeps a reading
+only where twice (or three times) the charge would have been resolved, so that the truth cannot
+be a multiple of it, restores the per-bin accuracy - and costs real species:
+
+| Isotope-spacing charges | Per bin, 30 000-63 000 | Per bin, 120 000-160 000 | Real runs: paper, SI species | Reported | Unconfirmed |
+| --- | --- | --- | --- | --- | --- |
+| none (charge ladders only) | 0.53 / 0.80 | 0.62 / 0.82 | 8 / 20, 1 / 29 | 20 | 3 |
+| as they are | 0.17 / 0.19 | 0.52 / 0.65 | 13 / 20, 5 / 29 | 39 | 7 |
+| kept where 2z is resolved | 0.52 / 0.79 | 0.64 / 0.83 | 10 / 20, 3 / 29 | 27 | 4 |
+| kept where 2z and 3z are resolved | 0.53 / 0.81 | 0.64 / 0.83 | 8 / 20, 2 / 29 | 23 | 4 |
+| kept up to z = 4 | 0.49 / 0.75 | 0.69 / 0.87 | 10 / 20, 3 / 29 | 31 | 6 |
+| kept up to z = 6 | 0.40 / 0.57 | 0.70 / 0.85 | 11 / 20, 3 / 29 | 33 | 6 |
+| kept up to z = 8 | 0.31 / 0.41 | 0.63 / 0.78 | 11 / 20, 3 / 29 | 33 | 5 |
+
+(Per bin: the share of z >= 2 ion bins read right, weighted by log-SNR / by intensity, 16
+spectra per resolving power, scored as in the per-bin table of the next section.) The
+2z guard loses PO-NC, PO, DA-NC (the comb's strongest report in the IP-HILIC NC run) and a
+2.56 kDa shortmer reported at 40 %; adding 3z also loses the full-length product of the IP-HILIC
+GalNAc run. On the 2·10⁻⁵ grid no peak is taken to be narrower than two bins, so at m/z 1700
+nothing above z = 5 counts as resolved, and correct z = 3 readings are thrown away. Keeping only
+low-charge readings loses species too: on the real runs the readings at higher charges are
+right. For the real runs'
+5 kDa oligonucleotides isotopologues sit about ten grid bins apart at every charge, and the
+reader's failure modes, which need heavier species or lower resolving power, hardly arise. The
+rule stays as it is: the real runs decided, not the per-bin score.
 
 ### Charge network (LadderNet)
 
@@ -74,38 +111,49 @@ loss (`--singly-charged ignore`) or absent from the spectra (`drop`); "stage 2" 
 first for six epochs with singly charged ions trained on and up to 200 background ions per
 spectrum.
 
-Charge read correctly on the same 96 fresh spectra of the training mixture (83 time-of-flight,
-13 Orbitrap; singly charged ions included) for every estimator, each run as the pipeline runs
-it - over the whole spectrum, a network in its 32 768-bin tiles - and scored on the spectrum's
-labelled crop (`python scripts/eval_charge_bins.py --frames 96 <models>`). "Comb" is the
-pipeline's estimator, with isotope-spacing charges on Orbitrap spectra. Shares of the ion bins
-whose charge is read right, every spectrum counting the same: at z >= 2 with bins weighted by
-log-SNR (the training metric), by intensity, and by intensity pooled over all spectra (so that
-the strongest few decide); by charge band, intensity-weighted:
+Charge read correctly on the same 96 fresh spectra of the training mixture (72 time-of-flight;
+24 Orbitrap at 35 000-280 000), drawn as training draws its validation spectra, for every
+estimator, each run as the pipeline runs it - over the whole spectrum, a network in its
+32 768-bin tiles - and scored on the spectrum's labelled crop
+(`python scripts/eval_charge_bins.py --frames 96 <models>`). "Comb" is the pipeline's
+estimator, with isotope-spacing charges on Orbitrap spectra. Shares of the ion bins whose charge
+is read right, each spectrum counting the same in every column: at z >= 2 with bins weighted by
+log-SNR (the training metric, which also counts bins at 2-3 sigma, where the comb gives no
+answer and the decoder casts no vote), by intensity, and by intensity pooled over all spectra
+(so that the strongest few decide); by charge band, intensity-weighted:
 
 | Spectra | Charge assignment | z >= 2, log-SNR | z >= 2, intensity | z >= 2, pooled | z = 1 | z = 2-5 | z = 6-15 | z = 16-40 | z > 40 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| time-of-flight | comb | 0.64 | 0.86 | 0.89 | 0.22 | 0.74 | 0.87 | 0.91 | 0.80 |
-| time-of-flight | LadderNet, z = 1 ignored | 0.90 | 0.95 | 0.82 | 0.31 | 0.81 | 0.97 | 0.98 | 0.99 |
-| time-of-flight | LadderNet, z = 1 dropped | 0.90 | 0.96 | 0.86 | 0.00 | 0.83 | 0.97 | 0.98 | 0.99 |
-| time-of-flight | LadderNet, stage 2, dense background | 0.81 | 0.92 | 0.85 | 0.92 | 0.66 | 0.94 | 0.98 | 0.99 |
-| Orbitrap | comb | 0.23 | 0.36 | 0.43 | 0.88 | 0.76 | 0.10 | 0.98 | - |
-| Orbitrap | comb without isotope charges | 0.60 | 0.84 | 0.88 | 0.12 | 0.81 | 0.86 | 0.96 | - |
-| Orbitrap | LadderNet, z = 1 ignored | 0.84 | 0.92 | 0.88 | 0.29 | 0.86 | 0.96 | 1.00 | - |
-| Orbitrap | LadderNet, z = 1 dropped | 0.88 | 0.95 | 0.93 | 0.00 | 0.93 | 0.96 | 1.00 | - |
-| Orbitrap | LadderNet, stage 2, dense background | 0.73 | 0.86 | 0.84 | 0.92 | 0.78 | 0.91 | 1.00 | - |
+| time-of-flight | comb | 0.65 | 0.84 | 0.86 | 0.06 | 0.55 | 0.79 | 0.80 | 0.71 |
+| time-of-flight | LadderNet, z = 1 ignored | 0.88 | 0.95 | 0.94 | 0.15 | 0.74 | 0.98 | 0.96 | 0.88 |
+| time-of-flight | LadderNet, z = 1 dropped | 0.90 | 0.96 | 0.94 | 0.00 | 0.79 | 0.98 | 0.97 | 0.89 |
+| time-of-flight | LadderNet, stage 2, dense background | 0.80 | 0.91 | 0.93 | 0.79 | 0.67 | 0.96 | 0.93 | 0.85 |
+| time-of-flight | LadderNet, corrected mixture, z = 1 ignored | 0.89 | 0.95 | 0.93 | 0.00 | 0.80 | 0.98 | 0.95 | 0.88 |
+| time-of-flight | LadderNet, corrected mixture, stage 2 | 0.81 | 0.91 | 0.93 | 0.21 | 0.73 | 0.95 | 0.90 | 0.84 |
+| Orbitrap | comb | 0.36 | 0.43 | 0.26 | 0.62 | 0.56 | 0.34 | 0.00 | - |
+| Orbitrap | comb without isotope charges | 0.57 | 0.77 | 0.95 | 0.02 | 0.68 | 0.85 | 0.94 | - |
+| Orbitrap | LadderNet, z = 1 ignored | 0.83 | 0.92 | 0.95 | 0.24 | 0.87 | 0.94 | 0.96 | - |
+| Orbitrap | LadderNet, z = 1 dropped | 0.87 | 0.94 | 0.95 | 0.00 | 0.90 | 0.96 | 0.95 | - |
+| Orbitrap | LadderNet, stage 2, dense background | 0.70 | 0.86 | 0.96 | 0.89 | 0.78 | 0.86 | 0.79 | - |
+| Orbitrap | LadderNet, corrected mixture, z = 1 ignored | 0.87 | 0.95 | 0.97 | 0.00 | 0.92 | 0.96 | 0.93 | - |
+| Orbitrap | LadderNet, corrected mixture, stage 2 | 0.73 | 0.87 | 0.95 | 0.30 | 0.81 | 0.85 | 0.69 | - |
 
 The networks read weak ions far better than the comb (log-SNR weighting) and most of each
-spectrum's intensity better too, but pooled over spectra the comb leads on time-of-flight data,
-at z = 2-5 above all (0.80 against 0.53-0.65 pooled): a network reads 32 768-bin windows, which
-cannot hold the nearest neighbours of a doubly charged ion (34 657 bins away at z = 1, 20 273 at
-z = 3), while the comb reads the whole spectrum. On Orbitrap spectra the isotope-spacing charges
-make the comb worse, not better (0.23 against 0.60 without them). An
-earlier version of this table had run the comb on the crop only, which hid the far neighbours
-from it too (0.46 at z >= 2 on time-of-flight spectra), and training had printed the comb's
-answer in feature channel 3, computed inside the crop, as the bar to beat; an independent review
-caught both. The same benchmark as above, with the network in place of the comb
-(`--predictor model.onnx`):
+spectrum's intensity better too; pooled over spectra they lead at z >= 2 as a whole, but on
+time-of-flight data the comb reads the low charges of the strongest spectra better (z = 2-5,
+pooled: 0.87 against 0.70-0.74): a network reads 32 768-bin windows, which cannot hold the
+nearest neighbours of a doubly charged ion (34 657 bins away at z = 1, 20 273 at z = 3), while
+the comb reads the whole spectrum. On these Orbitrap spectra the isotope-spacing charges make the
+comb worse per bin (0.43 against 0.77 without them), yet on the real runs they find five more of
+the paper's species ("Isotope-spacing charges" above). The second stage 2 learned singly
+charged ions far less than the first (0.21-0.30 against 0.79-0.89 at z = 1) in its six short
+epochs. Two earlier versions of this table were biased: the first ran the comb on the crop only,
+which hid the far neighbours from it too (0.46 at z >= 2 on time-of-flight spectra), and both
+drew each spectrum's mixture component and its resolving power from the same random number, so
+that each component covered a narrow slice of its range (the Orbitrap spectra 49 000-54 000);
+training had also printed the comb's answer in feature channel 3, computed inside the crop, as
+the bar to beat. Independent reviews caught all three. The same benchmark as above, with the
+network in place of the comb (`--predictor model.onnx`):
 
 | Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -113,23 +161,38 @@ caught both. The same benchmark as above, with the network in place of the comb
 | LadderNet, z = 1 ignored | protein_tof | 52 % (11/21) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
 | LadderNet, z = 1 dropped | protein_tof | 52 % (11/21) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 9.0 |
 | LadderNet, stage 2, dense background | protein_tof | 65 % (11/17) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
+| LadderNet, corrected mixture, z = 1 ignored | protein_tof | 58 % (11/19) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 9.0 |
+| LadderNet, corrected mixture, stage 2 | protein_tof | 52 % (11/21) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 6.7 |
 | comb estimator | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
 | LadderNet, z = 1 ignored | oligo_iprp | 39 % (13/33) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 3.7 |
 | LadderNet, z = 1 dropped | oligo_iprp | 32 % (12/37) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 2.3 |
 | LadderNet, stage 2, dense background | oligo_iprp | 39 % (11/28) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.4 |
+| LadderNet, corrected mixture, z = 1 ignored | oligo_iprp | 38 % (13/34) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 3.4 |
+| LadderNet, corrected mixture, stage 2 | oligo_iprp | 40 % (12/30) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 2.4 |
 | comb estimator | polymer | 40 % (12/30) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
 | LadderNet, z = 1 ignored | polymer | 32 % (13/41) | 100 % (8/8) | 80 % (4/5) | 33 % (1/3) | 1.8 |
 | LadderNet, z = 1 dropped | polymer | 55 % (12/22) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
 | LadderNet, stage 2, dense background | polymer | 20 % (12/59) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 1.1 |
-| comb estimator | oligo_orbitrap | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 8.0 |
-| LadderNet, z = 1 ignored | oligo_orbitrap | 47 % (17/36) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 10.6 |
-| LadderNet, z = 1 dropped | oligo_orbitrap | 43 % (16/37) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
-| LadderNet, stage 2, dense background | oligo_orbitrap | 55 % (16/29) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 8.1 |
+| LadderNet, corrected mixture, z = 1 ignored | polymer | 55 % (12/22) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| LadderNet, corrected mixture, stage 2 | polymer | 39 % (13/33) | 100 % (8/8) | 80 % (4/5) | 33 % (1/3) | 2.2 |
+| comb estimator | oligo_orbitrap_lowres | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 8.0 |
+| LadderNet, z = 1 ignored | oligo_orbitrap_lowres | 47 % (17/36) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 10.6 |
+| LadderNet, z = 1 dropped | oligo_orbitrap_lowres | 43 % (16/37) | 100 % (8/8) | 86 % (6/7) | 33 % (2/6) | 8.2 |
+| LadderNet, stage 2, dense background | oligo_orbitrap_lowres | 55 % (16/29) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 8.1 |
+| comb estimator | oligo_orbitrap | 30 % (14/47) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
+| LadderNet, z = 1 ignored | oligo_orbitrap | 48 % (14/29) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
+| LadderNet, z = 1 dropped | oligo_orbitrap | 52 % (14/27) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
+| LadderNet, stage 2, dense background | oligo_orbitrap | 57 % (13/23) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
+| LadderNet, corrected mixture, z = 1 ignored | oligo_orbitrap | 47 % (14/30) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
+| LadderNet, corrected mixture, stage 2 | oligo_orbitrap | 50 % (14/28) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 2.8 |
 
-Stage 2 is the best model so far for
-proteins and Orbitrap oligonucleotides and the worst for polymers, where it reads the small
-oligomers' low charges as background-like (32 unexplained false species against 6 for the comb):
-these CPU runs are short, and the variants trade off differently per preset.
+The first stage 2 is the best model so far for proteins and Orbitrap oligonucleotides and the
+worst for polymers, where it reads the small oligomers' low charges as background-like (32
+unexplained false species against 6 for the comb). The "corrected mixture" rows are the same two
+stages trained on the mixture whose Orbitrap spectra span 35 000-280 000 (a quarter of all
+spectra) instead of 30 000-63 000 (15 %): no better on the Orbitrap preset, better for polymers,
+mixed elsewhere. These CPU runs are short (240 spectra per stage), and the variants trade off
+differently per preset.
 
 Charge-harmonic false species, the comb's characteristic error, fell from 6, 5 and 4 (protein,
 oligo, polymer) to 0-3. The synthetic runs contain no singly charged background, so these
@@ -183,14 +246,16 @@ impurities in two chromatographies, minus the ones above, plus a 4842 Da form th
 **Other reports** are sorted into: forms of a found species (+Na, +K, their combinations, or
 the +201.4 Da form described below), charge harmonics of a found species, the same molecule at
 another retention time (within 0.3 Da), and the rest, which are "EIC-confirmed" when two of
-their charge states have extracted-ion chromatograms with a peak within 0.25 min of the reported
-time, three times above their median within 1.5 min, that co-vary there (r >= 0.7), and
-"unconfirmed" otherwise. Each chromatogram is judged against its own surroundings; an earlier
+their charge states have extracted-ion chromatograms that peak within 0.25 min of the reported
+time (the highest point there, also the highest within 0.1 min either side, carried by three
+scans or more and three times the trace's median within 1.5 min), and the two strongest such
+charge states co-vary (r >= 0.7 within 0.6 min); "unconfirmed" otherwise. Each chromatogram is judged against its own surroundings; an earlier
 version divided it by its maximum over the whole run, so that a weak species whose m/z window
 also passes the injection peak or the column wash failed (an independent review found five of
 fifteen sequence-identified NC impurities rejected that way). On the four runs the check
-confirms 47 of the 51 tabulated species at their tabulated times and 4 of 240 random
-(mass, time) pairs. It is a consistency check, not truth: a false charge ladder made of
+confirms 47 of the 51 tabulated species at their tabulated times and none of 240 random
+(mass, time) pairs (4 without the three-scan rule, which the same review asked for: vendor-
+thresholded traces are zero most of the time, and one stray scan shared by two windows passed). It is a consistency check, not truth: a false charge ladder made of
 co-eluting background can pass it, and a species whose strongest charge states share their m/z
 windows with other signal can fail it.
 
@@ -203,6 +268,8 @@ windows with other signal can fail it.
 | now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 2 | 13 | 28 |
 | now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 2 | 14 | 22 |
 | now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 2 | 12 | 20 |
+| now, LadderNet stage 1, corrected mixture | 12 / 20 | 5 / 29 | 62 | 5 | 2 | 14 | 24 |
+| now, LadderNet stage 2, corrected mixture | 12 / 20 | 4 / 29 | 61 | 4 | 2 | 12 | 27 |
 
 (The "now" rows use the extracted-ion check described above; the two earlier rows were scored
 with its first version.)
@@ -216,11 +283,14 @@ under NC at 10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion 
 and in the GalNAc mixture find NC's own 7..16 10-mer (3208.66 Da at 14.2 min, 0.13-0.17 %),
 which the comb misses; but they add 13-21 more unconfirmed reports, nearly all below 0.13 % of
 the strongest species, 1.3-3.9 kDa, in the IP-RPLC column wash: singly charged background read
-as z = 2-3. Stage 1
-never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200 background ions per
-spectrum, `--background-ions 200`) brings the number down from 28 to 20: the remedy is in the
-right direction, and six CPU epochs are far from enough of it; `gpu_training/README.md` runs
-both stages on a GPU. (These tables are after a fix to species linking that had shrunk the masses
+as z = 2-3. Stage 1 never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200
+background ions per spectrum, `--background-ions 200`) brings the number down from 28 to 20: the
+remedy is in the right direction, and six CPU epochs are far from enough of it;
+`gpu_training/README.md` runs both stages on a GPU. Trained on the corrected mixture (Orbitrap
+spectra at the real runs' resolving power), stage 1 drops four of the column-wash reports (28 to
+24) and finds one more SI-listed impurity; the second stage 2 learned singly charged ions far
+less in its six short epochs (per-bin table) and kept 27. What remains is mostly one singly
+charged background ion, read as a 2640.8 Da species at five retention times. (These tables are after a fix to species linking that had shrunk the masses
 of tracks with vanishingly weak frames toward zero; it removed two to three junk reports from
 every variant.) Most of the SI-listed impurities missed by every variant are small
 fragments (1.2-3.8 kDa) eluting at 3-15 min.

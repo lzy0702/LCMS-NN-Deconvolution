@@ -46,3 +46,10 @@ def test_scoreboard_counts_every_spectrum_once_and_no_answer_as_wrong():
     assert board.accuracy("tof", "a", "intensity, pooled") == pytest.approx(pooled)
     assert board.accuracy("tof", "a", "log-SNR", "z=1") is None
     assert board.summary()["tof"]["a"]["log-SNR"]["z=2-5"] == pytest.approx(log_w)
+    # every band counts each spectrum once: a spectrum mostly singly charged weighs as much
+    # at z >= 2 as one with nothing but multiply charged ions
+    board = ChargeScoreboard()
+    board.add("tof", "b", np.array([1, 1, 5]), np.array([1, 1, 3]), np.full(3, 2.0))
+    board.add("tof", "b", np.array([3]), np.array([3]), np.full(1, 2.0))
+    assert board.accuracy("tof", "b", "log-SNR", "z>=2") == pytest.approx(0.5)
+    assert board.accuracy("tof", "b", "log-SNR", "z=1") == pytest.approx(1.0)

@@ -88,8 +88,10 @@ before long trainings, and how to target an integrated GPU or NPU through the Op
 DirectML execution providers.
 
 Setting `model: comb` in a method selects a deterministic charge estimator that needs no model
-at all. It is weaker than a trained network but makes the package usable immediately and is the
-baseline any model should beat.
+at all. It is what the package uses until a trained network beats it on real data: the CPU-trained
+LadderNets read charges better per bin on synthetic spectra but report more junk on the real runs
+(`docs/benchmarks.md`). It makes the package usable immediately and is the baseline any model
+should beat.
 
 ## Diagnostics
 
@@ -126,7 +128,7 @@ three-month effort at the same problem, what went wrong there, and what that cha
 Four real Orbitrap runs of a GalNAc-conjugated phosphorothioate oligonucleotide and its
 impurities, published with known compositions (Tutiš et al., Anal. Chem. 2025, 97, 15717,
 https://doi.org/10.1021/acs.analchem.5c01407), are scored against the paper's species: of 20
-known species the original code found 2 among 87 reports, the current code finds 13 among 41,
+known species the original code found 2 among 87 reports, the current code finds 13 among 39,
 with masses within about 0.1 Da of theory for the main species (`docs/benchmarks.md`,
 `scripts/validate_oligo_runs.py`). Public spectra are used only for validation, never for training. Bovine serum albumin and the
 alcohol dehydrogenase tetramer are recovered within 1 % of their literature masses from public
