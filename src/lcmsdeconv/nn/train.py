@@ -525,7 +525,16 @@ def _atomic_save(obj, path: Path) -> None:
         torch.save(obj, fh)
         fh.flush()
         os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # on Windows the rename fails while another program (a virus scanner, a backup or sync
+    # tool, Explorer's preview) briefly holds either file open; such holds last moments
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.5)
 
 
 def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None:
