@@ -126,3 +126,14 @@ def test_training_leaves_a_status_the_orchestrator_reads_without_torch(tmp_path)
     train(TrainConfig(resume=True, **_cfg(out)), synth_config=_synth())
     st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
     assert (st["epoch"], st["stop_reason"]) == (2, "finished")
+
+
+def test_a_restarted_run_sets_the_old_log_aside(tmp_path):
+    from lcmsdeconv.nn.train import TrainConfig, train
+
+    out = tmp_path / "net.pt"
+    train(TrainConfig(**_cfg(out, epochs=1)), synth_config=_synth())
+    train(TrainConfig(restart=True, **_cfg(out, epochs=1)), synth_config=_synth())
+    logs = sorted(p.name for p in tmp_path.glob("net.log*.jsonl"))
+    assert len(logs) == 2 and "net.log.jsonl" in logs
+    assert sum('"epoch": 0' in line for line in out.with_suffix(".log.jsonl").open()) == 1

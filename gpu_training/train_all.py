@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs"
 MACHINE = ROOT / "gpu_training" / "machine.json"
 COMMON = ["--arch", "ladder", "--model-size", "full", "--val-len", "128", "--batch-size", "8"]
-#: the two stages: 240 000 new spectra for stage 1, 96 000 with dense background for stage 2
+#: the two stages: 240 000 spectra for stage 1, then 96 000 others (a disjoint seed range, so
+#: new molecules too) with dense background for stage 2
 STAGES = [
     {"name": "stage 1", "out": "runs/ladder_full_ignore.pt", "spectra": 40 * 6000,
      "args": ["--singly-charged", "ignore", "--epochs", "40", "--train-len", "6000",
@@ -35,7 +36,7 @@ STAGES = [
     {"name": "stage 2", "out": "runs/ladder_full_stage2.pt", "spectra": 16 * 6000,
      "args": ["--singly-charged", "keep", "--background-ions", "200",
               "--init", "runs/ladder_full_ignore.pt", "--epochs", "16", "--train-len", "6000",
-              "--lr", "5e-4"]},
+              "--lr", "5e-4", "--seed", "1000000"]},
 ]
 SMOKE = [
     {"name": "smoke stage 1", "out": "runs/smoke_stage1.pt", "spectra": 2 * 8,
@@ -44,7 +45,7 @@ SMOKE = [
     {"name": "smoke stage 2", "out": "runs/smoke_stage2.pt", "spectra": 2 * 8,
      "args": ["--singly-charged", "keep", "--background-ions", "200",
               "--init", "runs/smoke_stage1.pt", "--epochs", "2", "--train-len", "8",
-              "--lr", "5e-4", "--val-len", "4", "--batch-size", "2"]},
+              "--lr", "5e-4", "--val-len", "4", "--batch-size", "2", "--seed", "1000000"]},
 ]
 PAUSED, MEMORY = 3, 4
 
@@ -76,10 +77,12 @@ def stage_status(out: Path) -> str:
 
 
 def pause_files() -> list[Path]:
-    """PAUSE files in the runs folder (Explorer names a new text file PAUSE.txt)."""
+    """PAUSE files in the runs folder: PAUSE, PAUSE.txt, PAUSE.txt.txt (Explorer hides the
+    extension it adds), any case."""
     if not RUNS.exists():
         return []
-    return [f for f in RUNS.iterdir() if f.is_file() and f.name.lower() in ("pause", "pause.txt")]
+    return [f for f in RUNS.iterdir()
+            if f.is_file() and f.name.lower().split(".")[0] == "pause"]
 
 
 def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool,

@@ -159,9 +159,10 @@ def train(config: TrainConfig, synth_config=None):
     resume_path = out_path.with_suffix(".resume.pt")
 
     def pause_files() -> list[Path]:
-        # Windows Explorer names a new text file "PAUSE.txt"; either name, any case, counts
+        # PAUSE, PAUSE.txt (Explorer's new text file) or PAUSE.txt.txt (Explorer hides the
+        # extension it adds): any file named PAUSE, whatever follows the first dot, any case
         return [f for f in out_path.parent.iterdir()
-                if f.is_file() and f.name.lower() in ("pause", "pause.txt")]
+                if f.is_file() and f.name.lower().split(".")[0] == "pause"]
 
     history: list = []
     best_state = None
@@ -202,6 +203,10 @@ def train(config: TrainConfig, synth_config=None):
                   f"{steps_per_epoch}")
     elif config.resume:
         print(f"nothing to resume at {resume_path}; starting from the beginning")
+    if epoch0 == 0 and step0 == 0 and log_path.exists():
+        # a new run: the log of an earlier one (a restart) is set aside, not appended to
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(log_path.stat().st_mtime))
+        log_path.replace(log_path.with_name(f"{out_path.stem}.log.{stamp}.jsonl"))
     if config.clear_pause_files:
         for f in pause_files():
             f.unlink()

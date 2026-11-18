@@ -98,8 +98,8 @@ The best checkpoint is saved whenever it improves. Logs of every epoch are writt
 
 ## Pausing and resuming
 
-- **Pause:** press **Ctrl+C once** in the training window, or create an empty file named
-  `PAUSE` (or `PAUSE.txt`, as Windows Explorer names a new text file) in the `runs` folder. The
+- **Pause:** press **Ctrl+C once** in the training window, or create a file named `PAUSE` in
+  the `runs` folder (an empty text file is fine: PAUSE, PAUSE.txt or PAUSE.txt.txt all count). The
   current step finishes, the complete training state is saved, and the program ends. After
   Ctrl+C, Windows then asks "Terminate batch job (Y/N)?": the state is already saved, so either
   answer is safe (N keeps the window open so you can read the last messages). The PAUSE file
@@ -124,8 +124,9 @@ them first. Training therefore has two stages:
 - **Stage 1** (`runs\ladder_full_ignore.pt`), 40 epochs of 6 000 new spectra: singly charged
   ions stay in the spectra but get **no weight** in the loss. Predicting them is neither
   rewarded nor penalised.
-- **Stage 2** (`runs\ladder_full_stage2.pt`), 16 epochs of 6 000, continuing from stage 1:
-  singly charged ions are trained on, with up to 200 background ions per spectrum. On the real
+- **Stage 2** (`runs\ladder_full_stage2.pt`), 16 epochs of 6 000 spectra of other molecules,
+  continuing from stage 1: singly charged ions are trained on, with up to 200 background ions
+  per spectrum. On the real
   runs, the column wash is full of singly charged background that a stage-1 network reads as
   small multiply charged species.
 
