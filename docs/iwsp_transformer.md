@@ -28,13 +28,14 @@ estimates are called estimates.
   23 of the 31 show three or more co-eluting isotopologues and at most one co-eluting
   half-spacing peak; 1 of 240 random positions does (section 3).
 - How scans reach the grid matters. The package's resampling lets the edge point of every
-  vendor-thresholded segment stand for half the gap beside it, and its region sums interpolate
-  every scan across the others' gaps; together they raise the noise estimate of the spectra it
-  deconvolves 40-180-fold and move the amounts it reports (patched, IP-HILIC NC's main species
-  goes from 46 % of its deaminated impurity to 100 % against its 11 %). The measurements here
-  resample each scan correctly. Part of what the pipeline loses, it loses to its own resampling;
-  the fix is a separate change that needs the decoder recalibrated and the networks retrained
-  (sections 2 and 7).
+  vendor-thresholded segment stand for half the gap beside it, and its region sums interpolate every
+  scan onto one scan's m/z axis, ramping across its own gaps; together they raise the noise estimate
+  of the spectra it deconvolves 40-180-fold and move the amounts it reports (patched, IP-HILIC NC's
+  main species goes from 46 % of its deaminated impurity to 100 % against its 11 %). The tile,
+  signal-to-noise and isotope-chain measurements here resample each scan correctly; the pipeline's
+  counts are the package as it runs. Part of what the pipeline loses, it loses to its own
+  resampling; the fix is a separate change that needs the decoder recalibrated and the networks
+  retrained (sections 2 and 7).
 - The design has two parts on 48-scan tiles that cover the whole run: **charge-map circuits**
   that remove false reports (C2b keeps the comb's species with 5 instead of 7 unconfirmed
   reports - a variant chosen on all four runs), and **species circuits** that use the time axis -
@@ -50,11 +51,12 @@ estimates are called estimates.
   search never saw it; audits check that no weight comes from data and that the executed network is
   the declared one; a 200-word description of the change must rebuild the model from version 0 (the
   article's standalone rebuild is reported as well).
-- Before any search, a charge oracle with chain flags, run through the new decoder, must find at
-  least two more real species than the comb through the same decoder, with no more reports
-  outside the truth table; otherwise the decoder, not a network, is the work. Every circuit here
-  was measured on all four runs, so a sealed fifth run, scored against a truth table fixed
-  blind, is the adoption gate.
+- Before any search, true charges with flags on the known single-charge species (oracle-flag-2D),
+  run through the new decoder, must find at least two more real species than comb-2D with the fixes
+  through the same decoder, with no more reports outside the truth table, and chain-test flags on
+  comb charges (chain-flag-2D) must add no more such reports than real species; otherwise the
+  decoder, not a network, is the work. Every probe and every circuit measured here used all four
+  runs, so a sealed fifth run, scored against a truth table fixed blind, is the adoption gate.
 
 ## 1. The approach in the article
 
@@ -99,7 +101,7 @@ with each profile point's width capped as described below the table:
 
 | Quantity | Value |
 | --- | --- |
-| MS1 scans | IP-RPLC GalNAc run: 609 in 30 min (3.09 s each); IP-RPLC NC run: 692 (2.61 s); IP-HILIC runs: 589-592 in 23 min (2.33 s) |
+| MS1 scans | IP-RPLC GalNAc run: 609 in 30 min (3.09 s each); IP-RPLC NC run: 692 (2.61 s); IP-HILIC runs: 589-592 in 23 min (2.33-2.34 s) |
 | Elution width (FWHM of a charge state's envelope trace) | main peaks: IP-RPLC FLP 9-11 scans (28-34 s), NC 7-10 (18-26 s); IP-HILIC FLP 5 (12 s), NC 6 (14 s). Impurities: IP-RPLC 3-6 scans (9-19 s), IP-HILIC 3-8 (7-19 s) |
 | Charge-state shares at the apex (envelope sums) | FLP: z = 4 carries 86 % under IP-RPLC (z = 4: 4.9e8; z = 3: 6.6e7; z = 5: 1.4e7; z = 6: 2.2e6; z = 7: 6.4e5) and 88 % under IP-HILIC. NC: z = 3 and z = 4 carry 42-58 % each in IP-RPLC GalNAc, IP-RPLC NC and IP-HILIC NC; 62/38 in IP-HILIC GalNAc, where NC is minor |
 | Grid bins with signal in one scan | GalNAc run: 1 600-3 900 (1.7-4.3 %); NC run: 800-1 800 (0.9-1.9 %) |
@@ -110,7 +112,7 @@ with each profile point's width capped as described below the table:
 | Trace correlation of unrelated signal | other bins of FLP's tile: median 0.26; random pairs of peaks above 10 sigma (IP-RPLC NC, 32-scan tiles): 90th percentile 0.29-0.47, 0.2-2.3 % above 0.9 |
 | Chance ladder partners (peaks at a z -> z+1 offset) correlating above 0.9 | 0.6 % in the wash tile and 4.9 % in a tile holding a strong fragment (2 887 Da at 10.42 min); 10.8 % at NC's apex, where its own charge states and forms are among them |
 | Column wash (96 scans around 27 min, both IP-RPLC runs) | 786-1 549 strong peaks spanning at least 20 scans (participation ratio); 82-89 % of them with a z = 1 isotope partner (17 % at a non-isotopic offset); FWHM median 18-23 scans (90th percentile 34-40); apexes spread over about a minute (IQR); pairwise trace r median 0.54-0.56, 12-17 % of pairs above 0.9 |
-| Later elutions | NC (IP-RPLC NC) returns at 25.4 min at 0.98 % of its apex height (0.63 % of its area) and at 27.7 min at 0.13 %; FLP does not return |
+| Later elutions | NC (IP-RPLC NC) returns at 25.4 min at 0.98 % of its apex height (0.63 % of its area) and at 27.7 min at 0.13 %, on a hump of 0.1-0.2 % from about 21 min; FLP does not return. The pipeline reports NC again at 20.9 and 27.2 min, on the hump and in the region holding both returns |
 | Co-eluting forms beside the paper species (trace correlation with the parent, height relative to it) | +201.4 Da: beside all nine IP-RPLC species, r = 0.89-1.00, 6-15 %; under IP-HILIC co-eluting only beside FLP (r = 0.95, 2.8 %). -16.06 Da (PS to PO): beside all five IP-RPLC GalNAc species, r = 0.79-0.97, 3-13 %. Na and K, where no stronger species shares the window: 1-5 % under IP-RPLC; Na 16-59 %, K 4-46 % under IP-HILIC |
 
 **Resampling.** The runs are vendor-thresholded: a scan is a set of short segments of profile points
@@ -194,7 +196,7 @@ today, and with the oracle's charges and single charge states accepted:
 
 They are not weak in the data: resampled scan by scan, the strongest charge state of the in-region
 misses stands at a median signal-to-noise ratio of about 1 700 in the region's sum (about 900 in a
-7-scan window around each). In the grid view the package deconvolves, the same windows give a median
+7-scan window around each). In the grid view the package deconvolves, the same regions give a median
 of about 220 (IQR 21-680), and 8-16 for the IP-HILIC GalNAc n-1, DA, PO and n+1, the run whose
 impurities the pipeline misses entirely: there the inflated noise estimate puts their minor
 isotopologues near or below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC
@@ -221,7 +223,8 @@ window where the circuit must follow each trace (4.5), and 1 of 240 bounds its r
 positions only below about 2 % (95 %), which stage 0 measures on many more.
 
 **Written corrections, scored end to end.** Five rules were tried by hand, as a search would try
-them (section 4.4 gives their circuits):
+them (section 4.4 gives the circuits of C2, C2b and the co-elution gate; the in-range mean changes
+n_z of 4.3, and the last rule changes the decoder):
 
 | Rule | Per bin | Real runs: paper / SI / reported / unconfirmed |
 | --- | --- | --- |
@@ -271,10 +274,11 @@ weighted NNLS, template bank, linking, integration (unchanged)
   bins with signal and 7 900-10 900 active ones. Channels: s = clip(log10(1 + I/sigma), 0, 5) (the
   comb's feature), the raw intensity, the position, and the time profile.
 - **Query tokens (hypotheses):** one per active bin and charge z = 1..Z_max (Z_max = 40 for the
-  oligonucleotide methods, 60 elsewhere): 315 000-434 000 per 48-scan tile at Z_max = 40
-  (29 000-127 000 per TIC region in the drop-in probes of section 3). A hypothesis's embedding is
-  closed-form physics of its own position and z: its six ladder offsets, its isotopologue offsets
-  in bins, whether the spacing is resolved, the instrument's peak width there.
+  oligonucleotide methods; elsewhere the method's highest charge, capped at 60 as the pipeline caps
+  the comb): 315 000-434 000 per 48-scan tile at Z_max = 40 (29 000-127 000 per TIC region in the
+  drop-in probes of section 3). A hypothesis's embedding is closed-form physics of its own position
+  and z: its six ladder offsets, its isotopologue offsets in bins, whether the spacing is resolved,
+  the instrument's peak width there.
 - **Time** lives in the channels, not in the sequence: each bin carries its intensity in every
   scan of the tile (over sigma), centred and scaled to unit length - a LayerNorm with gain 1/√48
   (without the gain its length is √48 and the dot product 48 r) - so the dot product of two bins'
@@ -364,17 +368,17 @@ these, and a new one enters only by proposal and audit (rule 10):
   elsewhere the confidences are best/(best + second + 1e-12) in float32; an apex neuron from two
   pointers at p ± 1 (a local maximum above 3 sigma).
 
-About 170 hand-set numbers plus a Z_max x 7 table of offsets and counts from one formula. As a numpy
-program in the exact limit of these heads - hard pointers, tent reads, comparisons in numpy where
-the network has step neurons - it matches `CombPredictor` in top1_z, top2_z, top1_p, top2_p and apex
-on every active bin of 128 synthetic spectra (64 time-of-flight, 64 Orbitrap at 35 000-280 000;
-Z_max 40 and 60; 10.8 million active-bin evaluations) and of all 96 predictor calls of the four real
-runs (150 773 active bins, both detection passes), whose species tables come out identical. It has
-not yet run as a network built from the layer library; that is the first test of stage 0. It takes
-about three times the comb's time on dense synthetic spectra (0.33 s against 0.11 s) and a sixth to
-a third of it on real regions (per-call medians 0.007-0.017 s against 0.042-0.047 s). Its weakness
-on Orbitrap data is the override (section 3). This is the starting point of the search, as the
-untrained LadderNet is the comb.
+An estimated 170 hand-set numbers plus a Z_max x 7 table of offsets and counts from one formula. As
+a numpy program in the exact limit of these heads - hard pointers, tent reads, comparisons in numpy
+where the network has step neurons - it matches `CombPredictor` in top1_z, top2_z, top1_p, top2_p
+and apex on every active bin of 128 synthetic spectra (64 time-of-flight, 64 Orbitrap at 35 000-280
+000; Z_max 40 and 60; 10.8 million active-bin evaluations) and of all 96 predictor calls of the four
+real runs (150 773 active bins, both detection passes), whose species tables come out identical. It
+has not yet run as a network built from the layer library; that is the first test of stage 0. It
+takes about three times the comb's time on dense synthetic spectra (0.33-0.34 s against 0.11 s) and
+a sixth to a third of it on real regions (per-call medians 0.007-0.017 s against 0.042-0.047 s, over
+two reruns). Its weakness on Orbitrap data is the override (section 3). This is the starting point
+of the search, as the untrained LadderNet is the comb.
 
 ### 4.4 Charge-map circuits
 
@@ -384,17 +388,17 @@ are proposals, not yet built.
 - **C2, isotope matched filter** (where isotopes are resolved: these Orbitrap runs, and
   time-of-flight data at R = 30 000 up to about 10 kDa). Six isotope heads read s at the exact
   isotopologue positions ln(1 + k 1.0033548/M)/step for k = ±1, ±2, ±3 (N1, N2, N3 the larger of
-  each pair), four at k = ±1/2, ±3/2 (H, their maximum: where only a 2z reading has
-  isotopologues); a read takes the maximum over ±1 bin where the instrument's peak is wider than a
-  bin. Variant C2b: evidence E(z) = min(s, N1) + 1/2 min(s, N2) + 1/4 min(s, N3) - 2 relu(H - 0.5
-  N1) where the spacing is resolved (3 peak widths and 3 bins); the charge with the largest E wins
-  where E reaches s/2 and beats the runner-up, and elsewhere the ladder's answer stands (it
-  replaces the comb's override). Variant C2: -2 H in place of the relative term, and a winner
-  margin of s/4. For the true z the half positions are valleys; a 2z reading has an empty N1; a
-  z/2 reading has filled half positions and is inhibited; min(s, .) keeps the flanks of a strong
-  envelope from voting for z + 1, the override's failure. C2b loses synthetic Orbitrap accuracy at
-  z = 6-40 (0.53 and 0.44 against the ladder's 0.66 and 0.89, log-SNR; C2 at most 0.01), which
-  the consensus below is meant to recover.
+  each pair), four at k = ±1/2, ±3/2 (H, their maximum: where only a 2z reading has isotopologues);
+  a read takes the maximum over ±1 bin where the instrument's peak is wider than a bin. Variant C2b:
+  evidence E(z) = min(s, N1) + 1/2 min(s, N2) + 1/4 min(s, N3) - 2 relu(H - 0.5 N1) where the
+  spacing is resolved (3 peak widths and 3 bins); the charge with the largest E wins where E reaches
+  s/2 and beats the runner-up, and elsewhere the ladder's answer stands (it replaces the comb's
+  override). Variant C2: -2 H in place of the relative term, and a winner margin of s/4. For the
+  true z the half positions are valleys; a 2z reading has an empty N1; a z/2 reading has filled half
+  positions and is inhibited; min(s, .) keeps the flanks of a strong envelope from voting for z + 1,
+  the override's failure. C2b loses synthetic Orbitrap accuracy at z = 6-40 (z = 6-15 and 16-40:
+  0.53 and 0.44 against the ladder's 0.66 and 0.89, log-SNR; C2 loses at most 0.01), which the
+  consensus below is meant to recover.
 - **C1, capped comb:** each rung reads min(s_rung, s + 1), so one strong unrelated ion cannot
   decide a weak ion's charge.
 - **C4, harmonics:** two more pointers per hypothesis at round(ln(2z/(2z ± 1))/step), rungs only a
@@ -418,9 +422,10 @@ are proposals, not yet built.
   one-scan shape (4.5) or the traces despiked first. The gate cuts a species' own outer states too:
   5 of FLP's 14 z = 7 bins sit above the weak exemption at r <= 0.5, and half of NC's 8 strongest z
   = 6 bins (log-SNR 1.6-2.4) correlate at 0.40-0.46.
-- **Flat-background veto:** a bin within a third of its maximum in both outer slots (the
-  pipeline's own flat-species test, per bin) supports no rung and casts no ladder vote; its
-  isotope reading still stands, so a flat multiply charged ion keeps an isotope-read charge.
+- **Flat-background veto:** a bin whose trace stays at a third of its maximum or more at both ends -
+  in a tile, in both context channels (4.1); in the drop-in probes, in both outer slots - (the
+  pipeline's own flat-species test, per bin) supports no rung and casts no ladder vote; its isotope
+  reading still stands, so a flat multiply charged ion keeps an isotope-read charge.
 - **Consensus (tied, two passes):** ladder and isotope heads read the neighbour's hypothesis at
   the *consistent* charge (z ± k on a rung, z on an isotopologue) rather than its raw s, with
   values min(logit, s). A partner then counts only if it is itself plausible at that charge, and
@@ -429,9 +434,10 @@ are proposals, not yet built.
 
 ### 4.5 Species circuits
 
-These target the real-run losses of section 3. They write per-token evidence - a confirmation
-flag, a vote weight, a partner flag - that the frozen decoder of 4.6 turns into species. None is
-built yet; each is measured in stage 0 before any search.
+These target the real-run losses of section 3. They write per-token evidence - a confirmation flag,
+a vote weight, a partner flag - that the frozen decoder of 4.6 turns into species. None is built
+yet; stage 0 measures only the decoder's own chain test (section 8), and the circuits are left to
+the search.
 
 - **Graded co-elution.** Every partner read of the species circuits is gated as in 4.4, but by
   intensity: no gate where the partner's summed S/N is 5 or less (weak traces are noise), r above
@@ -451,8 +457,9 @@ built yet; each is measured in stage 0 before any search.
   flag neuron relu(sum q - 5) over six 0/1 indicators: z >= 2, the spacing resolved, n_iso >= 3,
   n_half <= 1, the isotopologue ratios fitting the class pattern for M = z (m/z ∓ m_p) within 0.6 in
   log10, no second charge state. The probe of section 3 passes 23 of 31 missed species, 14 of 18
-  found ones, 3 of 7 unconfirmed reports and 1 of 240 random positions; the circuit's own rates are
-  measured in stage 0. The flag only nominates: the decoder repeats the test itself (4.6).
+  found ones, 3 of 7 unconfirmed reports and 1 of 240 random positions; the decoder's own version of
+  the test is measured in stage 0 (section 8), the circuit's by the search. The flag only nominates:
+  the decoder repeats the test itself (4.6).
 - **Charge-state count.** Six ladder pointer heads, co-elution gated, read the same isotopologue
   at z ± 1, 2, 3 (offsets ln(z/z'), the same ln M), so that a token knows whether its species is
   seen at one charge state or several.
@@ -462,11 +469,11 @@ built yet; each is measured in stage 0 before any search.
   pass moves a token halfway to its envelope's centre, 87.5 % in three, so every token of an
   envelope votes the species' mass. (The decoder's 0.6 Da histogram kernel, which only removes the
   1.0034 Da ripple, would move it 5-7 % per pass.)
-- **Elution shape.** The normalised trace is correlated with three centred Gaussians set in
-  seconds - a spike (one scan), an eluting analyte (FWHM 7-35 s here: impurities 7-19 s, main
-  peaks up to 34 s) and broad (the wash: FWHM 18-23 scans, 47-71 s) - and three-way lateral
-  inhibition picks one; spikes and broad tokens lose vote weight. The wash is only about twice as
-  broad as a main peak, so the z = 1 isotope veto of 4.4 carries more of the weight than breadth.
+- **Elution shape.** The normalised trace is correlated with three centred Gaussians set in seconds
+  - a spike (one scan), an eluting analyte (FWHM 7-34 s here: impurities 7-19 s, main peaks up to 34
+  s) and broad (the wash: FWHM 18-23 scans, 47-71 s) - and three-way lateral inhibition picks one;
+  spikes and broad tokens lose vote weight. The wash is only about twice as broad as a main peak, so
+  the z = 1 isotope veto of 4.4 carries more of the weight than breadth.
 - **Near-isobaric partners** (DA, 0.984 Da above FLP). For a strong token's main envelope, two
   sum heads collect the light and heavy halves scan by scan; a one-sided drift of ln(heavy/light)
   over two consecutive strong scans sets a partner flag with its apex scan. The z = 4 envelopes
@@ -475,12 +482,12 @@ built yet; each is measured in stage 0 before any search.
 
 ### 4.6 Readouts and the frozen decoder
 
-The network ends at per-token outputs; a **frozen 2D decoder**, written by people and not
-editable by the search, turns them into species. Stage 0 writes it on the four real runs, since
-no 2D synthetic data exists before stage 1; after stage 1 it is recalibrated per fold on
-synthetic runs and that fold's visible runs, and each fold's decoder is frozen and hashed before
-that fold's searches. Every constant is logged with its reason and the runs it was set on, and a
-constant kept from stage 0 is marked as set on that fold's hidden runs.
+The network ends at per-token outputs; a **frozen 2D decoder**, written by people and not editable
+by the search, turns them into species. Stage 0 writes it on the four real runs, since no realistic
+2D synthetic data exists before stage 1; after stage 1 it is recalibrated per fold on synthetic runs
+and that fold's visible runs, and each fold's decoder is frozen and hashed before that fold's
+searches. Every constant is logged with its reason and the runs it was set on, and a constant kept
+from stage 0 is marked as set on that fold's hidden runs.
 
 - **Per token:** the `ChargePrediction` fields for the tile's summed spectrum (top two charges,
   their shares, apex), a vote weight w in [0, 1] (persistence, background), a confirmation flag
@@ -515,12 +522,20 @@ constant kept from stage 0 is marked as set on that fold's hidden runs.
   a real impurity. The same mass at another apex (NC returning at 0.1-1 %) is a further peak of the
   same species. Annotations never delete a report.
 - **Bounded harm.** The network cannot bypass the gates or create candidates other than through
-  votes, flags and partner flags. Relabels move mass votes and flags admit single-charge
-  candidates, so both can add reports - LadderNet, changing only charges, added 13-21 unconfirmed
-  reports; `single_charge: true` added 35 reports for 4 new species, 25 of them outside the truth
-  table - which adoption item 1 bounds. Any charge model - the
-  comb, LadderNet - runs through the same decoder with w = 1 and no flags; the comb run this way
-  ("comb-2D") is the baseline every search is scored against.
+  votes, flags and partner flags. Relabels move mass votes and flags admit single-charge candidates,
+  so both can add reports - LadderNet, changing only charges, added 13-21 unconfirmed reports;
+  `single_charge: true` added 35 reports for 4 new species, 25 of them outside the truth table -
+  which adoption item 1 bounds.
+- **Baselines.** Any charge model - the comb, LadderNet - runs through the same decoder with w = 1
+  and no flags, and the decoder applies the adjacent-isotopologue rule of section 3 to every model.
+  Names used from here on: comb-1D is the package as it runs (section 7 says when that includes the
+  resampling fix); comb-2D is the comb run through the 2D decoder; "comb-2D with the fixes" has C2b
+  in place of the comb's isotope override - with the decoder rule, the hand-written fixes of section
+  3, never the resampling fix - and is the baseline that eligibility (5.3), selection (5.5),
+  adoption items 3 and 8 and the stage-0 gate hold a search's model to; oracle-2D is the charge
+  oracle of section 3 through the 2D decoder, oracle-flag-2D the same with flags on the known
+  single-charge species, and chain-flag-2D comb charges with flags wherever the decoder's chain test
+  fires.
 - **Drop-in mode.** Without the 2D decoder the network is a `predict_grid` replacement for
   `CombPredictor` (`make_predictor("iwsp:<file>")`), with the region and run passed to it by a
   one-line hook in `process_run`: the mode the probes of section 3 used, kept for debugging.
@@ -532,20 +547,19 @@ constant kept from stage 0 is marked as set on that fold's hidden runs.
 
 ### 4.7 Size, speed, precision
 
-Version 0: about 170 hand-set numbers and one table of offsets and counts from one formula. With
-the gates and the species circuits, a few thousand numbers from about 15 formulas and at most 30
-named constants (beta, θ, thresholds, kernel widths), each with a one-line physical reason.
+Version 0: an estimated 170 hand-set numbers and one table of offsets and counts from one formula.
+With the gates and the species circuits, a few thousand numbers from about 15 formulas and at most
+30 named constants (beta, θ, thresholds, kernel widths), each with a one-line physical reason.
 Written as dense matrices, every co-elution-gated head repeats one constant across the 48 trace
-channels of query and key - tens of thousands of non-zero weights that say one thing each - which
-is why the rules count formulas and constants and cap non-zero weights at 50 000. LadderNet has
-9 500-22 000 trained parameters. On one thread, version 0 takes 0.05-0.06 s per 48-scan tile, a
-little less than the comb (0.06-0.07 s); the generic softmax-pointer ladder of
-`pointer_attention.py` takes 1.6-2.9 s on the same tiles because it evaluates every bin with
-signal at Z_max = 60. The gated
+channels of query and key - tens of thousands of non-zero weights that say one thing each - which is
+why the rules count formulas and constants and cap non-zero weights at 50 000. LadderNet has 9
+500-22 000 trained parameters. On one thread, version 0 takes 0.05-0.06 s per 48-scan tile, a little
+less than the comb (0.06-0.07 s); the generic softmax-pointer ladder of `pointer_attention.py` takes
+1.6-2.9 s on the same tiles because it evaluates every bin with signal at Z_max = 60. The gated
 version is not timed: its co-elution reads add about 1.3e8 multiply-adds per tile (11 000 active
-bins x 40 charges x 6 rungs x 48 scans), an estimated well under a second against the limit of
-5 s per tile. Memory, estimated: about 35 MB of channels per tile, and about 170 MB per gated
-head if all charges are gathered at once (about 40 MB evaluated ten charges at a time).
+bins x 40 charges x 6 rungs x 48 scans), an estimated well under a second against the limit of 5 s
+per tile. Memory, estimated: about 35 MB of channels per tile, and about 170 MB per gated head if
+all charges are gathered at once (about 40 MB evaluated ten charges at a time).
 
 ### 4.8 The 200-word description
 
@@ -608,14 +622,15 @@ and the measured circuits for all four runs, stay outside. Hidden scoring is a s
 the operator runs once per selected model. The scorer sets aside a report that matches an
 unscored truth species (DA and DA-NC under IP-RPLC): neither credited nor charged.
 
-The file starts at version 0, for three reasons: the comb is the bar for adoption, so every edit
-is a measured change from it; a generic GPT of three layers and width 64 with dense attention
-cannot cheaply express offsets of 34 657 bins over tens of thousands of tokens and would spend
-its budget rebuilding the comb; and version 0 is exact and public. It is not neutral - its isotope
-rule was kept because of these four runs (`benchmarks.md`) - but comb-2D carries the same rule.
-One control search starts from an empty file with the same library and a `TASK.md` without
-version 0: does the agent write the comb itself, as the article's agents wrote Euclid's
-algorithm? It is never a candidate for selection.
+The file starts at version 0, for three reasons: the comb is the bar for adoption, so every edit is
+a measured change from it; a generic GPT of three layers and width 64 with dense attention cannot
+cheaply express offsets of 34 657 bins over tens of thousands of tokens and would spend its budget
+rebuilding the comb; and version 0 is exact and public. It is not neutral - its isotope rule was
+kept because of these four runs (`benchmarks.md`) - but the baselines carry rules chosen the same
+way: comb-2D the same isotope rule, comb-2D with the fixes C2b, picked on all four runs (section 3).
+One control search starts from an empty file with the same library and a `TASK.md` without version
+0: does the agent write the comb itself, as the article's agents wrote Euclid's algorithm? It is
+never a candidate for selection.
 
 ### 5.2 Rules beyond the article's
 
@@ -643,7 +658,7 @@ algorithm? It is never a candidate for selection.
 7. **Precision:** float64; every pointer head declares beta, its search window and its sink, and
    its leakage - including what a gated head reads from a vetoed key - sits below a declared
    readout floor.
-8. **Limits:** 5 s per tile (median, one core; confirmed in stage 0), 4 GB, 50 000 non-zero
+8. **Limits:** 5 s per tile (median, one core; timed on version 0 in stage 0), 4 GB, 50 000 non-zero
    weights; and, from the article, "a small improvement that adds ugly complexity is not worth
    it".
 9. **Tokens:** the agent may choose bin tokens or event tokens per stage, from the tokenizer's
@@ -661,13 +676,15 @@ passed stage 1's calibration and ranking tests.
 
 - **F_syn:** one-to-one species F1 on the visible synthetic runs, counting detectable truth only;
   adduct forms of a found species are not false.
-- **R_real** = (2 x paper + SI - X - ½ (forms + same molecule elsewhere) - ¼ Y) / (2 n_paper +
-  n_SI) on the visible real runs, where Y counts EIC-confirmed reports outside the truth table
-  that also pass three physics checks (no z = 1 isotope partner on the strongest charge state, a
-  filled odd isotopologue position for z >= 2, co-eluting charge states) and X every other report
-  outside the truth table. A background ladder can pass the extracted-ion check alone (47 of the
-  original code's 87 reports did), and a network whose gates keep co-varying rungs could turn
-  unconfirmed reports into EIC-confirmed ones; the physics checks are what earn the reduced cost.
+- **R_real** = (2 x paper + SI - X - ½ (forms + same molecule elsewhere) - ¼ Y) / (2 n_paper + n_SI)
+  on the visible real runs. A report outside the truth table matches no truth species and is not a
+  form or the same molecule elsewhere, whether unconfirmed or EIC-confirmed; Y counts those that are
+  EIC-confirmed and pass three physics checks (no z = 1 isotope partner on the strongest charge
+  state, a filled odd isotopologue position for z >= 2, co-eluting charge states), and X the rest,
+  harmonics of a found species included. A background ladder can pass the extracted-ion check alone
+  (47 of the original code's 87 reports did), and a network whose gates keep co-varying rungs could
+  turn unconfirmed reports into EIC-confirmed ones; the physics checks are what earn the reduced
+  cost.
 - **Per-bin accuracy is not in J**, for the reasons section 3 measured.
 - **Eligibility.** J pays 2 for a paper species and 1 for a junk report, so it can gain from
   trades the adoption rule forbids. A model is therefore eligible for selection only if, on the
@@ -695,12 +712,12 @@ check, a forbidden import or file read, exceeded limits, or time-of-flight prote
 below comb-1D (the baseline of adoption item 4). An evaluation costs about 35 core-minutes (5 min on
 8 cores), mostly the synthetic runs (an estimate).
 
-**Noise floor.** Before any search, comb-2D with and without the fixes of section 3 are rerun
-under harmless perturbations - noise sigma ±5 %, tiles shifted by half a stride, region margins
-±1 scan, a half-bin grid offset - and the spread of their paired difference (species and reports,
-per run) is the floor. Every gain threshold - adoption items 2, 3 and 8 and the rebuild test - is
-the larger of its stated value and that floor. Dropping alternate scans halves the signal and
-the scans per peak, so it is reported as a robustness test, not counted as chance.
+**Noise floor.** Per fold, on its frozen decoder and before its searches, comb-2D with and without
+the fixes are rerun under harmless perturbations - noise sigma ±5 %, tiles shifted by half a stride,
+candidate windows (4.6) ±1 scan, a half-bin grid offset - and the spread of their paired difference
+(species and reports, per run) is the floor. Every gain threshold - adoption items 2, 3 and 8 and
+the rebuild test - is the larger of its stated value and that floor. Dropping alternate scans halves
+the signal and the scans per peak, so it is reported as a robustness test, not counted as chance.
 
 ### 5.4 Data
 
@@ -714,22 +731,22 @@ profile and adds no background. `generate_run` gains:
 | Elution | an exponentially modified Gaussian per species, width by class (main peaks broader under load), tail jittered; impurity offsets by kind (shortmers earlier, n+1 later; PO and DA co-eluting under IP-RPLC, 0.46-0.70 min away under IP-HILIC: DA earlier, PO later) | main peaks 5-11 scans FWHM, impurities 3-8 |
 | Charge regimes | FLP-like: one state carrying 86-88 %; NC-like: two adjacent states, z = 3 : z = 4 from 43 : 57 (IP-RPLC) to 62 : 38 (IP-HILIC) | FLP's shares similar under both chromatographies; NC's dominant state flips |
 | Background | persistent singly charged ions, flat or rising with the gradient; a wash of several hundred to 1 500 broad, mostly singly charged ions, FWHM about twice a main peak's, apexes spread over about a minute, partly co-varying; late re-elution of the main species at 0.1-1 % | wash: pairwise r median 0.54-0.56, 12-17 % of pairs above 0.9, 82-89 % with a z = 1 partner |
-| Spikes | one- and two-scan events at the measured rate and intensity | 3-5 % of active bins (30 % at a strong apex), a quarter to a third of persistent bins' intensity |
+| Spikes | one- and two-scan events at the measured rate and intensity | per 48-scan tile 7-10 % of active bins (20 % at a strong apex; per 24-scan tile 3-5 % and 30 %), 0.20-0.37 of persistent bins' median intensity |
 | Drift and spray | m/z drift of ±2 ppm over a run, 0.5 ppm jitter per scan, a common intensity factor per scan | to be measured |
 | Labels | soft charge shares per (bin, scan); species truth with apex time and detectability | |
 
-Calibration (stage 1), per fold from its visible runs only: synthetic tiles within a factor of
-1.5 of them in tokens per tile, spike share and intensity, trace breadth, charge-state trace
+Calibration (stage 1), per fold from its visible runs only: synthetic tiles within a factor of 1.5
+of them in tokens per tile, spike share and intensity, trace breadth, charge-state trace
 correlation, charge distribution, wash breadth, wash co-variation and z = 1 partner rate. Impurity
 offsets and re-elution are also taken from that fold's visible runs, or left out where they show
-none (re-elution was measured only in IP-RPLC NC, hidden in fold B). And the generator must
-reproduce every difference between comb-1D, comb-2D, oracle-2D and oracle-flag-2D that exceeds
-the noise floor on the visible runs; on two runs most differences will not, and a tie there asks
-nothing of the generator. Visible: 32
-fixed-seed runs of 10 min with three analyte peaks each, about 250 detectable species (16
-IP-RPLC-like and 8 IP-HILIC-like Orbitrap oligonucleotide runs, 8 time-of-flight protein runs as
-a guard). Hidden: 96 runs from seeds drawn after the search ends, and 32 shifted-regime runs
-(Orbitrap at 70 000, time-of-flight polymers), reported only, not part of adoption.
+none (re-elution was seen only in IP-RPLC NC - FLP does not return - and that run is hidden in fold
+B). And, the ranking test, the generator must reproduce every difference between comb-1D, comb-2D,
+oracle-2D and oracle-flag-2D (4.6) that exceeds the noise floor on the visible runs; on two runs
+most differences will not, and a tie there asks nothing of the generator. Visible: 32 fixed-seed
+runs of 10 min with three analyte peaks each, about 250 detectable species (16 IP-RPLC-like and 8
+IP-HILIC-like Orbitrap oligonucleotide runs, 8 time-of-flight protein runs as a guard). Hidden: 96
+runs from seeds drawn after the search ends, and 32 shifted-regime runs (Orbitrap at 70 000,
+time-of-flight polymers), reported only, not part of adoption.
 
 **Real runs: two diagonal folds.** Each fold shows the agent one run of each chromatography and
 hides the other two, so every run is scored once, hidden, by a model whose search never saw it:
@@ -739,17 +756,17 @@ hides the other two, so every run is scored once, hidden, by a model whose searc
 | A | IP-RPLC NC, IP-HILIC GalNAc | IP-RPLC GalNAc, IP-HILIC NC | paper 5/10, SI 2/14, 2 unconfirmed | paper 8/10, SI 3/15, 5 unconfirmed |
 | B | IP-RPLC GalNAc, IP-HILIC NC | IP-RPLC NC, IP-HILIC GalNAc | paper 8/10, SI 3/15, 5 unconfirmed | paper 5/10, SI 2/14, 2 unconfirmed |
 
-Not "IP-RPLC visible, IP-HILIC hidden": the comb already finds all nine IP-RPLC paper species,
-and all seven it misses are IP-HILIC ones, so a split by chromatography would hide the largest
-real failures from the search. Hidden here means hidden from the agent's loop, not clean. The
-comb's constants, the decoder's gates and every probe and circuit of sections 3 and 4 were set or
-measured on all four runs, which biases the comparison in both directions - the baseline was
-tuned on the hidden runs, and so were the circuits a person would add to it - and is why those
-circuits stay out of the agent's sandbox. Each fold's hidden runs also share their analytes with
-its visible runs (fold A's hidden IP-RPLC GalNAc species all appear in the visible IP-HILIC GalNAc
-table), so a hidden score tests transfer across chromatography, not to unseen analytes. The only
-clean real-data test is a sealed fifth run, ideally of another oligonucleotide, and it is the
-adoption gate (section 7).
+Not "IP-RPLC visible, IP-HILIC hidden": the comb already finds all nine IP-RPLC paper species, and
+all seven it misses are IP-HILIC ones, so a split by chromatography would hide the largest real
+failures from the search. Hidden here means hidden from the agent's loop, not clean. The comb's
+constants, the decoder's gates, every probe of sections 2-4 and every circuit measured in section 3
+were set or measured on all four runs, and the unbuilt circuits of 4.4-4.5 were designed from them,
+which biases the comparison in both directions - the baseline was tuned on the hidden runs, and so
+were the circuits a person would add to it - and is why those circuits stay out of the agent's
+sandbox. Each fold's hidden runs also share their analytes with its visible runs (fold A's hidden
+IP-RPLC GalNAc species all appear in the visible IP-HILIC GalNAc table), so a hidden score tests
+transfer across chromatography, not to unseen analytes. The only clean real-data test is a sealed
+fifth run, ideally of another oligonucleotide, and it is the adoption gate (section 7).
 
 ### 5.5 Runs, selection and budget
 
@@ -762,14 +779,14 @@ plateau the remaining iterations may compress the model (fewer formulas at J wit
 article's algorithmic runs did once they reached 100 %; its NLP runs, which like this task have no
 exact solution, plateaued late and stayed near 190 000 parameters.
 
-Selection is pre-registered: from each fold's Opus runs, the smallest model (fewest formulas,
-then fewest non-zero weights) within 0.005 of the best visible J, scored on that fold's hidden
-data once. The two folds' hidden runs differ by about three paper species in difficulty, so the
-shipped candidate is the fold model with the larger gain over comb-2D with the fixes on its own
-hidden runs (the R_real difference, paired run by run; ties: the smaller model), not the larger
-R_real. If neither fold model passes adoption item 3, the shipped candidate is comb-2D with the
-fixes. It alone is scored on the sealed fifth run, and rebuild outcomes do not change the
-choice.
+Selection is pre-registered: from each fold's Opus runs, the smallest eligible model (5.3; fewest
+formulas, then fewest non-zero weights) within 0.005 of the best eligible visible J, scored on that
+fold's hidden data once. The two folds' hidden runs differ by about three paper species in
+difficulty, so the shipped candidate is the fold model with the larger gain over comb-2D with the
+fixes on its own hidden runs (the R_real difference, paired run by run; ties: the smaller model),
+not the larger R_real. If either fold model fails any of adoption items 1 and 3-7, the shipped
+candidate is comb-2D with the fixes (item 3). It alone is scored on the sealed fifth run; the
+rebuilds' scores do not change which fold model is chosen.
 
 Agent cost: the article's 34 Opus runs on its 17 algorithmic and NLP tasks cost $449 for 1 334
 iterations (Tables A2 and A7), $0.34 per iteration; its ECoG searches cost at least $1 540, a
@@ -802,9 +819,9 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   model, Fig. A10), which is why the table follows the article's form but not a fixed
   per-circuit threshold.
 - **An auditing agent** reads every saved model and its log: each block's docstring states its
-  physical meaning and matches the code; no species-, m/z- or time-specific constants; no
-  statistics copied from data in place of physics; every edit justified by its effect on J; no
-  reads outside the sandbox.
+  physical meaning and matches the code; no species-, m/z- or time-specific constants; no statistics
+  copied from data in place of physics; every edit justified by the last reported J or by the
+  synthetic report (5.3); no reads outside the sandbox.
 - **Rebuild:** a fresh session reads the selected model's code, with comments and logs removed,
   and writes two descriptions of at most 200 words: one that may cite version 0's heads (a
   description of the change) and one that stands alone. Per fold, two fresh sessions rebuild from
@@ -865,16 +882,16 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   can lose broad species, which stage 0 measures.
 - **Rules that help one regime hurt another** (the in-range mean on time-of-flight; C2b at high
   charge). The reports split by kind, charge band and chromatography so that this shows.
-- **The resampling fix moves the baseline.** Today's pipeline judges inputs whose noise estimate
-  is 40-180 times too high, and patched halfway it reports 154-158 species and different amounts
-  (section 2). Comb-1D (the package as it runs) and comb-2D (built on the corrected tokenizer)
-  would see different inputs, and part of any gain would be the resampling's, not the decoder's
-  or the network's; the package fix, with the decoder recalibrated, is best made before stage 0
-  so that both baselines share one input. "Comb-1D" below means the package as released, or with
-  the fix if stage 0 makes it, and the fold table of 5.4 is recomputed on it. The training
-  renderer (`synth/frames.py`) resamples thresholded synthetic scans with the same edge widths
-  on one shared axis, so LadderNet and the checkpoints of the GPU training match neither input;
-  they are retrained after the fix, before LadderNet-2D is compared (item 5).
+- **The resampling fix moves the baseline.** Today's pipeline judges inputs whose noise estimate is
+  40-180 times too high, and patched halfway it reports 154-158 species and different amounts
+  (section 2). Comb-1D (the package as it runs) and comb-2D (built on the corrected tokenizer) would
+  see different inputs, and part of any gain would be the resampling's, not the decoder's or the
+  network's; the package fix, with the decoder recalibrated, is best made in stage 0, before comb-2D
+  and the fold table are measured, so that both baselines share one input. Comb-1D (4.6) means the
+  package as released, or with the fix if stage 0 makes it, and the fold table of 5.4 is recomputed
+  on it. The training renderer (`synth/frames.py`) resamples thresholded synthetic scans with the
+  same edge widths on one shared axis, so LadderNet and the checkpoints of the GPU training match
+  neither input; they are retrained after the fix, before LadderNet-2D is compared (item 5).
 - **Out of reach.** DA under FLP in IP-RPLC and DA-NC under NC co-elute less than one dalton
   apart, with z = 4 envelopes whose cosines are 0.95 (FLP) and 0.92 (NC): that needs exact-formula
   pattern fits. The
@@ -887,25 +904,24 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   time-resolved evidence matters; such rules can be folded into the comb.
 
 **Adoption**, pre-registered (its hash committed before the first search). The rule charge models
-have had to meet - at least what the comb finds without adding reports - read literally rejects
-any model that finds more, since every species found is a report. It becomes, with "outside the
-truth table" counting unconfirmed and other EIC-confirmed reports alike:
+have had to meet - at least what the comb finds without adding reports - read literally rejects any
+model that finds more, since every species found is a report. It becomes, with "outside the truth
+table" as defined in 5.3:
 
 1. **No loss**, for each fold's model on its hidden runs, against comb-1D: no paper or SI species
    it finds lost (by identity); reports outside the truth table at most its; total reports at most
    its plus the new species found.
-2. **A gain**, pooled over the four hidden evaluations: at least two more species, or at least
-   three fewer reports outside the truth table, and above the paired noise floor of 5.3. These
-   runs shaped the decoder and the circuits, so this is development evidence; item 8 is the test.
-3. **From the network:** each fold's model beats comb-2D - with the non-network fixes of section
-   3 applied (C2b and the adjacent-isotopologue rule) - on its hidden runs by at least one species
-   or two reports outside the truth table, and by more than the paired noise floor; otherwise
-   comb-2D with those fixes, the simpler change, is the shipped candidate and must itself pass
-   items 1, 2, 4 and 8, with comb-1D as its baseline throughout.
+2. **A gain** over comb-1D, pooled over the four hidden evaluations: at least two more species, or
+   at least three fewer reports outside the truth table, and above the paired noise floor of 5.3.
+   These runs shaped the decoder and the circuits, so this is development evidence; item 8 is the
+   test.
+3. **From the network:** each fold's model beats comb-2D with the fixes (4.6) on its hidden runs by
+   at least one species or two reports outside the truth table, and by more than the paired noise
+   floor; otherwise comb-2D with those fixes, the simpler change, is the shipped candidate and must
+   itself pass items 1, 2, 4 and 8, with comb-1D as its baseline throughout.
 4. **Synthetic, hidden:** Orbitrap oligonucleotide F1 at least comb-2D with the fixes + 0.03 (for
-   the fallback, comb-1D + 0.03) with a 95 % bootstrap interval excluding 0; time-of-flight
-   proteins within 0.01 of comb-1D; per-bin intensity-weighted accuracy at z >= 2 at least the
-   comb's.
+   the fallback, comb-1D + 0.03) with a 95 % bootstrap interval excluding 0; time-of-flight protein
+   F1 at most 0.01 below comb-1D; per-bin intensity-weighted accuracy at z >= 2 at least the comb's.
 5. **Against LadderNet-2D:** at least equal on the counts of item 1 (a tie goes to the written
    model, because it can be audited).
 6. **Integrity:** a clean audit, and the rebuild from version 0 passing (the standalone rebuild
@@ -925,10 +941,10 @@ Each fold's model must pass items 1 and 3-7; item 2 is pooled; item 8 decides.
 
 | Stage | Work | Go / no-go |
 | --- | --- | --- |
-| 0 (3-4 days) | the package's resampling fix (per-scan grids summed, raw-point checks on the same input, thresholds recalibrated) or the decision to keep both inputs; plumbing, including the scorer's handling of unscored species; tokenizer and layer library with their tests; version 0 built from the library and run as a network; the 2D decoder with its provenance log; comb-2D with and without the fixes, oracle-2D, oracle-flag-2D (true charges, plus flags on the known single-charge species) and chain-flag-2D (comb charges, flags wherever the chain test fires, no truth) on all four runs; the chain test's pass rate on random positions; the noise floor | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D beats comb-2D with the fixes, on the same input, by at least two real species with no more reports outside the truth table; chain-flag-2D adds no more reports outside the truth table than real species, and no more than the paired noise floor (the probe's chain test passes 10 of the 19 unconfirmed reports that `single_charge: true` makes, so a zero tolerance would likely fail); comb-2D's time-of-flight protein F1 is within 0.01 of comb-1D - otherwise stop the transformer and fix the decoder** |
-| 1 (2-3 days) | the 2D generator additions of 5.4, calibrated per fold; the decoder recalibrated and frozen per fold | synthetic tiles within a factor of 1.5 of the visible real statistics; the ranking test; no search before both pass |
+| 0 (3-4 days) | the package's resampling fix (per-scan grids summed, raw-point checks on the same input, thresholds recalibrated) or the decision to keep both inputs; plumbing, including the scorer's handling of unscored species; tokenizer and layer library with their tests; version 0 built from the library, run as a network and timed against rule 8's limit; the 2D decoder with its provenance log; comb-2D with and without the fixes, oracle-2D, oracle-flag-2D and chain-flag-2D (4.6) on all four runs, and comb-2D on the existing `generate_run` protein runs; the decoder's losses of broad species (main peaks and the wash); the chain test's pass rate on random positions; the noise floor on this decoder, for this gate | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D beats comb-2D with the fixes, on the same input, by at least two real species with no more reports outside the truth table; chain-flag-2D adds, against comb-2D with the fixes, no more reports outside the truth table than real species, and no more than the paired noise floor (the probe's chain test passes 10 of the 19 unconfirmed reports that `single_charge: true` makes, so a zero tolerance would likely fail); comb-2D's time-of-flight protein F1 is at most 0.01 below comb-1D - otherwise stop the transformer and fix the decoder** |
+| 1 (2-3 days) | the 2D generator additions of 5.4, calibrated per fold; the decoder recalibrated and frozen per fold; the noise floor per fold, on its frozen decoder | synthetic tiles within a factor of 1.5 of the visible real statistics; the ranking test; no search before both pass |
 | 2 (1 day) | a 10-iteration pilot; a break-in test of the sandbox; invariance, determinism and audit dry runs; the counts-only feedback | harness bugs fixed; the hidden runs and this document cannot be read |
-| 3 (about a week) | the seven searches of 5.5, from version 0 | each run passes or is stopped at iteration 15 |
+| 3 (about a week) | the seven searches of 5.5 (six from version 0, the fold-A control from an empty file) | each run passes or is stopped at iteration 15 |
 | 4 (2 days) | hidden scoring, audits, rebuilds, the LadderNet comparison | adoption items 1-7 |
 | 5 | the sealed fifth run | adoption item 8 |
 

@@ -275,7 +275,8 @@ def trace(paths, single_charge: bool) -> None:
         run = read_thermo_raw(path)
         tr: list = []
         res = process_run(run, _method(single_charge), trace=tr)
-        print(f"== {key}")
+        print(f"== {key}; TIC regions (min): "
+              + ", ".join(f"{r.start:.2f}-{r.end:.2f}" for r in res.regions))
         for name, masses, rt in _missed(key, res.species):
             recs = [r for r in tr if r["start"] - 0.05 <= rt <= r["end"] + 0.05]
             if not recs:
