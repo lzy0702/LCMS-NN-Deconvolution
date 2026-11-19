@@ -214,7 +214,9 @@ def score(key: str, species: list, confirm) -> dict:
         hits = [i for i, s in enumerate(species) if i not in used
                 and abs(s.rt_apex - rt) <= RT_TOL and dist(s) <= MASS_TOL]
         best = min(hits, key=lambda i: dist(species[i])) if hits else None
-        if best is not None and kind != "unscored":
+        if best is not None:
+            # an unscored species (unresolvable by mass) is neither credited nor charged: its report
+            # is set aside here, not counted again as a "same molecule" report of itself
             used.add(best)
         rows.append((name, mass if best is None else min(cands, key=lambda c: abs(
             species[best].mass - c)), rt, kind, None if best is None else species[best]))

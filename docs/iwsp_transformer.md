@@ -37,20 +37,22 @@ estimates are called estimates.
   that remove false reports (C2b keeps the comb's species with 5 instead of 7 unconfirmed
   reports - a variant chosen on all four runs), and **species circuits** that use the time axis -
   co-elution, isotope chains, elution shape - to flag species the decoder now rejects. A frozen,
-  human-written 2D decoder turns per-token output into species, and a flag counts at each of its
-  charge-count checks; NNLS still sets the amounts. The network cannot bypass the gates, but
-  relabels and flags can add reports, which the adoption rule bounds.
+  human-written 2D decoder turns per-token output into species; a flag nominates a single-charge
+  candidate, whose isotope chain the decoder then tests itself; NNLS still sets the amounts. The
+  network cannot bypass the gates, but relabels and flags can add reports, which the adoption
+  rule bounds.
 - The search follows the article: an agent edits only the network and its `write_weights`,
-  starting from version 0, with this document's circuits and measurements kept out of its
-  sandbox; a fixed evaluator scores a pre-registered species-level objective and returns only
-  counts for the real runs; the four runs form two folds, so each is scored once by a model whose
+  starting from version 0, with the real-run truth and this document's circuits and measurements
+  kept out of its sandbox; a fixed evaluator scores a pre-registered species-level objective and
+  returns only counts for the real runs; the four runs form two folds, so each is scored once by a model whose
   search never saw it; audits check that no weight comes from data and that the executed network
   is the declared one; a 200-word description must rebuild the model, from version 0 and from an
   empty file.
 - Before any search, a charge oracle with chain flags, run through the new decoder, must find at
-  least two more real species than today's pipeline with no more reports outside the truth table;
-  otherwise the decoder, not a network, is the work. Every circuit here was measured on all four
-  runs, so a sealed fifth run is the adoption gate.
+  least two more real species than the comb through the same decoder, with no more reports
+  outside the truth table; otherwise the decoder, not a network, is the work. Every circuit here
+  was measured on all four runs, so a sealed fifth run, scored against a truth table fixed
+  blind, is the adoption gate.
 
 ## 1. The approach in the article
 
@@ -63,9 +65,9 @@ weights), and so is computing the answer anywhere but inside the network. Three 
 honest: an auditing agent reviews every saved model for rule violations and uninterpretable
 edits; rerunning `write_weights` on altered task data must leave the weights unchanged; and the
 final model is scored on a hidden set it never saw during the loop. A fresh session then reads
-its code, with comments and run history removed, and describes it in at most 200 words; fresh
-sessions rebuild it from that description and the task alone (with at most six visible-set runs
-in the fMRI rebuilds, none in the ECoG ones). On algorithmic tasks the agents translated known
+its code (in the ECoG rebuild, with comments and run history removed) and describes it in at most
+200 words; fresh sessions rebuild it from that description and the task alone (with at most six
+visible-set runs in the language-fMRI rebuilds, none in the ECoG ones). On algorithmic tasks the agents translated known
 algorithms into exact transformers (Euclid's algorithm as one block of ReLU units repeated 1 000
 times, a prime sieve as pulse neurons with lateral inhibition) and then compressed them; on NLP
 tasks they wrote crude but readable rule lists. The article names the limits: shallow motifs and
@@ -184,8 +186,8 @@ They are not weak in the data: resampled scan by scan, the strongest charge stat
 misses stands at a median signal-to-noise ratio of about 1 700 in the region's sum (about 900 in a
 7-scan window around each). In the grid view the package deconvolves, the same windows give a median
 of about 220 (IQR 21-680), and 8-16 for the IP-HILIC GalNAc n-1, DA, PO and n+1, the run whose
-impurities the pipeline misses entirely: there the inflated noise estimate leaves their minor
-isotopologues below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC impurities
+impurities the pipeline misses entirely: there the inflated noise estimate puts their minor
+isotopologues near or below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC impurities
 seen mainly at z = 2-3 (the SI lists each fragment by one m/z and one charge), and the IP-HILIC
 GalNAc impurities at z = 4. Once charges and the charge count are no longer the barrier, the
 envelope gate is: under oracle charges with single charge states accepted, it rejects nine picked
@@ -428,16 +430,18 @@ built yet; each is measured in stage 0 before any search.
   log-SNR-weighted accuracy in FLP's tile from 0.51 to 0.48.
 - **Isotope-chain confirmation** (the single-charge acceptance). Sum heads at the isotopologue
   positions (exact offsets, as in C2) and at the half-spacing positions count co-eluting
-  isotopologues (n_iso) and half-spacing peaks (n_half), with the probe's parameters: r >= 0.9
-  over the 7 scans around the envelope's own apex, signal in at least 4 of them (one of 48 fixed
-  masks, selected by a one-hot of the apex scan). The article's sinusoidal positions can do the
+  isotopologues (n_iso) and half-spacing peaks (n_half), with the probe's parameters set in
+  seconds: r >= 0.9 over ±10 s around the envelope's own apex (7 scans at these scan rates),
+  signal in at least 60 % of those scans (one of 48 fixed masks, selected by a one-hot of the
+  apex scan). The article's sinusoidal positions can do the
   isotopologue part in one head: a score term A cos(phi_k - phi_q), with phase
   phi = 2 pi z (m/z ∓ m_p)/1.0034 selected by the query's charge, peaks at every isotopologue
   position of that charge at once. A flag neuron relu(sum q - 5) over six 0/1 indicators: z >= 2,
   the spacing resolved, n_iso >= 3, n_half <= 1, the isotopologue ratios fitting the class pattern
   for M = z (m/z ∓ m_p) within 0.6 in log10, no second charge state. The probe of section 3
   passes 23 of 31 missed species, 14 of 18 found ones, 3 of 7 unconfirmed reports and 1 of 240
-  random positions; the circuit's own rates are measured in stage 0.
+  random positions; the circuit's own rates are measured in stage 0. The flag only nominates: the
+  decoder repeats the test itself (4.6).
 - **Charge-state count.** Six ladder pointer heads, co-elution gated, read the same isotopologue
   at z ± 1, 2, 3 (offsets ln(z/z'), the same ln M), so that a token knows whether its species is
   seen at one charge state or several.
@@ -460,31 +464,33 @@ built yet; each is measured in stage 0 before any search.
 
 ### 4.6 Readouts and the frozen decoder
 
-The network ends at per-token outputs; a **frozen 2D decoder**, written by people in stage 0 and
-not editable by the search, turns them into species. It is designed on synthetic data, every
-constant logged with its reason and the runs it was checked on, and its hash fixed before the
-folds are drawn.
+The network ends at per-token outputs; a **frozen 2D decoder**, written by people and not
+editable by the search, turns them into species. Stage 0 writes it on the four real runs, since
+no 2D synthetic data exists before stage 1; after stage 1 it is recalibrated per fold on
+synthetic runs and that fold's visible runs, and each fold's decoder is frozen and hashed before
+that fold's searches. Every constant is logged with its reason and the runs it was set on, and a
+constant kept from stage 0 is marked as set on that fold's hidden runs.
 
 - **Per token:** the `ChargePrediction` fields for the tile's summed spectrum (top two charges,
   their shares, apex), a vote weight w in [0, 1] (persistence, background), a confirmation flag
-  with its chain counts (4.5), a partner flag, and the apex scan of its trace.
+  (4.5), a partner flag, and the apex scan of its trace.
 - **Votes and candidates:** every token votes intensity x share x apex weight x w at
-  (ln M, tile start + apex scan); votes are smoothed over 1.2 Da (the existing function) and ±2
-  scans; local maxima above 1e-4 of the strongest within ±2 min become candidates (a local floor:
+  (ln M, tile start + apex scan); votes are smoothed over 1.2 Da (the existing function) and
+  ±6 s; local maxima above 1e-4 of the strongest within ±2 min become candidates (a local floor:
   one tied to the global maximum deletes weak, late species, `lessons.md` section 6); a candidate's
   spectrum is the sum of its own elution window's per-scan grids (apex ± 1.5 x the width of its
   vote trace), which the decoder's raw-point checks read as well; then the existing envelope
   gate, NNLS fit, template bank, linking and flat-background rule run, with their thresholds
-  recalibrated on that input. This
-  replaces TIC regions (6 of the 31 missed species had none) and detection in region-summed
-  spectra.
+  recalibrated on that input. This replaces TIC regions (6 of the 31 missed species had none) and
+  detection in region-summed spectra.
 - **Flags at every charge-count check.** Today's decoder enforces two charge states three times.
   At picking, a candidate needs two charge states or a flagged token. At the envelope gate, a
-  flagged single-charge candidate is judged by its flag's time-resolved chain (n_iso >= 3,
-  n_half <= 1 in its apex scans) instead of by the isotope check on the summed spectrum;
-  unflagged single-charge candidates are rejected as today. After the fit, a flagged candidate
-  counts as charge-supported (the `single_charge` mark). Without all three, the flags could not
-  reach the stage section 3 blames.
+  flagged single-charge candidate is judged by a time-resolved chain test the decoder computes
+  itself - frozen code, on the candidate's own per-scan grids within ±10 s of its apex: n_iso >= 3,
+  n_half <= 1 - instead of by the isotope check on the summed spectrum; unflagged single-charge
+  candidates are rejected as today. A candidate that passes counts as charge-supported after the
+  fit (the `single_charge` mark). The network's flag only nominates, so it cannot pass the gate
+  on its own word; without all three checks, flags could not reach the stage section 3 blames.
 - **Partner templates:** a candidate holding a partner flag gets one extra template at
   M + 0.984 Da in its NNLS fit; the partner is reported only if the fit gives it a share above the
   method's floor and it passes the gates like any candidate.
@@ -500,7 +506,8 @@ folds are drawn.
 - **Bounded harm.** The network cannot bypass the gates or create candidates other than through
   votes, flags and partner flags. Relabels move mass votes and flags admit single-charge
   candidates, so both can add reports - LadderNet, changing only charges, added 13-21 unconfirmed
-  reports; `single_charge: true` added 12 - which adoption item 1 bounds. Any charge model - the
+  reports; `single_charge: true` added 35 reports for 4 new species, 25 of them outside the truth
+  table - which adoption item 1 bounds. Any charge model - the
   comb, LadderNet - runs through the same decoder with w = 1 and no flags; the comb run this way
   ("comb-2D") is the baseline every search is scored against.
 - **Drop-in mode.** Without the 2D decoder the network is a `predict_grid` replacement for
@@ -569,9 +576,9 @@ To be built in stage 0 (section 8); the probes in `scripts/iwsp_probes/` are the
 | `iwsp/layers.py` | nobody | the primitives of 4.2, evaluated exactly and sparsely, and the frozen readouts; tests: sparse against dense softmax attention to 1e-12 on small tiles (scores from offsets), every step and compare neuron at inputs up to 1e10 and differences down to 1e-12 |
 | `iwsp/decoder2d.py` | nobody | the frozen 2D decoder of 4.6, with its provenance log |
 | `iwsp/model.py` | the agent | `architecture(spec)` (the wiring) and `write_weights(net, spec)`; starts as version 0 |
-| `iwsp/TASK.md` | nobody | the task, the harness's API, version 0's description and the objective - nothing from sections 2-4 of this document beyond version 0 |
+| `iwsp/TASK.md` | nobody | the task, the harness's API and the objective, plus version 0's description for every session that starts from version 0 (not for the empty-file control search, the standalone rebuild or the control sessions) - nothing else from this document |
 | `iwsp/RULES.md` | nobody | the article's rules and those of 5.2 |
-| `iwsp/evaluate.py` | nobody | the objective and reports on the visible data (5.3), running the network as built from `model.py` |
+| `iwsp/evaluate.py` | nobody | the objective and reports on the visible data (5.3), running the network as built from `model.py`; it runs outside the sandbox with the decoder and the real-run truth, behind one logged command |
 | `iwsp/audit.py` | nobody | the checks of 5.6 |
 
 The package needs plumbing first: a predictor registry (`make_predictor("iwsp:<file>")`) that
@@ -579,19 +586,25 @@ The package needs plumbing first: a predictor registry (`make_predictor("iwsp:<f
 hook of the drop-in mode.
 
 The agent works in a sandbox with no network that holds only `model.py`, `TASK.md`, the rules,
-the read-only harness, the visible tiles and raw files, and a truth file restricted to the
-visible runs. This document, its probes and their outputs, `docs/benchmarks.md`,
-`docs/lessons.md` and `scripts/validate_oligo_runs.py`, which together hold the truth and the
-measured circuits for all four runs, stay outside, as the data did in the article's
-visual-cortex search. Hidden scoring is a separate command the operator runs once per selected
-model.
+the read-only tokenizer and layer library, the visible tiles and raw files, and the synthetic
+truth. The real-run truth stays outside with the evaluator and the decoder, which the agent
+reaches through one logged command that returns counts, as the article's visual-cortex search
+reached its data through a restricted interface. `model.py` and `explore()` may import only the
+tokenizer and the library, and the audit flags any `explore()` output that names visible species.
+This document, its probes and their outputs, `docs/benchmarks.md`, `docs/lessons.md`,
+`scripts/validate_oligo_runs.py` and the decoder's provenance log, which together hold the truth
+and the measured circuits for all four runs, stay outside. Hidden scoring is a separate command
+the operator runs once per selected model. The scorer sets aside a report that matches an
+unscored truth species (DA and DA-NC under IP-RPLC): neither credited nor charged.
 
 The file starts at version 0, for three reasons: the comb is the bar for adoption, so every edit
 is a measured change from it; a generic GPT of three layers and width 64 with dense attention
 cannot cheaply express offsets of 34 657 bins over tens of thousands of tokens and would spend
-its budget rebuilding the comb; and version 0 is exact and public, so starting from it leaks
-nothing about the runs. One control search starts from an empty file with the same library: does
-the agent write the comb itself, as the article's agents wrote Euclid's algorithm?
+its budget rebuilding the comb; and version 0 is exact and public. It is not neutral - its isotope
+rule was kept because of these four runs (`benchmarks.md`) - but comb-2D carries the same rule.
+One control search starts from an empty file with the same library and a `TASK.md` without
+version 0: does the agent write the comb itself, as the article's agents wrote Euclid's
+algorithm? It is never a candidate for selection.
 
 ### 5.2 Rules beyond the article's
 
@@ -626,12 +639,14 @@ the agent write the comb itself, as the article's agents wrote Euclid's algorith
    two modes.
 10. **New primitives** (a clamp activation, a lateral-inhibition argmax) are proposals to the
     person running the search, added to the library with tests and audited like the decoder, not
-    written into `model.py`.
+    written into `model.py`. Proposals of primitives and adduct deltas are decided against a
+    pre-registered list of what may be granted, without the hidden runs or the per-species
+    traces, and every decision is logged.
 
 ### 5.3 Objective, feedback and reports
 
-One pre-registered objective, J = ½ F_syn + ½ R_real, once the generator has passed stage 1's
-calibration and ranking tests; until then J = R_real and F_syn is a guard.
+One pre-registered objective, J = ½ F_syn + ½ R_real. No search starts before the generator has
+passed stage 1's calibration and ranking tests.
 
 - **F_syn:** one-to-one species F1 on the visible synthetic runs, counting detectable truth only;
   adduct forms of a found species are not false.
@@ -643,12 +658,18 @@ calibration and ranking tests; until then J = R_real and F_syn is a guard.
   original code's 87 reports did), and a network whose gates keep co-varying rungs could turn
   unconfirmed reports into EIC-confirmed ones; the physics checks are what earn the reduced cost.
 - **Per-bin accuracy is not in J**, for the reasons section 3 measured.
+- **Eligibility.** J pays 2 for a paper species and 1 for a junk report, so it can gain from
+  trades the adoption rule forbids. A model is therefore eligible for selection only if, on the
+  visible runs and against comb-2D with the fixes of section 3, it loses no species the comb
+  finds, adds no report outside the truth table, adds no report beyond its new species, and keeps
+  per-bin accuracy at least the comb's; every report says whether the iterate is eligible.
 
 **Feedback.** Synthetic results come back in full. Real runs come back as counts only (species
 found per category, reports per class), at most every fifth iteration, every request logged;
 per-species traces of where a species is lost go to the person running the search, not to the
 agent. With about ten paper species per fold, richer feedback would let forty iterations tune
-thresholds to them.
+thresholds to them. Edits are justified by the last reported objective or by the synthetic
+report.
 
 **Reports** (to the operator at every iteration, as a change against version 0 on the same data):
 synthetic precision and recall by abundance tier and kind; false species by cause (harmonic,
@@ -660,13 +681,15 @@ gain in one cannot hide a loss in another; R_real on its own (one paper species 
 0.03 in a fold, so thresholds on J alone are decided by F_syn); timings, weight counts, tunables
 and leakage bounds. Guards set J = -infinity, with the reason: a failed invariance, determinism or
 symmetry check, a forbidden import or file read, exceeded limits, or time-of-flight protein F1
-more than 0.01 below version 0. An evaluation costs about 35 core-minutes (5 min on 8 cores),
+more than 0.01 below today's pipeline (the baseline of adoption item 4). An evaluation costs about 35 core-minutes (5 min on 8 cores),
 mostly the synthetic runs (an estimate).
 
-**Noise floor.** Before any search, comb-1D and comb-2D are rerun under harmless perturbations -
-noise sigma ±5 %, tiles shifted by half a stride, region margins ±1 scan, a half-bin grid offset,
-alternate scans dropped - to learn how many species and reports move by chance; the gains the
-adoption rule asks for must exceed it.
+**Noise floor.** Before any search, comb-2D with and without the fixes of section 3 are rerun
+under harmless perturbations - noise sigma ±5 %, tiles shifted by half a stride, region margins
+±1 scan, a half-bin grid offset - and the spread of their paired difference (species and reports,
+per run) is the floor. Every gain threshold - adoption items 2, 3 and 8 and the rebuild test - is
+the larger of its stated value and that floor. Dropping alternate scans halves the signal and
+the scans per peak, so it is reported as a robustness test, not counted as chance.
 
 ### 5.4 Data
 
@@ -686,12 +709,16 @@ profile and adds no background. `generate_run` gains:
 
 Calibration (stage 1), per fold from its visible runs only: synthetic tiles within a factor of
 1.5 of them in tokens per tile, spike share and intensity, trace breadth, charge-state trace
-correlation, charge distribution, wash breadth, wash co-variation and z = 1 partner rate; and the
-generator must rank comb-1D, comb-2D and oracle-2D as the visible real runs do. Visible: 32
+correlation, charge distribution, wash breadth, wash co-variation and z = 1 partner rate. Impurity
+offsets and re-elution are also taken from that fold's visible runs, or left out where they show
+none (re-elution was measured only in IP-RPLC NC, hidden in fold B). And the generator must
+reproduce every difference between comb-1D, comb-2D, oracle-2D and oracle-flag-2D that exceeds
+the noise floor on the visible runs; on two runs most differences will not, and a tie there asks
+nothing of the generator. Visible: 32
 fixed-seed runs of 10 min with three analyte peaks each, about 250 detectable species (16
 IP-RPLC-like and 8 IP-HILIC-like Orbitrap oligonucleotide runs, 8 time-of-flight protein runs as
 a guard). Hidden: 96 runs from seeds drawn after the search ends, and 32 shifted-regime runs
-(Orbitrap at 70 000, time-of-flight polymers), reported only.
+(Orbitrap at 70 000, time-of-flight polymers), reported only, not part of adoption.
 
 **Real runs: two diagonal folds.** Each fold shows the agent one run of each chromatography and
 hides the other two, so every run is scored once, hidden, by a model whose search never saw it:
@@ -726,8 +753,10 @@ exact solution, plateaued late and stayed near 190 000 parameters.
 
 Selection is pre-registered: from each fold's Opus runs, the smallest model (fewest formulas,
 then fewest non-zero weights) within 0.005 of the best visible J, scored on that fold's hidden
-data once. The shipped candidate is the fold model with the larger pooled hidden R_real (ties:
-the smaller); it alone is scored on the sealed fifth run, and rebuild outcomes do not change the
+data once. The two folds' hidden runs differ by about three paper species in difficulty, so the
+shipped candidate is the fold model with the larger gain over comb-2D with the fixes on its own
+hidden runs (the R_real difference, paired run by run; ties: the smaller model), not the larger
+R_real. It alone is scored on the sealed fifth run, and rebuild outcomes do not change the
 choice.
 
 Agent cost: the article's 34 Opus runs on its 17 algorithmic and NLP tasks cost $449 for 1 334
@@ -739,10 +768,11 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
 
 ### 5.6 Audits and the rebuild test
 
-- **Data invariance:** `write_weights` runs in a subprocess without file access; its weight hash
-  must not change under decoy data (other seeds, the hidden runs swapped in by the auditor) or
-  perturbed truth, and must change in the documented way with the fields it depends on (resolving
-  power, polarity, step).
+- **Data invariance:** `write_weights` runs in a subprocess without file access and reads only
+  `spec`, so decoy data (other seeds, perturbed visible data - never the hidden runs during the
+  search) cannot change its weight hash; the check guards the harness, and its hash must change
+  in the documented way with the fields it depends on (resolving power, polarity, step).
+  Statistics copied into literals are the auditor's to catch.
 - **The executed network:** the evaluator scores the network as built from `model.py` by the
   layer library, never a parallel numpy program; on small inputs that network is compared with a
   dense float64 softmax reference.
@@ -755,23 +785,26 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   per head.
 - **Ablation table:** circuits are removed one at a time, greedily - the one whose removal costs
   least first, re-measuring after each - while J drops by less than 0.005 and no real species is
-  lost. One-at-a-time credits mislead when computations share their contribution (87-96 % of the
-  explained variance is shared in the article's cortex and ECoG models, Table A4), which is why
-  the table follows the article's form but not a fixed per-circuit threshold.
+  lost. One-at-a-time credits mislead when computations share their contribution (88-96 % of the
+  explained variance is shared in the article's cortex model, Table A4, and 87 % in its ECoG
+  model, Fig. A10), which is why the table follows the article's form but not a fixed
+  per-circuit threshold.
 - **An auditing agent** reads every saved model and its log: each block's docstring states its
   physical meaning and matches the code; no species-, m/z- or time-specific constants; no
   statistics copied from data in place of physics; every edit justified by its effect on J; no
   reads outside the sandbox.
-- **Rebuild:** a fresh session describes the selected model in at most 200 words from its code,
-  with comments and logs removed. Per fold, two fresh sessions rebuild it from the description
-  and the harness, with at most six visible evaluations to make it run (as in the article's fMRI
-  rebuilds) and no hidden data - once from version 0 (the description may cite its heads: a test
-  of the change), and once, as in the article, from an empty `write_weights` and the layer library
-  (version 0 with one gate takes 200, 4.8). A rebuild passes when it loses no paper species the
-  original finds on its hidden runs, keeps at least 75 % of the original's hidden gain over
-  version 0 and at least one species or two fewer reports outside the truth table, and agrees with
-  the original's charges on at least 95 % of hidden synthetic active intensity. A control session
-  per fold gets the empty file and no description.
+- **Rebuild:** a fresh session reads the selected model's code, with comments and logs removed,
+  and writes two descriptions of at most 200 words: one that may cite version 0's heads (a
+  description of the change) and one that stands alone. Per fold, two fresh sessions rebuild from
+  each, with the harness, at most six visible evaluations to make the model run (as in the
+  article's language-fMRI rebuilds) and no hidden data; two control sessions per fold get the
+  empty file, a `TASK.md` without version 0 and no description. The rebuild from version 0 is the
+  adoption condition: it loses no paper species the original finds on its hidden runs, keeps at
+  least 75 % of the original's hidden R_real gain over version 0 (and at least the noise floor),
+  and agrees with the original on what the original changes - charges on the active intensity
+  where the original differs from version 0, flags and vote weights - more closely than the
+  control sessions do. The standalone rebuild, the article's own test, is reported but not
+  required: version 0 with one gate already takes the whole budget (4.8).
 
 ## 6. Relation to the comb and LadderNet
 
@@ -813,8 +846,9 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   only about twice as broad as a main peak, so the z = 1 isotope veto is preferred to breadth.
   Gates must spare weak bins and be judged by species found.
 - **Accepting more adds junk.** Single-charge confirmation, regions outside TIC bands and a looser
-  background rule can turn the column wash into reports, as `single_charge: true` did (+12
-  unconfirmed); the decoder's own narrow windows can lose broad species, which stage 0 measures.
+  background rule can turn the column wash into reports, as `single_charge: true` did (35 more
+  reports for 4 new species, 25 of them outside the truth table); the decoder's own narrow windows
+  can lose broad species, which stage 0 measures.
 - **Rules that help one regime hurt another** (the in-range mean on time-of-flight; C2b at high
   charge). The reports split by kind, charge band and chromatography so that this shows.
 - **The resampling fix moves the baseline.** Today's pipeline judges inputs whose noise estimate
@@ -843,23 +877,27 @@ truth table" counting unconfirmed and other EIC-confirmed reports alike:
    species the comb finds lost (by identity); reports outside the truth table at most the comb's;
    total reports at most the comb's plus the new species found.
 2. **A gain**, pooled over the four hidden evaluations: at least two more species, or at least
-   three fewer reports outside the truth table, and above the noise floor of 5.3. These runs
-   shaped the decoder and the circuits, so this is development evidence; item 8 is the test.
+   three fewer reports outside the truth table, and above the paired noise floor of 5.3. These
+   runs shaped the decoder and the circuits, so this is development evidence; item 8 is the test.
 3. **From the network:** each fold's model beats comb-2D - with the non-network fixes of section
    3 applied (C2b and the adjacent-isotopologue rule) - on its hidden runs by at least one species
-   or two reports outside the truth table; otherwise comb-2D with those fixes, the simpler change,
-   is the candidate and must itself pass items 1, 2 and 8.
+   or two reports outside the truth table, and by more than the paired noise floor; otherwise
+   comb-2D with those fixes, the simpler change, is the candidate and must itself pass items 1, 2,
+   4 and 8.
 4. **Synthetic, hidden:** Orbitrap oligonucleotide F1 at least comb-2D + 0.03 with a 95 %
-   bootstrap interval excluding 0; time-of-flight proteins and polymers within 0.01 of today's
-   pipeline; per-bin intensity-weighted accuracy at z >= 2 at least the comb's.
+   bootstrap interval excluding 0; time-of-flight proteins within 0.01 of today's pipeline;
+   per-bin intensity-weighted accuracy at z >= 2 at least the comb's.
 5. **Against LadderNet-2D:** at least equal on the counts of item 1 (a tie goes to the written
    model, because it can be audited).
 6. **Integrity:** a clean audit, and both rebuild tests passing.
 7. **Speed:** at most 3 min per 30-min run on 8 cores, in numpy float64.
 8. **The sealed fifth run**, the adoption gate: a new injection acquired after the search ends,
-   ideally of another oligonucleotide, with truth from its own characterisation scored by the same
-   rules, run once. The shipped candidate (5.5) meets item 1 on it and beats comb-2D by at least
-   one species or two reports outside the truth table. Before that the model may ship only opt-in.
+   ideally of another oligonucleotide, whose truth table is fixed before any compared pipeline
+   runs on it, by methods independent of them and blind to their reports, then scored once by the
+   same rules. The shipped candidate (5.5) meets item 1 on it against today's pipeline (with the
+   resampling fix, if made), and beats both today's pipeline and comb-2D with the fixes by at
+   least one species or two reports outside the truth table and by more than that run's paired
+   noise floor. Before that the model may ship only opt-in.
 
 Each fold's model must pass items 1 and 3-7; item 2 is pooled; item 8 decides.
 
@@ -867,8 +905,8 @@ Each fold's model must pass items 1 and 3-7; item 2 is pooled; item 8 decides.
 
 | Stage | Work | Go / no-go |
 | --- | --- | --- |
-| 0 (3-4 days) | the package's resampling fix (per-scan grids summed, raw-point checks on the same input, thresholds recalibrated) or the decision to keep both inputs; plumbing; tokenizer and layer library with their tests; version 0 built from the library and run as a network; the 2D decoder, frozen with its provenance log; comb-2D, oracle-2D and oracle-flag-2D (true charges, plus chain flags on the known single-charge species) on all four runs and synthetic data; the chain flag's pass rates on random positions; the noise floor | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D finds at least two more real species than today's pipeline with no more reports outside the truth table - otherwise stop the transformer and fix the decoder** |
-| 1 (2-3 days) | the 2D generator additions of 5.4, calibrated per fold | synthetic tiles within a factor of 1.5 of the visible real statistics; the ranking test |
+| 0 (3-4 days) | the package's resampling fix (per-scan grids summed, raw-point checks on the same input, thresholds recalibrated) or the decision to keep both inputs; plumbing, including the scorer's handling of unscored species; tokenizer and layer library with their tests; version 0 built from the library and run as a network; the 2D decoder with its provenance log; comb-2D with and without the fixes, oracle-2D, oracle-flag-2D (true charges, plus flags on the known single-charge species) and chain-flag-2D (comb charges, flags wherever the chain test fires, no truth) on all four runs; the chain test's pass rate on random positions; the noise floor | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D beats comb-2D with the fixes, on the same input, by at least two real species with no more reports outside the truth table; chain-flag-2D adds no report outside the truth table; comb-2D's time-of-flight protein F1 is within 0.01 of today's pipeline - otherwise stop the transformer and fix the decoder** |
+| 1 (2-3 days) | the 2D generator additions of 5.4, calibrated per fold; the decoder recalibrated and frozen per fold | synthetic tiles within a factor of 1.5 of the visible real statistics; the ranking test; no search before both pass |
 | 2 (1 day) | a 10-iteration pilot; a break-in test of the sandbox; invariance, determinism and audit dry runs; the counts-only feedback | harness bugs fixed; the hidden runs and this document cannot be read |
 | 3 (about a week) | the seven searches of 5.5, from version 0 | each run passes or is stopped at iteration 15 |
 | 4 (2 days) | hidden scoring, audits, rebuilds, the LadderNet comparison | adoption items 1-7 |

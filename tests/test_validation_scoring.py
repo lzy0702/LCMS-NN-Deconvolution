@@ -128,3 +128,14 @@ def test_eic_check_reads_the_run_polarity():
     for s in negative.spectra:  # the same ions labelled positive: no one mass explains both
         s.polarity = 1
     assert not vor.joint_eic_peak(negative, mass, 10.0)
+
+
+def test_a_report_of_an_unscored_species_is_neither_credited_nor_charged():
+    vor = _script()
+    reports = [SimpleNamespace(mass=m, rt_apex=t) for m, t in
+               [(6793.98, 19.21), (6777.92, 19.21), (7139.25, 20.34), (6448.71, 18.71),
+                (5162.25, 20.22), (6794.96, 19.25)]]
+    sc = vor.score("IPRPLC_GalNAc", reports, lambda m, t: False)
+    da = [r for r in sc["rows"] if r[3] == "unscored"]
+    assert da and da[0][4] is reports[-1]
+    assert sc["others"] == []
