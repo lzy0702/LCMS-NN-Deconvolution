@@ -8,7 +8,7 @@ from ..chem.adducts import AdductLibrary, AdductState, carrier_mass
 from ..chem.instrument import InstrumentModel
 from ..core.model import Component
 from .decode import Candidate
-from .nnls_solve import weighted_nnls
+from .nnls_solve import fit_weights, weighted_nnls
 from .templates import build_template
 
 
@@ -62,9 +62,10 @@ def _fit_candidate(
 
     columns = []
     keys = []
+    tmass = cand.mass * float(np.exp(getattr(cand, "template_shift", 0.0)))
     for z in zrange:
         for st in adduct_states:
-            tpl = build_template(cand.mass, z, grid, instrument, compound_class,
+            tpl = build_template(tmass, z, grid, instrument, compound_class,
                                  adduct_mass=st.mass, adduct_label=st.label)
             if tpl is None:
                 continue
@@ -96,6 +97,49 @@ def _fit_candidate(
     return coeffs, used, explained
 
 
+def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
+                   compound_class: str, max_bins: float = 1.5, step_bins: float = 0.25,
+                   max_charges: int = 8) -> float:
+    """Shift (ln mass) that best lines the class's isotope pattern up with ``spectrum``.
+
+    A compound class stands for an average composition, which puts each resolved isotopologue
+    up to 0.1-0.2 Da from where a given molecule has it - one grid bin at Orbitrap resolving
+    power and charge four. A least-squares fit cannot absorb that: a template a bin off the
+    peaks it should explain is scaled to a third of them. Every charge state's base template
+    is slid over +-``max_bins`` (the same shift in ln(m/z) for all of them, as a mass error
+    would be) and the shift with the largest normalized overlap with the spectrum is kept.
+    Only where the instrument resolves the isotopes of the candidate's central charge state;
+    elsewhere a bin is a small part of an envelope and the shift is 0.
+    """
+    from ..chem.adducts import carrier_mass
+
+    zs = sorted(int(z) for z in cand.charges if z >= 1)
+    if not zs or instrument is None:
+        return 0.0
+    zc = zs[len(zs) // 2]
+    mz_c = (cand.mass + zc * carrier_mass(grid.polarity)) / zc
+    if 1.0033548 / zc < 2.0 * mz_c / max(float(instrument.resolving_power(mz_c)), 1.0):
+        return 0.0
+    if len(zs) > max_charges:
+        mid = len(zs) // 2
+        zs = zs[max(0, mid - max_charges // 2): mid + max_charges // 2]
+    best_s, best = 0.0, -np.inf
+    for s in np.arange(-max_bins, max_bins + 1e-9, step_bins):
+        m = cand.mass * float(np.exp(s * grid.step))
+        score = 0.0
+        for z in zs:
+            t = build_template(m, z, grid, instrument, compound_class)
+            if t is None:
+                continue
+            norm = float(np.sqrt(t.values @ t.values))
+            if norm > 0:
+                score += float(spectrum[t.bins] @ t.values) / norm
+        # prefer no shift unless one explains clearly more
+        if score > best * (1.0 + 1e-3) or (s == 0.0 and score >= best):
+            best_s, best = float(s), score
+    return best_s * grid.step
+
+
 def refine_frame(
     candidates: list[Candidate],
     grid,
@@ -116,15 +160,21 @@ def refine_frame(
     strongest_explained: float = 0.0,
     trace: list | None = None,
     trace_pass: int = 0,
+    frames=None,
+    coelution_r: float = 0.5,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
     Fits against ``residual`` (the observed spectrum by default) while weighting by the original
     measurement, and returns the accepted components, the fraction of signal-bearing intensity
     still unexplained, and the updated residual so the caller can re-detect on what is left.
+    ``frames`` and ``coelution_r`` decide which charge states beyond the voting band are the
+    species' own (:func:`observed_charges`).
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
-    weights = 1.0 / np.sqrt(np.clip(observed, 0, None) + noise_sigma**2 + 1e-9)
+    weights = fit_weights(observed, noise_sigma, grid.step,
+                          float(instrument.resolving_power(1000.0)) if instrument is not None
+                          else 30000.0)
     # Detection uses only the base state and one of each adduct: enough to recognise a species
     # without paying for every adduct combination on candidates that will be rejected anyway.
     states_fast = [AdductState()]
@@ -154,7 +204,9 @@ def refine_frame(
             # they are later explained as separate, false species
             cand.charges = observed_charges(cand.mass, cand.charges, raw_mz, raw_int,
                                             3.0 * noise_sigma, grid.polarity, compound_class,
-                                            resolution, mz_range)
+                                            resolution, mz_range, frames=frames,
+                                            coelution_r=coelution_r, instrument=instrument)
+        cand.template_shift = align_template(cand, residual, grid, instrument, compound_class)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -180,7 +232,7 @@ def refine_frame(
         comp = Component(
             mass=cand.mass, intensity=explained, mass_type="average",
             charges=charge_int, adducts=adduct_int, score=cand.score,
-            compound_class=compound_class, id=cid,
+            compound_class=compound_class, id=cid, template_shift=cand.template_shift,
         )
         if raw_mz is not None:
             _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
@@ -312,7 +364,7 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     if not moved:
         return cand, full
     trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
-                      intensity=cand.intensity)
+                      intensity=cand.intensity, template_shift=cand.template_shift)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)
     if full2[2] >= full[2] * (1.0 + min_gain):
@@ -462,6 +514,50 @@ def _flag_harmonics(components: list[Component], tol_ppm: float = 100.0):
                     break
 
 
+def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
+                            tol_da: float = 0.5, trace: list | None = None) -> list[Component]:
+    """Give a weaker species' adduct envelopes that coincide with a stronger species' to it.
+
+    Adduct ladders overlap: the PS-to-PO impurity of an oligonucleotide plus potassium
+    (M - 16.03 + 37.96 Da) is the oligonucleotide plus sodium (M + 21.98 Da) to within 0.07 Da,
+    and two envelopes at one mass are one envelope. The stronger species' adduct is the likelier
+    source - its ladder is what the mobile phase decorates - and fitted to the weaker species
+    such a column turns the main species' adducts into an impurity's amount. So an adduct column
+    of a component whose mass (species plus adduct) lies within ``tol_da`` of a stronger
+    component's mass plus any adduct state of the library is removed from it, whether or not the
+    stronger component fitted that state; a component left with no column is dropped.
+    """
+    if len(components) < 2:
+        return components
+    shifts = sorted({s.mass for s in library.states()} | {0.0})
+    shift_of = {s.label or "base": s.mass for s in library.states()}
+    kept: list[Component] = []
+    for c in sorted(components, key=lambda c: -c.intensity):
+        cols = dict(c.columns)
+        if kept and cols:
+            for z, lab in list(cols):
+                if not lab or lab == "base" or cols[(z, lab)] <= 0:
+                    continue
+                m = c.mass + shift_of.get(lab, 0.0)
+                if any(abs(k.mass + d - m) <= tol_da for k in kept for d in shifts):
+                    del cols[(z, lab)]
+            if len(cols) < len(c.columns):
+                total = float(sum(v for v in cols.values() if v > 0))
+                if total <= 0:
+                    if trace is not None:
+                        trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
+                                      "outcome": "coincident_adducts", "mass": float(c.mass)})
+                    continue
+                charges: dict[int, float] = {}
+                adducts: dict[str, float] = {}
+                for (z, lab), v in cols.items():
+                    charges[z] = charges.get(z, 0.0) + v
+                    adducts[lab or "base"] = adducts.get(lab or "base", 0.0) + v
+                c.columns, c.charges, c.adducts, c.intensity = cols, charges, adducts, total
+        kept.append(c)
+    return kept
+
+
 def drop_shared_evidence(components: list[Component], library: AdductLibrary, polarity: int,
                          resolution: float = 30000.0, shared_fraction: float = 0.8,
                          trace: list | None = None) -> list[Component]:
@@ -517,14 +613,23 @@ def drop_shared_evidence(components: list[Component], library: AdductLibrary, po
 def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray, thr: float,
                      polarity: int, compound_class: str, resolution: float,
                      mz_range: tuple[float, float] | None = None, max_gap: int = 1,
-                     z_cap: int = 150) -> set[int]:
+                     z_cap: int = 150, frames=None, coelution_r: float = 0.5,
+                     instrument=None) -> set[int]:
     """Charges of a species' envelope that the spectrum shows, grown outward from ``charges``.
 
     Starting from the charge band that voted for the species, each next charge outward is kept
-    while an envelope is observed (above ``thr``) where that charge would put the species,
-    tolerating ``max_gap`` missing states, and stopping at the edge of the measured m/z range.
+    while an envelope is observed where that charge would put the species, tolerating
+    ``max_gap`` missing states, and stopping at the edge of the measured m/z range. Observed
+    means above ``thr`` and, where the instrument resolves the isotopes, with the isotope comb
+    of that charge filled in proportion (:func:`~lcmsdeconv.deconv.decode.
+    isotopes_contradict_charge` relative to the envelope's own height). With ``frames`` (a
+    :class:`~lcmsdeconv.deconv.coelution.FrameStack` of the scans the spectrum sums) the
+    envelope must also co-elute with the starting band (correlation ``coelution_r`` or better):
+    above the noise of a thresholded spectrum there is signal of some ion near almost every
+    position, and only its isotopes and its time course tell whether it is this species.
     """
-    from .decode import envelope_geometry
+    from .coelution import correlation, shows_profile
+    from .decode import envelope_geometry, isotopes_contradict_charge
 
     charges = {int(z) for z in charges if z >= 1}
     if not charges:
@@ -532,14 +637,33 @@ def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarr
     env_sigma, offset = envelope_geometry(mass, compound_class)
     carrier = carrier_mass(polarity)
 
-    def present(z: int) -> bool | None:
+    def window(z: int) -> tuple[float, float]:
         mz = (mass + offset + z * carrier) / z
+        return mz, max(0.5 * env_sigma / z, mz / max(resolution, 1.0))
+
+    ref = None
+    if frames is not None and coelution_r > 0:
+        band = sorted(charges)
+        ref = frames.traces([window(z)[0] for z in band], [window(z)[1] for z in band]).sum(0)
+        if not shows_profile(ref):
+            ref = None
+
+    def present(z: int) -> bool | None:
+        mz, half = window(z)
         if mz_range is not None and not (mz_range[0] <= mz <= mz_range[1]):
             return None
-        half = max(0.5 * env_sigma / z, mz / max(resolution, 1.0))
         lo = int(np.searchsorted(raw_mz, mz - half))
         hi = int(np.searchsorted(raw_mz, mz + half))
-        return bool(hi > lo and raw_int[lo:hi].max() > thr)
+        core = float(raw_int[lo:hi].max()) if hi > lo else 0.0
+        if core <= thr:
+            return False
+        r_here = float(instrument.resolving_power(mz)) if instrument is not None else resolution
+        if isotopes_contradict_charge(mass, z, mz, raw_mz, raw_int, thr, polarity,
+                                      compound_class, mz / max(r_here, 1.0), height=core):
+            return False
+        if ref is not None:
+            return correlation(ref, frames.traces([mz], [half])[0]) >= coelution_r
+        return True
 
     out = set(charges)
     for direction in (-1, 1):

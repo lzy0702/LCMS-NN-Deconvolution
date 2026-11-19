@@ -15,7 +15,7 @@ import numpy as np
 from ..chem.adducts import AdductLibrary, AdductState
 from ..chem.instrument import InstrumentModel, estimate_noise_sigma
 from ..core.model import Component, FrameResult, Spectrum
-from ..deconv.nnls_solve import weighted_nnls
+from ..deconv.nnls_solve import fit_weights, weighted_nnls
 from ..deconv.templates import build_template
 from ..nn.grid import LogMzGrid
 
@@ -59,8 +59,9 @@ class TemplateBank:
                 if st is None:
                     continue
                 acc: dict[int, float] = {}
+                tmass = comp.mass * float(np.exp(getattr(comp, "template_shift", 0.0)))
                 for z, w in comp.charges.items():
-                    t = build_template(comp.mass, int(z), grid, instrument,
+                    t = build_template(tmass, int(z), grid, instrument,
                                        comp.compound_class or compound_class,
                                        adduct_mass=st.mass, adduct_label=st.label)
                     if t is None:
@@ -116,7 +117,8 @@ class TemplateBank:
         b = observed[self.support]
         if b.max() <= 0:
             return FrameResult(spectrum.rt, spectrum.polarity, [], noise, 0.0)
-        w = 1.0 / np.sqrt(np.clip(b, 0, None) + noise**2 + 1e-9)
+        w = fit_weights(observed, noise, self.grid.step,
+                        float(self.instrument.resolving_power(1000.0)))[self.support]
         x = weighted_nnls(self.A, b, w)
 
         per_comp: dict[int, dict[str, float]] = {}

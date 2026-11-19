@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..chem.adducts import carrier_mass
+from ..core.profile import sample_widths
 
 
 @dataclass(frozen=False, eq=False)
@@ -91,7 +92,9 @@ class LogMzGrid:
         data this equals the mean of the samples in the bin, so peak shape is preserved; for
         the thresholded profiles that vendor software writes, where only points near peaks
         survive, it correctly reports less signal instead of averaging the surviving peak tops
-        up to full height. Empty bins between surviving samples are left at zero.
+        up to full height. Empty bins between surviving samples are left at zero, and a
+        segment's edge sample covers its own spacing, never half of the gap beside it
+        (:func:`lcmsdeconv.core.profile.sample_widths`).
         """
         mz = np.asarray(mz, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
@@ -105,15 +108,12 @@ class LogMzGrid:
             out[b] = intensity[0]
             return out
 
+        order = np.argsort(mz, kind="stable")
+        mz, intensity = mz[order], intensity[order]
         u = self.mz_to_u(mz)
-        # width in u represented by each sample (midpoints between neighbours)
-        du = np.empty_like(u)
-        du[1:-1] = 0.5 * (u[2:] - u[:-2])
-        du[0] = u[1] - u[0]
-        du[-1] = u[-1] - u[-2]
-        # a sample never represents more than a bin's worth when data is denser than the grid,
-        # and never less than its own spacing when it is sparser
-        du = np.clip(du, 0.0, None)
+        # width in u represented by each sample: the midpoint rule within a segment; toward a
+        # gap left by vendor thresholding a sample covers its own spacing, not the gap
+        du = sample_widths(u)
         b = np.clip(self.mz_to_bin(mz), 0, self.size - 1)
         np.add.at(out, b, intensity * du / self.step)
         if centroided is False:
@@ -164,7 +164,7 @@ def default_grid(polarity: int = 1, step: float = 2e-5, mz_max: float = 10000.0)
 
 def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step: float = 2e-5,
                      mz_max: float = 10000.0, is_profile: bool | None = True,
-                     instrument=None) -> tuple[LogMzGrid, np.ndarray, float]:
+                     instrument=None, frames=None) -> tuple[LogMzGrid, np.ndarray, float]:
     """The grid view of a raw spectrum that both inference and training use.
 
     Returns ``(grid, observed, noise_sigma)``: a grid restricted to the spectrum's measured m/z
@@ -172,6 +172,10 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     shape) and the noise level estimated from the result. :func:`lcmsdeconv.deconv.pipeline.
     deconvolve_spectrum` and the training-frame renderer both call this one function, so the
     network's input statistics cannot drift apart between training and use.
+
+    ``frames``, the profile scans a summed spectrum was made of (``Run.sum_frames`` keeps
+    them), are resampled one by one and added when their axes differ: each scan's own axis
+    shows where its gaps are, which the union of many axes does not.
     """
     from ..chem.instrument import InstrumentModel, estimate_noise_sigma
 
@@ -187,6 +191,11 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     grid = LogMzGrid(lo, hi, step, polarity)
     if is_profile is False:
         observed = grid.render_centroids(mz, intensity, instrument or InstrumentModel("tof", 30000.0))
+    elif (frames and all(f.is_profile is not False for f in frames)
+          and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames)):
+        observed = np.zeros(grid.size, dtype=np.float64)
+        for f in frames:
+            observed += grid.resample_profile(f.mz, f.intensity)
     else:
         observed = grid.resample_profile(mz, intensity)
     return grid, observed, estimate_noise_sigma(observed)

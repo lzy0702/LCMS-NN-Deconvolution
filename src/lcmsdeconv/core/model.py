@@ -112,7 +112,21 @@ class Run:
         return Chromatogram(t, y, f"EIC {mz_lo:.3f}-{mz_hi:.3f}", "eic")
 
     def sum_frames(self, frames: list[Spectrum]) -> Spectrum:
-        """Sum spectra onto a common m/z axis (interpolating when axes differ)."""
+        """Sum spectra onto a common m/z axis.
+
+        Frames that share one axis are added point by point. Otherwise the sum lives on the
+        union of all frames' m/z points, where each profile frame is read by linear
+        interpolation within its own segments and contributes nothing inside its gaps
+        (:func:`lcmsdeconv.core.profile.profile_on_axis`): vendor-thresholded scans hold no
+        signal there, and every point any frame measured is kept. Centroided frames add their
+        peaks at their own positions. The frames themselves are kept in ``meta["frames"]``: a
+        grid view is built by resampling each of them (``spectrum_to_grid(..., frames=...)``),
+        because the union of many scans' axes is too irregular to tell its gaps apart, and the
+        decoder reads from them whether a species' charge states co-elute
+        (:mod:`lcmsdeconv.deconv.coelution`).
+        """
+        from .profile import profile_on_axis
+
         if not frames:
             raise ValueError("No frames to sum")
         ref = frames[0]
@@ -121,19 +135,20 @@ class Run:
             total = np.sum([f.intensity for f in frames], axis=0)
             mz = ref.mz.copy()
         else:
-            # union axis: take the densest axis as reference
             ref = max(frames, key=lambda f: f.mz.size)
-            mz = ref.mz.copy()
+            mz = np.unique(np.concatenate([np.asarray(f.mz, dtype=float) for f in frames]))
             total = np.zeros(mz.size)
             for f in frames:
                 if f.is_profile is False:
                     idx = np.clip(np.searchsorted(mz, f.mz), 0, mz.size - 1)
                     np.add.at(total, idx, f.intensity)
                 else:
-                    total += np.interp(mz, f.mz, f.intensity, left=0.0, right=0.0)
+                    total += profile_on_axis(mz, f.mz, f.intensity)
         rt = float(np.mean([f.rt for f in frames]))
+        meta = {"n_frames": len(frames), "rt_range": (frames[0].rt, frames[-1].rt),
+                "frames": list(frames)}
         return Spectrum(mz, total.astype(np.float32), rt, ref.polarity, 1, "sum", -1, ref.is_profile,
-                        {"n_frames": len(frames), "rt_range": (frames[0].rt, frames[-1].rt)})
+                        meta)
 
 
 # ---------------------------------------------------------------- deconvolution results
@@ -154,6 +169,9 @@ class Component:
     #: fitted coefficient of every (charge, adduct-state label) envelope; used to decide whether
     #: a weaker component's envelopes are already explained by a stronger one
     columns: dict[tuple[int, str], float] = field(default_factory=dict, repr=False)
+    #: the shift (ln mass) that aligns the class's isotope pattern with this species' resolved
+    #: isotopologues; its templates are built at mass * exp(template_shift)
+    template_shift: float = 0.0
 
     @property
     def charge_range(self) -> tuple[int, int]:

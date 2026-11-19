@@ -34,7 +34,7 @@ it, and a species whose strongest charge states share their m/z windows with oth
 fail it - but every species here is lighter than 8 kDa, where it is informative.
 
     python scripts/validate_oligo_runs.py IPRPLC_NC_mix.raw IPHILIC_NC_mix.raw ... \
-        [--single-charge] [--model charge_net.onnx]
+        [--single-charge] [--model charge_net.onnx] [--coelution-r 0.5] [--comb-fill 0.33]
 """
 
 from __future__ import annotations
@@ -253,7 +253,20 @@ def main():
                     help="accept species seen at one charge state with resolved isotopes")
     ap.add_argument("--model", default=None,
                     help="charge network (.onnx) to use instead of the comb estimator")
+    ap.add_argument("--coelution-r", type=float, default=None,
+                    help="co-elution threshold of a species' charge states "
+                         "(deconvolution.coelution_r; 0 turns the test off)")
+    ap.add_argument("--comb-fill", type=float, default=None,
+                    help="share of the predicted isotopologue height a comb position needs "
+                         "(the decoder's default is 1/3; 0 asks only for signal above the noise)")
     args = ap.parse_args()
+    if args.comb_fill is not None:
+        import functools
+
+        from lcmsdeconv.deconv import decode
+
+        decode.isotopes_contradict_charge = functools.partial(decode.isotopes_contradict_charge,
+                                                              min_fill=args.comb_fill)
     totals = {"paper": [0, 0], "si": [0, 0]}
     kinds: dict[str, int] = {}
     n_reported = 0
@@ -261,6 +274,8 @@ def main():
         key = run_key(path)
         method = Method.load(args.method)
         method.deconvolution.single_charge = args.single_charge
+        if args.coelution_r is not None:
+            method.deconvolution.coelution_r = args.coelution_r
         run = read_thermo_raw(path)
         species = process_run(run, method, model_path=args.model).species
         top = max((s.total_intensity for s in species), default=1.0)

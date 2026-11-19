@@ -167,7 +167,8 @@ def _apply_oracle():
 
 
 def _isotopes_contradict_adjacent(mass, z, centre_mz, raw_mz, raw_int, thr, polarity,
-                                  compound_class, fwhm, min_populated=0.6, min_rel=0.3):
+                                  compound_class, fwhm, min_populated=0.6, min_rel=0.3,
+                                  height=0.0, min_fill=1.0 / 3.0):
     """decode.isotopes_contradict_charge, also requiring two adjacent populated positions."""
     from lcmsdeconv.chem.adducts import carrier_mass
     from lcmsdeconv.chem.classes import class_isotope_pattern
@@ -183,14 +184,15 @@ def _isotopes_contradict_adjacent(mass, z, centre_mz, raw_mz, raw_int, thr, pola
     carrier = carrier_mass(polarity)
     avg = float((pat.abundances * pat.masses).sum() / max(pat.abundances.sum(), 1e-300))
     iso_mz = (pat.masses[major] - avg + mass + z * carrier) / z
+    need = np.maximum(thr, min_fill * a[major] * max(height, 0.0))
     tol = max(0.5 * fwhm, 0.2 * spacing)
     best, best_adjacent = 0, False
     for shift in np.linspace(-0.5, 0.5, 11) * spacing:
         filled = []
-        for x in iso_mz + shift:
+        for x, level in zip(iso_mz + shift, need):
             lo = int(np.searchsorted(raw_mz, x - tol))
             hi = int(np.searchsorted(raw_mz, x + tol))
-            filled.append(bool(hi > lo and raw_int[lo:hi].max() > thr))
+            filled.append(bool(hi > lo and raw_int[lo:hi].max() > level))
         populated = sum(filled)
         adjacent = any(filled[i] and filled[i + 1] for i in range(len(filled) - 1))
         if populated > best or (populated == best and adjacent and not best_adjacent):
@@ -236,9 +238,9 @@ def apply_resample(mode: str) -> None:
         return out
 
     def to_grid(mz, intensity, polarity, step=2e-5, mz_max=10000.0, is_profile=True,
-                instrument=None):
+                instrument=None, frames=None):
         grid, observed, sigma = orig_to_grid(mz, intensity, polarity, step, mz_max, is_profile,
-                                             instrument)
+                                             instrument, frames=frames)
         hit = _FRAMES.get(id(mz))
         if hit is None or hit[0] is not mz or is_profile is False:
             return grid, observed, sigma

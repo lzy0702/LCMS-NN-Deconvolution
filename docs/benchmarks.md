@@ -17,15 +17,33 @@ below that, two charge states cannot be confirmed above shot noise by any method
 
 | Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
-| comb estimator | protein_tof | 34 % (10/29) | 100 % (8/8) | 25 % (1/4) | 0 % (0/2) | 6.7 |
-| comb estimator | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
-| comb estimator | polymer | 40 % (12/30) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
-| oracle (perfect) | protein_tof | 75 % (12/16) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 7.2 |
-| oracle (perfect) | oligo_iprp | 71 % (12/17) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 1.8 |
-| oracle (perfect) | polymer | 60 % (12/20) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
-| oracle, 20 % of envelopes mislabelled | protein_tof | 62 % (10/16) | 88 % (7/8) | 50 % (2/4) | 0 % (0/2) | 9.6 |
-| oracle, 20 % of envelopes mislabelled | oligo_iprp | 67 % (12/18) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 1.8 |
-| oracle, 20 % of envelopes mislabelled | polymer | 60 % (12/20) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| comb estimator | protein_tof | 69 % (11/16) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 7.2 |
+| comb estimator | oligo_iprp | 33 % (14/42) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 1.4 |
+| comb estimator | polymer | 64 % (14/22) | 100 % (8/8) | 100 % (5/5) | 33 % (1/3) | 0.6 |
+| oracle (perfect) | protein_tof | 86 % (12/14) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 9.2 |
+| oracle (perfect) | oligo_iprp | 50 % (14/28) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 1.4 |
+| oracle (perfect) | polymer | 65 % (15/23) | 100 % (8/8) | 100 % (5/5) | 33 % (1/3) | 0.8 |
+| oracle, 20 % of envelopes mislabelled | protein_tof | 86 % (12/14) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 9.1 |
+| oracle, 20 % of envelopes mislabelled | oligo_iprp | 48 % (14/29) | 88 % (7/8) | 57 % (4/7) | 33 % (2/6) | 1.4 |
+| oracle, 20 % of envelopes mislabelled | polymer | 65 % (15/23) | 100 % (8/8) | 100 % (5/5) | 33 % (1/3) | 0.8 |
+| comb, before the resampling fix | protein_tof | 34 % (10/29) | 100 % (8/8) | 25 % (1/4) | 0 % (0/2) | 6.7 |
+| comb, before the resampling fix | oligo_iprp | 28 % (11/40) | 88 % (7/8) | 43 % (3/7) | 17 % (1/6) | 2.1 |
+| comb, before the resampling fix | polymer | 40 % (12/30) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| oracle, before the resampling fix | protein_tof | 75 % (12/16) | 100 % (8/8) | 50 % (2/4) | 0 % (0/2) | 7.2 |
+| oracle, before the resampling fix | oligo_iprp | 71 % (12/17) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 1.8 |
+| oracle, before the resampling fix | polymer | 60 % (12/20) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+| 20 % mislabelled, before the fix | protein_tof | 62 % (10/16) | 88 % (7/8) | 50 % (2/4) | 0 % (0/2) | 9.6 |
+| 20 % mislabelled, before the fix | oligo_iprp | 67 % (12/18) | 88 % (7/8) | 43 % (3/7) | 33 % (2/6) | 1.8 |
+| 20 % mislabelled, before the fix | polymer | 60 % (12/20) | 88 % (7/8) | 80 % (4/5) | 33 % (1/3) | 0.8 |
+
+The synthetic runs are thresholded too (each scan keeps three points either side of every point
+above a fixed level), so the resampling fix and the recalibration it needed
+(`lessons.md`, section 14) change them as well: with the comb, precision rose for every preset
+and the 1-10 % tier is found more often (1/4 to 3/4 for proteins). With perfect charges the
+oligonucleotide preset now reports 28 species against 17. The additional ones are weak forms of
+a main species that the inflated noise estimate used to hide: adduct combinations 220-410 Da
+above it (two HFIP and a sodium is +358 Da), which the decoder's adduct merge, knowing multiples
+of one adduct type only, does not recognize, and shoulders a few daltons from it.
 
 The same runs with the decoder this package had before the changes in `lessons.md` (with the
 generator's elution-profile fix and one-to-one scoring applied to it):
@@ -49,6 +67,9 @@ generator's elution-profile fix and one-to-one scoring applied to it):
 | after | protein_tof | 11 % (6/53) | 50 % (4/8) | 33 % (2/6) | 17.6 |
 | after | oligo_iprp | 14 % (8/57) | 75 % (6/8) | 20 % (1/5) | 2.4 |
 | after | polymer | 33 % (10/30) | 88 % (7/8) | 60 % (3/5) | 1.0 |
+| now (resampling fixed) | protein_tof | 11 % (6/55) | 50 % (4/8) | 33 % (2/6) | 9.4 |
+| now (resampling fixed) | oligo_iprp | 17 % (9/52) | 75 % (6/8) | 40 % (2/5) | 6.0 |
+| now (resampling fixed) | polymer | 45 % (13/29) | 100 % (8/8) | 100 % (5/5) | 0.8 |
 
 ### Orbitrap regime
 
@@ -62,12 +83,14 @@ are also read from resolved isotope spacing. Until that was measured the preset 
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | before the truth table | 30 000-63 000 | 13 % (12/94) | 88 % (7/8) | 57 % (4/7) | 17 % (1/6) | 0 % (0/2) | 4.1 |
 | after it | 30 000-63 000 | 14 % (14/99) | 88 % (7/8) | 71 % (5/7) | 17 % (1/6) | 50 % (1/2) | 8.0 |
-| now | 120 000-160 000 | 30 % (14/47) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 50 % (1/2) | 2.8 |
+| at the real resolving power | 120 000-160 000 | 30 % (14/47) | 100 % (8/8) | 57 % (4/7) | 17 % (1/6) | 50 % (1/2) | 2.8 |
+| now (resampling fixed) | 120 000-160 000 | 38 % (17/45) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 100 % (2/2) | 2.4 |
 
-At the real resolving power precision is in line with the time-of-flight presets and the mass
-error a third of what it was: of 33 false species, 5 are adduct-shifted copies, 2 mass errors
-and 26 unexplained. `single_charge: true` changes nothing here: the generator gives every
-species several charge states, unlike ion-pairing HILIC on the real runs.
+At the real resolving power precision is in line with the time-of-flight presets and the mass error
+a third of what it was: of 33 false species, 5 were adduct-shifted copies, 2 mass errors and 26
+unexplained (before the resampling fix; now 5, 0 and 23 of 28). `single_charge: true` changes
+nothing here: the generator gives every species several charge states, unlike ion-pairing HILIC on
+the real runs.
 
 #### Isotope-spacing charges
 
@@ -92,7 +115,8 @@ be a multiple of it, restores the per-bin accuracy - and costs real species:
 | kept up to z = 8 | 0.31 / 0.41 | 0.63 / 0.78 | 11 / 20, 3 / 29 | 33 | 5 |
 
 (Per bin: the share of z >= 2 ion bins read right, weighted by log-SNR / by intensity, 16
-spectra per resolving power, scored as in the per-bin table of the next section.) The
+spectra per resolving power, scored as in the per-bin table of the next section. Measured before
+the resampling fix.) The
 2z guard loses PO-NC, PO, DA-NC (the comb's strongest report in the IP-HILIC NC run) and a
 2.56 kDa shortmer reported at 40 %; adding 3z also loses the full-length product of the IP-HILIC
 GalNAc run. On the 2·10⁻⁵ grid no peak is taken to be narrower than two bins, so at m/z 1700
@@ -124,19 +148,24 @@ answer and the decoder casts no vote), by intensity, and by intensity pooled ove
 
 | Spectra | Charge assignment | z >= 2, log-SNR | z >= 2, intensity | z >= 2, pooled | z = 1 | z = 2-5 | z = 6-15 | z = 16-40 | z > 40 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| time-of-flight | comb | 0.65 | 0.84 | 0.86 | 0.06 | 0.55 | 0.79 | 0.80 | 0.71 |
+| time-of-flight | comb | 0.65 | 0.84 | 0.86 | 0.06 | 0.55 | 0.79 | 0.81 | 0.70 |
 | time-of-flight | LadderNet, z = 1 ignored | 0.88 | 0.95 | 0.94 | 0.15 | 0.74 | 0.98 | 0.96 | 0.88 |
 | time-of-flight | LadderNet, z = 1 dropped | 0.90 | 0.96 | 0.94 | 0.00 | 0.79 | 0.98 | 0.97 | 0.89 |
 | time-of-flight | LadderNet, stage 2, dense background | 0.80 | 0.91 | 0.93 | 0.79 | 0.67 | 0.96 | 0.93 | 0.85 |
 | time-of-flight | LadderNet, corrected mixture, z = 1 ignored | 0.89 | 0.95 | 0.93 | 0.00 | 0.80 | 0.98 | 0.95 | 0.88 |
 | time-of-flight | LadderNet, corrected mixture, stage 2 | 0.81 | 0.91 | 0.93 | 0.21 | 0.73 | 0.95 | 0.90 | 0.84 |
-| Orbitrap | comb | 0.36 | 0.43 | 0.26 | 0.62 | 0.56 | 0.34 | 0.00 | - |
-| Orbitrap | comb without isotope charges | 0.57 | 0.77 | 0.95 | 0.02 | 0.68 | 0.85 | 0.94 | - |
+| Orbitrap | comb | 0.35 | 0.42 | 0.30 | 0.65 | 0.57 | 0.34 | 0.00 | - |
+| Orbitrap | comb without isotope charges | 0.51 | 0.73 | 0.95 | 0.02 | 0.68 | 0.80 | 0.91 | - |
 | Orbitrap | LadderNet, z = 1 ignored | 0.83 | 0.92 | 0.95 | 0.24 | 0.87 | 0.94 | 0.96 | - |
 | Orbitrap | LadderNet, z = 1 dropped | 0.87 | 0.94 | 0.95 | 0.00 | 0.90 | 0.96 | 0.95 | - |
 | Orbitrap | LadderNet, stage 2, dense background | 0.70 | 0.86 | 0.96 | 0.89 | 0.78 | 0.86 | 0.79 | - |
 | Orbitrap | LadderNet, corrected mixture, z = 1 ignored | 0.87 | 0.95 | 0.97 | 0.00 | 0.92 | 0.96 | 0.93 | - |
 | Orbitrap | LadderNet, corrected mixture, stage 2 | 0.73 | 0.87 | 0.95 | 0.30 | 0.81 | 0.85 | 0.69 | - |
+
+The comb rows are measured with the resampling fixed (before it: time-of-flight 0.65, 0.84,
+0.86 at z >= 2, Orbitrap 0.36, 0.43, 0.26 and 0.57, 0.77, 0.95 without isotope charges); the
+network rows were measured before it, with networks trained on the old grid views, and are not
+re-measured until the networks are retrained.
 
 The networks read weak ions far better than the comb (log-SNR weighting) and most of each
 spectrum's intensity better too; pooled over spectra they lead at z >= 2 as a whole, but on
@@ -144,7 +173,7 @@ time-of-flight data the comb reads the low charges of the strongest spectra bett
 pooled: 0.87 against 0.70-0.74): a network reads 32 768-bin windows, which cannot hold the
 nearest neighbours of a doubly charged ion (34 657 bins away at z = 1, 20 273 at z = 3), while
 the comb reads the whole spectrum. On these Orbitrap spectra the isotope-spacing charges make the
-comb worse per bin (0.43 against 0.77 without them), yet on the real runs they find five more of
+comb worse per bin (0.42 against 0.73 without them), yet on the real runs they find five more of
 the paper's species ("Isotope-spacing charges" above). The second stage 2 learned singly
 charged ions far less than the first (0.21-0.30 against 0.79-0.89 at z = 1) in its six short
 epochs. Two earlier versions of this table were biased: the first ran the comb on the crop only,
@@ -153,7 +182,8 @@ drew each spectrum's mixture component and its resolving power from the same ran
 that each component covered a narrow slice of its range (the Orbitrap spectra 49 000-54 000);
 training had also printed the comb's answer in feature channel 3, computed inside the crop, as
 the bar to beat. Independent reviews caught all three. The same benchmark as above, with the
-network in place of the comb (`--predictor model.onnx`):
+network in place of the comb (`--predictor model.onnx`), all rows measured before the resampling
+fix (the comb's current rows are in the first table of this section):
 
 | Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -263,19 +293,46 @@ strongest charge states share their m/z windows with other signal can fail it.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | original, comb | 2 / 20 | 0 / 29 | 87 | 0 | 0 | 47 | 38 |
 | before the truth table, comb | 9 / 20 | 4 / 29 | 27 | 2 | 2 | 8 | 2 |
-| now, comb | 13 / 20 | 5 / 29 | 39 | 4 | 2 | 8 | 7 |
-| now, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 9 | 3 | 21 | 19 |
-| now, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 2 | 13 | 28 |
-| now, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 2 | 14 | 22 |
-| now, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 2 | 12 | 20 |
-| now, LadderNet stage 1, corrected mixture | 12 / 20 | 5 / 29 | 62 | 5 | 2 | 14 | 24 |
-| now, LadderNet stage 2, corrected mixture | 12 / 20 | 4 / 29 | 61 | 4 | 2 | 12 | 27 |
+| before the resampling fix, comb | 13 / 20 | 5 / 29 | 39 | 4 | 2 | 8 | 7 |
+| before the fix, comb, `single_charge: true` | 15 / 20 | 7 / 29 | 74 | 9 | 3 | 21 | 19 |
+| before the fix, LadderNet stage 1, z = 1 ignored | 12 / 20 | 4 / 29 | 64 | 5 | 2 | 13 | 28 |
+| before the fix, LadderNet stage 1, z = 1 dropped | 12 / 20 | 5 / 29 | 60 | 5 | 2 | 14 | 22 |
+| before the fix, LadderNet stage 2, dense background | 12 / 20 | 4 / 29 | 55 | 5 | 2 | 12 | 20 |
+| before the fix, LadderNet stage 1, corrected mixture | 12 / 20 | 5 / 29 | 62 | 5 | 2 | 14 | 24 |
+| before the fix, LadderNet stage 2, corrected mixture | 12 / 20 | 4 / 29 | 61 | 4 | 2 | 12 | 27 |
+| **now, comb** | **15 / 20** | **15 / 29** | **198** | **21** | **4** | **100** | **43** |
+| now, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
 
-(The "now" rows use the extracted-ion check described above; the two earlier rows were scored
-with its first version.)
+(Every row but the first two uses the extracted-ion check described above; those two were scored
+with its first version. "Now" is after the resampling fix and the recalibration it needed,
+`lessons.md`, section 14; the LadderNets were trained before it and are not re-measured.)
 
-No report of any variant is a charge harmonic (half, a third, double or triple a found species'
-mass at its time), which the scoring now checks for before the extracted-ion test.
+Before the fix no report of any variant was a charge harmonic (half, a third, double or triple a
+found species' mass at its time), which the scoring checks for before the extracted-ion test;
+now none of the default's is, and one with `single_charge: true`.
+
+With the resampling fixed and nothing else changed the comb found 15/20 and 10/29 among 400
+reports, 222 of them unconfirmed: the decoder's tests had been tuned on a noise estimate 40-180
+times too high. Scaling the corrected noise back up 3-100-fold traded the species found for
+false ones without a clean operating point (277 reports at 3-fold, 45 at 100-fold with 12/20 and
+8/29). What the current defaults use instead - isotopes of the predicted size and co-eluting
+charge states (`architecture.md`, section 3) - and how much each contributes:
+
+(`validate_oligo_runs.py --coelution-r R --comb-fill F`.)
+
+| Setting | Paper's species | SI-listed | Reported | EIC-confirmed | Unconfirmed |
+| --- | --- | --- | --- | --- | --- |
+| defaults: comb positions filled to 1/3, charge states co-eluting at r >= 0.5 | 15 / 20 | 15 / 29 | 198 | 100 | 43 |
+| co-elution r >= 0.3 | 15 / 20 | 16 / 29 | 227 | 106 | 62 |
+| co-elution r >= 0.7 | 15 / 20 | 14 / 29 | 178 | 98 | 27 |
+| no co-elution test (`coelution_r: 0`) | 15 / 20 | 16 / 29 | 253 | 104 | 86 |
+| comb positions filled to 0.2 | 15 / 20 | 15 / 29 | 201 | 101 | 45 |
+| comb positions filled to 0.5 | 14 / 20 | 14 / 29 | 187 | 97 | 37 |
+| comb positions only above the noise (as before) | 14 / 20 | 15 / 29 | 290 | 137 | 97 |
+
+The co-elution threshold trades SI-listed impurities against unconfirmed reports; 0.5 keeps all
+the paper's species. Its "unconfirmed" column is not independent of it: the extracted-ion check
+also asks two charge states to co-vary (r >= 0.7 over its own windows).
 
 The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the same
 species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity under NC at
@@ -298,17 +355,53 @@ of the SI-listed impurities missed by every variant are small fragments (1.2-3.8
 66 of the original code's 87 reports were heavier than 8 kDa, which nothing in these samples is
 (the largest is n+1 at 7139 Da): singly charged background in the column wash read as charge
 ladders. 47 of its reports pass the extracted-ion check, which shows how weak that check is for
-such ladders. No report of the current code is heavier than 8 kDa.
+such ladders. The corrected resampling brought dozens of them back (9-22 kDa, in the IP-RPLC
+wash, up to 15 % of the main species) until the isotope comb asked for peaks of the predicted
+size; one report of the current code is heavier than 8 kDa (9.4 kDa at 0.015 %, EIC-confirmed).
 
 Found species and their mass errors against the theoretical average masses, current defaults
 (comb):
 
 | Run | Species found (error, Da) | Missed |
 | --- | --- | --- |
-| IP-RPLC, conjugate | FLP (+0.06), n-1 (+0.03), n+1 (+0.10), NC (+0.01), PO (-0.21) | - |
-| IP-RPLC, NC | NC (+0.02), PO-NC (-0.03), n-1 (-0.03), n-2 (+0.14) | - |
-| IP-HILIC, NC | NC (+0.11), DA-NC (-0.01), PO-NC (+0.02) | n-1, n-2 |
-| IP-HILIC, conjugate | FLP (+0.06) | n-1, DA, PO, n+1, NC |
+| IP-RPLC, conjugate | FLP (+0.11), PO (+0.02), n+1 (+0.06), n-1 (+0.00), NC (+0.03) | - |
+| IP-RPLC, NC | NC (+0.03), PO-NC (+0.02), n-1 (-0.01) | n-2 |
+| IP-HILIC, NC | NC (+0.01), DA-NC (-0.03), PO-NC (-0.01) | n-1, n-2 |
+| IP-HILIC, conjugate | FLP (+0.02), n-1 (+0.03), PO (+0.08), n+1 (+0.03) | DA, NC |
+
+Before the resampling fix the IP-HILIC conjugate run found FLP alone and IP-RPLC NC found n-2
+(0.01 %). That n-2 is now detected in its region but lost when it is linked across scans: its
+per-scan amounts are dominated by one scan in which another ion falls under its template, and a
+one-scan trace is rejected as noise.
+
+Amounts, as a share of the run's main species, against the extracted-ion area of each species
+(charge states 3-8, +-1.2 Da / z, within 0.4 min of its apex) - a rough reference, but one that
+does not depend on the decoder:
+
+| Run | Species | Extracted-ion area | Before the fix | Now |
+| --- | --- | --- | --- | --- |
+| IP-RPLC, conjugate | PO | 3.4 % | 0.01 % | 4.1 % |
+| IP-RPLC, conjugate | n+1 | 3.3 % | 2.6 % | 2.8 % |
+| IP-RPLC, conjugate | n-1 | 1.7 % | 1.4 % | 1.9 % |
+| IP-RPLC, conjugate | NC | 1.8 % | 0.9 % | 1.8 % |
+| IP-RPLC, NC | PO-NC | 3.1 % | 0.18 % | 3.5 % |
+| IP-RPLC, NC | n-1 | 2.1 % | 4.3 % | 2.2 % |
+| IP-RPLC, NC | NC - dG | 0.8 % | 1.6 % | 1.0 % |
+| IP-RPLC, NC | 4512.6 | 0.23 % | 0.26 % | 0.13 % |
+| IP-HILIC, conjugate | n-1 | 3.0 % | not found | 6.2 % |
+| IP-HILIC, conjugate | PO | 3.6 % | not found | 2.7 % |
+| IP-HILIC, conjugate | n+1 | 7.9 % | not found | 5.6 % |
+| IP-HILIC, NC | PO-NC | 2.5 % | 44 % | 0.8 % |
+| IP-HILIC, NC | NC - dG | 0.7 % | not found | 1.2 % |
+| IP-HILIC, NC | 2887.4 | 1.7 % | 20 % | 1.0 % |
+| IP-HILIC, NC | 3847.4 | 0.6 % | not found | 0.3 % |
+
+(Before the fix the IP-HILIC NC run's strongest report was its 2 % deaminated impurity, with NC
+at 46 % of it; the shares above are against NC. Now NC is the strongest and DA-NC is at 7 %.)
+Under IP-RPLC the amounts agree with the extracted-ion areas to within about 25 % (the 0.2 %
+impurity at 4512.6 Da excepted); under
+IP-HILIC, where the impurities carry one dominant charge state and sit close to stronger
+species, to within a factor of two to three.
 
 The paper's tentative n-1 of the NC product (4832.56 Da, "loss of dG") lies 329.3 Da below
 NC: one deoxyadenosine phosphorothioate (4832.98 Da by composition) or one deoxyguanosine
@@ -322,23 +415,19 @@ masses look 0.1-0.5 Da high.
 
 What is still wrong on these runs:
 
-- The resampling of vendor-thresholded profiles distorts the spectra the pipeline deconvolves:
-  `resample_profile` lets the edge point of every thresholded segment stand for half the gap beside
-  it, and `Run.sum_frames` interpolates every scan onto the axis of the scan with most points,
-  filling its own gaps with ramps, which together raise the noise estimate of a region's grid view
-  40-180-fold (`docs/iwsp_transformer.md`, section 2). Patched in-process, the pipeline finds
-  IP-HILIC GalNAc's n-1 and PO at default settings and reports NC above DA-NC in IP-HILIC NC (DA-NC
-  at 11 % of NC), so the first two items below are at least partly resampling artefacts; but the
-  same patches report about four times as many species, because the decoder's thresholds were set on
-  the distorted input. The fix needs a recalibration pass and retrained networks.
-- IP-HILIC conjugate run: with triethylammonium acetate the impurities carry essentially one
-  charge state (z = 4) above the noise, which the two-charge-state rule rejects;
-  `deconvolution.single_charge: true` recovers n-1 and PO. n+1 is still missed, NC elutes where
-  the TIC shows no band so no region is formed, and DA (one dalton above FLP, eluting 0.4 min
-  before it) is absorbed by the FLP template, whose trace then peaks at the region's edge.
-- Abundances next to a strong species are unreliable: PO under FLP in IP-RPLC is reported at
-  0.01 % against about 5 % by extracted-ion chromatogram, and in the IP-HILIC NC run the main
-  species is reported at 46 % of its own 2 % deaminated impurity.
+- More reports than the extracted-ion check confirms: 43 unconfirmed against 7 before the resampling
+  fix, nearly all below 0.1 % of the main species. Some are real: three species 177-277 Da above FLP
+  in the IP-HILIC conjugate run, co-eluting with it at 1.3-2.6 %, carry one dominant charge state,
+  which the check cannot confirm, and their extracted-ion areas (1.9-3.3 %) are close to the amounts
+  reported. `single_charge: true`, which found two more paper species before the fix, now finds one
+  more SI-listed impurity and adds 94 unconfirmed reports; it stays off.
+- IP-HILIC conjugate run: n-1, PO and n+1 are found at default settings now (their weaker
+  second charge state is visible once scans are resampled correctly). NC elutes where the TIC
+  shows no band, so no region is formed, and DA (one dalton above FLP, eluting 0.4 min before it)
+  is absorbed by the FLP template, whose trace then peaks at the region's edge.
+- Amounts depend on templates matching each species' resolved isotopologues; they are aligned
+  per species, but a species whose isotopologues overlap a stronger one's still shares
+  intensity with it (PO-NC under IP-HILIC at a third of its extracted-ion area).
 - A +201.4 Da form co-elutes with every major species, strongest under IP-RPLC (8 % of NC by
   extracted-ion chromatogram); the paper does not mention it. It is reported as separate
   species. Its mass matches tributylamine N-oxide (C12H27NO, 201.35 Da), an oxidation product of

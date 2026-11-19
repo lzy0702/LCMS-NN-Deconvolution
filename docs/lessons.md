@@ -400,3 +400,52 @@ background read as z = 2-3. What it shows:
 No model is shipped and the comb remains the default. A trained network replaces it only when
 it finds at least what the comb finds on the four real runs without adding reports.
 
+
+## 14. Read vendor-thresholded data as what it is
+
+Instrument software writes profile scans thresholded: short segments around peaks, the noise
+between them removed. Two shortcuts in the resampling read the gaps as signal. Resampling gave
+a segment's edge point half the gap beside it as its width (up to thousands of grid bins), and
+region sums interpolated every scan onto the axis of the scan with most points, ramping across
+each scan's own gaps and dropping what lay off that axis. On the real Orbitrap runs the two
+raised the noise estimate of a region's grid view 40-180-fold. The fix is local - a sample stands
+for its own spacing next to a gap, and a region's grid view is the sum of its scans resampled one
+by one - but everything downstream had been tuned on the inflated noise, and four things it had
+hidden came out at once:
+
+1. **Above the noise of thresholded data almost everything is signal.** Thermo's own per-peak
+   noise (`opentfraw`'s label data) puts the threshold at about 1.6 times the noise and the
+   median written peak at about three: what the decoder sees above the corrected noise is real,
+   mostly low-level ions. With the corrected noise the envelope gate passed ten times as many
+   candidates (39 to 468 in one run) and the pipeline reported 400 species instead of 39. No
+   noise threshold separated them: scaling the noise back up 3-100-fold traded the new species
+   found for false ones without a clean operating point. What separates a species from a ladder
+   of unrelated ions is physics the noise had stood in for: isotopes of the right size (a comb
+   position needs a third of the height the pattern predicts, not just signal) and charge states
+   that co-elute over the region's scans (Pearson r >= 0.5). The first removed the dozens of
+   9-22 kDa column-wash "species", the second most of the rest.
+2. **Weighting a fit by each bin's own value biases strong species low.** With the noise floor
+   40-180 times too high the least-squares weights were nearly flat. Corrected, they followed
+   each bin's own intensity, and a template a fraction of a bin off its peaks was scaled to a
+   fifth of the main species' envelope while impurities kept most of theirs (Neyman's
+   chi-square bias). The variance is now taken from the local maximum over one peak width.
+3. **A class's average composition misplaces resolved isotopologues.** The `ps_rna` pattern
+   puts the real runs' 5 kDa product's isotopologues 0.11 Da high: one grid bin at charge four,
+   which no least-squares fit absorbs (plain least squares too scales such a template to a third
+   of the peaks). Templates are now slid onto the resolved isotopologues before the fit; the
+   reported mass is unaffected.
+4. **Adduct ladders of neighbours coincide.** The PS-to-PO impurity plus potassium is the main
+   species plus sodium to 0.07 Da; once the corrected noise let the potassium adduct be
+   evidenced, the impurity's adduct column took the main species' sodium adduct. Such a column
+   now goes to the stronger species.
+
+With all four, the comb finds 15/20 of the paper's species and 15/29 SI-listed impurities on the
+real runs (13/20 and 5/29 before), with impurity amounts within about 25 % of their extracted-ion
+areas under IP-RPLC and a factor of two to three under IP-HILIC (the main IP-RPLC impurity was at
+0.2 % against 3 %, and IP-HILIC's main species at half its 2 % impurity), at the cost of more
+reports no extracted-ion check confirms (43 against 7, most below 0.1 % of the main species, some
+single-charge-state species the check cannot confirm). Synthetic precision rose for every preset.
+The lesson is the one of section 3 from the other side: a threshold tuned on a distorted input
+encodes the distortion, and fixing the input means re-deriving every test that leaned on it - which
+here meant replacing a noise threshold with the physics it had been standing in for. Networks
+trained before the fix saw the distorted grid views and must be retrained.

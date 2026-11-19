@@ -31,9 +31,25 @@ The default grid spans m/z 50 to 10 000 with a step of 2e-5 (about 266 000 bins,
 a constant resolving power near 50 000). In practice the grid is narrowed to the measured m/z
 range of each spectrum, which cuts inference time without changing results.
 
-Resampling preserves peak shape: the raw axis is usually denser than the grid, so bins are
-averaged rather than summed, and gaps between raw samples are interpolated. Centroided input
-takes a different path and is placed on the grid with the instrument line shape.
+Resampling preserves peak shape and area: each raw sample stands for its own slice of the axis,
+so where the raw axis is denser than the grid a bin is the mean of its samples. Vendor software
+writes profile scans thresholded, as short segments around peaks separated by gaps of up to
+thousands of bins; a segment's edge sample stands for its own spacing, never for half of the gap
+beside it, and nothing is written into the gaps (`core.profile.sample_widths`; a gap is a spacing
+more than three times the running median of 33 spacings). A region's spectrum is the sum of its
+scans resampled one by one, because on the union of many scans' axes a gap can no longer be told
+from the spacing; its raw-point view, which the gates below read, is the scans interpolated
+within their own segments onto that union and added (`Run.sum_frames`). Centroided input takes a
+different path and is placed on the grid with the instrument line shape.
+
+The noise level is estimated from the grid spectrum (median absolute deviation of first
+differences over its lower intensities). Thresholded data hold almost no noise: what is written
+is signal, most of it real low-level ions. Above that noise level the decoder therefore asks
+more than "is there signal here" - whether isotopes have the right sizes and whether charge
+states co-elute (section 3). An earlier resampling let every segment's edge point stand for half
+the gap beside it and interpolated each scan onto another scan's axis, ramping across its own
+gaps; that raised the noise estimate of real Orbitrap regions 40-180-fold, and the decoder's
+thresholds had been tuned on it (`benchmarks.md`).
 
 ## 2. The charge network
 
@@ -103,6 +119,19 @@ small mass offset); singly charged background read at z = 30 populates one or tw
 positions per dalton, and a z = 3 envelope read as its own dimer at z = 6 populates half of them.
 Where the spacing is not resolved, an envelope much wider than one peak must appear as a
 continuous hump in profile data rather than as a few narrow peaks of a low-charge species.
+
+On vendor-thresholded data some ion stands above the noise near almost every position, so a
+comb position counts as populated only by a peak of at least a third of the height the isotope
+pattern predicts there, given the envelope's height where the mean shift found it. A charge
+ladder assembled from one strong low-charge ion and whatever weak signal lies at the other
+positions - the column wash of the real runs produced dozens of 9-22 kDa "species" that way -
+fails it. And when the spectrum is a region's sum, the charge states of the deciding cluster
+must co-elute (`coelution_r`, `deconv.coelution`): the scan-by-scan intensity in each one's
+envelope core must correlate with the strongest one's at Pearson r >= 0.5. A state that does not
+is another ion under this species' window and leaves the cluster, which must still hold two
+charge states. The test abstains when the strongest state carries signal in fewer than four
+scans. The charge states of one molecule are the same molecules at different m/z; a ladder of
+unrelated ions follows as many elution profiles as it has members.
 A further step drops candidates separated from a stronger one by an adduct delta, because the
 stronger candidate's adduct columns will account for them.
 
@@ -127,13 +156,27 @@ it gains and costs on real runs).
 Candidates are fitted greedily, strongest first, against the residual. For one candidate the
 design matrix has a column per (charge, adduct state); the fit is non-negative least squares
 weighted by `1/sqrt(I + sigma^2)`, which is the Poisson-appropriate weighting and is what makes
-components at 0.01 % of the total ion current visible next to a saturating main peak.
+components at 0.01 % of the total ion current visible next to a saturating main peak. `I` is the
+largest observed value within one peak width (at least two bins) of the bin, not the bin's own
+value: weighting each bin by its own value (Neyman's chi-square) lets a template that sits a
+fraction of a bin off its peaks be scaled far down, because the flank bins it over-predicts are
+small and weigh a lot. On the real runs that fitted the main species to a fifth of its envelope
+while impurities kept 60-80 % of theirs.
+
+On isotope-resolved data a compound class's average composition places the isotopologues of a
+particular molecule up to 0.1-0.2 Da from where they are (0.11 Da for the non-conjugated product
+of the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is
+fitted, its templates are slid together by up to 1.5 bins onto the spectrum and the shift with
+the largest normalized overlap is kept (`refine.align_template`; only where the instrument
+resolves the isotopes of the candidate's central charge). The shift moves the templates, not the
+reported mass, which is measured from the raw envelopes as below.
 
 Each candidate is fitted over every charge state the spectrum shows for it, not only over the
-charges that voted for it: starting from that band, charges are added outward while an envelope
-is observed where the species would put it. A charge map that misreads part of a species'
-envelope otherwise leaves those charge states in the residual, where they are later explained
-as separate, false species.
+charges that voted for it: starting from that band, charges are added outward while an envelope is
+observed where the species would put it - above the noise, with its isotope comb filled in
+proportion where the isotopes are resolved, and co-eluting with the starting band. A charge map that
+misreads part of a species' envelope otherwise leaves those charge states in the residual, where
+they are later explained as separate, false species.
 
 Detection uses only the base state — an adducted envelope still shows its base envelope — and the
 full adduct combination set is fitted only for components that pass the gates. Only adduct types
@@ -146,11 +189,14 @@ most of the same charge states with at least half the height, and only if the sa
 then explains more of the spectrum. Accepted components are subtracted from the residual before
 the next candidate is fitted.
 
-After all passes, a component is dropped when at least 80 % of its fitted intensity lies within
-two envelope widths of a stronger column of a stronger component (explaining away by shared
-evidence). A charge misassignment reads a strong envelope as another mass whose envelopes sit on
-the strong one's; a genuine weak species sits between them, and a real dimer keeps its odd charge
-states.
+After all passes, a component is dropped when at least 80 % of its fitted intensity lies within two
+envelope widths of a stronger column of a stronger component (explaining away by shared evidence).
+An adduct column of a weaker component whose mass (species plus adduct) lies within 0.5 Da of a
+stronger component plus any adduct state of the method's list, evidenced or not, is removed from it:
+the PS-to-PO impurity plus potassium is the main species plus sodium to within 0.07 Da, and fitted
+to the impurity that column carried the main species' sodium adduct into the impurity's amount. A
+charge misassignment reads a strong envelope as another mass whose envelopes sit on the strong
+one's; a genuine weak species sits between them, and a real dimer keeps its odd charge states.
 
 The mass is then measured from the raw spectrum rather than the grid, which quantizes at about
 20 ppm. Each fitted charge state's envelope is located by the same envelope-wide mean shift and
@@ -160,16 +206,15 @@ carrying most of the fitted intensity gives the mass and its spread.
 
 ## 5. Across retention time
 
-Deconvolution runs on the summed spectrum of each chromatographic region, where the signal-to-
-noise ratio is highest. Regions are built around peaks of the TIC that stand ten times above the
-trace's noise (relative floors of 0.2 % of the tallest peak's height and 0.05 % of the total area
-only remove ripple); neighbouring peaks are split at their valley, and only peaks whose apexes
-are closer than their widths share a region. The components it finds define a template bank — one column per
-component and adduct state, with the charge distribution baked in — and every frame in the
-region is then quantified by a small non-negative least-squares solve against that bank. This
-gives a deconvolved extracted-ion chromatogram per species at full time resolution, and shows
-how each adduct's share changes across the peak, without paying for a full deconvolution per
-frame.
+Deconvolution runs on the summed spectrum of each chromatographic region, where the signal-to-noise
+ratio is highest. Regions are built around peaks of the TIC that stand ten times above the trace's
+noise (relative floors of 0.2 % of the tallest peak's height and 0.05 % of the total area only
+remove ripple); neighbouring peaks are split at their valley, and only peaks whose apexes are closer
+than their widths share a region. The components it finds define a template bank — one column per
+component and adduct state, with the charge distribution baked in — and every frame in the region is
+then quantified by a small non-negative least-squares solve against that bank. This gives a
+deconvolved extracted-ion chromatogram per species at full time resolution, and shows how each
+adduct's share changes across the peak, without paying for a full deconvolution per frame.
 
 Components are then linked across frames by mass, giving species. A species whose trace stays
 within a third of its maximum at both ends - judged with one region width of quantified frames on
@@ -199,7 +244,8 @@ analyte than the source can ionise. Both raise warnings that name the affected p
 | `chem/` | elements, formulas, isotope patterns, compound classes, adducts, modifications, instrument response |
 | `synth/` | synthetic compounds, impurities, charge and adduct distributions, rendering, labels, whole runs |
 | `nn/` | grid, featurization, model, losses, training, ONNX export, inference |
-| `deconv/` | templates, mass-histogram decoding, NNLS refinement, per-spectrum pipeline |
+| `core/` | data model (spectra, runs, results), methods, vendor-thresholded profiles (`profile.py`) |
+| `deconv/` | templates, mass-histogram decoding, co-elution of charge states, NNLS refinement, per-spectrum pipeline |
 | `diagnostics.py` | charge oracles, one-to-one scoring, loss and false-species attribution |
 | `features/` | regions, per-frame quantification, retention-time linking, annotation |
 | `chrom/` | integration events and the integrator |

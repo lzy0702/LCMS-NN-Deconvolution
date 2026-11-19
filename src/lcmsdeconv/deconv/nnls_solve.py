@@ -14,6 +14,26 @@ from scipy.linalg import LinAlgError, cholesky, solve_triangular
 from scipy.optimize import nnls
 
 
+def fit_weights(observed: np.ndarray, noise_sigma: float, grid_step: float = 2e-5,
+                resolution: float = 30000.0) -> np.ndarray:
+    """Least-squares weights of a grid spectrum: one over the standard deviation of each bin.
+
+    A bin's variance is its expected signal (shot noise) plus the noise floor. The expected
+    signal is taken as the largest observed value within one peak width (at least two bins) to
+    either side, not as the bin's own value: a template whose peak sits a fraction of a bin off
+    the data, or is a little narrower, predicts more than is observed in a peak's flank bins,
+    and weighting those by their own small values pulls every strong species' coefficient down
+    (Neyman's chi-square bias) - to a fifth of the envelope on real Orbitrap data once the
+    noise floor stopped hiding it - while weak species, nearer the floor, keep theirs.
+    """
+    from scipy.ndimage import maximum_filter1d
+
+    y = np.clip(np.asarray(observed, dtype=float), 0.0, None)
+    half = max(2, int(np.ceil(1.0 / (max(resolution, 1.0) * max(grid_step, 1e-12)))))
+    local = maximum_filter1d(y, size=2 * half + 1, mode="constant") if y.size else y
+    return 1.0 / np.sqrt(local + noise_sigma ** 2 + 1e-9)
+
+
 def weighted_nnls(A: np.ndarray, b: np.ndarray, w: np.ndarray | None = None,
                   ridge: float = 1e-10, maxiter_factor: int = 10) -> np.ndarray:
     """Solve ``min ||W(Ax - b)||`` subject to ``x >= 0``.

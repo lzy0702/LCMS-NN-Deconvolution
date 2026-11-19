@@ -89,6 +89,11 @@ class DeconvSettings:
     #: HILIC leaves at one charge state) but added about 16 reports no extracted-ion check
     #: could confirm; see docs/benchmarks.md
     single_charge: bool = False
+    #: the charge states of a species must co-elute over the scans of a region: the Pearson
+    #: correlation of their scan-by-scan intensity traces at least this (0 = no test). Above
+    #: the noise of vendor-thresholded data this, not the noise threshold, is what tells a
+    #: species from a charge ladder assembled from other ions; see docs/benchmarks.md
+    coelution_r: float = 0.5
     refine_iterations: int = 2
     nn_probability_min: int | float = 0.05
     min_charge_support: int = 2
