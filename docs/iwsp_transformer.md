@@ -340,8 +340,8 @@ top2_p and apex on every active bin of 128 synthetic spectra (64 time-of-flight,
 calls of the four real runs (150 773 active bins, both detection passes), whose species tables
 come out identical. It has not yet run as a network built from the layer library; that is the
 first test of stage 0. It takes about three times the comb's time on dense synthetic spectra
-(0.33 s against 0.11 s) and a fifth to a third of it on real regions (median 0.007-0.014 s against
-0.043-0.047 s per call). Its weakness on Orbitrap data is the override (section 3). This is the
+(0.33 s against 0.11 s) and about a fifth of it on real regions (per-call medians 0.007-0.017 s
+against 0.042-0.047 s over two reruns). Its weakness on Orbitrap data is the override (section 3). This is the
 starting point of the search, as the untrained LadderNet is the comb.
 
 ### 4.4 Charge-map circuits
@@ -390,7 +390,7 @@ are proposals, not yet built.
   the *consistent* charge (z ± k on a rung, z on an isotopologue) rather than its raw s, with
   values min(logit, s). A partner then counts only if it is itself plausible at that charge, and
   the weak flank isotopologues of an envelope inherit its charge instead of falling back to
-  ladder answers - which is how a decision margin loses PO-NC and DA-NC (C2).
+  ladder answers, one way a decision margin can lose weak species (C2's lost PO-NC and DA-NC).
 
 ### 4.5 Species circuits
 
@@ -497,8 +497,8 @@ Written as dense matrices, every co-elution-gated head repeats one constant acro
 channels of query and key - tens of thousands of non-zero weights that say one thing each - which
 is why the rules count formulas and constants and cap non-zero weights at 50 000. LadderNet has
 9 500-22 000 trained parameters. Version 0 takes 0.04-0.06 s per 48-scan tile on one core, about
-the comb's time (0.05-0.06 s); the generic softmax-pointer ladder of `pointer_attention.py` takes
-1.4-2.6 s on the same tiles because it evaluates every bin with signal at Z_max = 60. The gated
+the comb's time (0.05-0.07 s); the generic softmax-pointer ladder of `pointer_attention.py` takes
+1.4-2.9 s on the same tiles because it evaluates every bin with signal at Z_max = 60. The gated
 version is not timed: its co-elution reads add about 1.3e8 multiply-adds per tile (11 000 active
 bins x 40 charges x 6 rungs x 48 scans), an estimated well under a second against the limit of
 5 s per tile. Memory, estimated: about 35 MB of channels per tile and 40 MB in flight per gated
