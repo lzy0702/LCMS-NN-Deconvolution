@@ -529,11 +529,14 @@ def cmd_wash(tl: Tiles, args) -> None:
 
 
 def cmd_gaps(tl: Tiles, args) -> None:
-    """How vendor thresholding meets the package's resample_profile: in the scan nearest each
-    --at, and in the sum of the scans within +-0.55 min of it as the pipeline forms region sums
-    (Run.sum_frames: every scan interpolated onto the m/z axis of the one with most points), the
-    points whose width 0.5 (u[i+1] - u[i-1]) exceeds three median spacings, and their share of
-    what resample_profile puts on the grid (intensity x width)."""
+    """How vendor thresholding met the package's resample_profile before commit 820bd97: in the
+    scan nearest each --at, and in the sum of the scans within +-0.55 min of it as the pipeline
+    then formed region sums (every scan interpolated onto the m/z axis of the one with most
+    points), the points whose width 0.5 (u[i+1] - u[i-1]) exceeds three median spacings, and
+    their share of what that resampling put on the grid (intensity x width). The widths are
+    computed here as the old code computed them; the "package" noise level comes from the
+    package as installed, so on the fixed package it no longer reproduces the design's numbers
+    (run on commit e79e0ad for that)."""
     def widths(mz):
         u = tl.grid.mz_to_u(mz)
         du = np.empty_like(u)

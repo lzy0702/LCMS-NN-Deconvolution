@@ -31,9 +31,13 @@ def frame_grid(cfg, fs):
     raw = fs.meta.get("raw")
     if raw is None:
         return None
+    from ..synth.frames import scan_spectra
     from .grid import spectrum_to_grid
 
-    return spectrum_to_grid(raw[0], raw[1], cfg.polarity, cfg.grid_step, cfg.grid_mz_max, True)
+    scans = fs.meta.get("scans")
+    frames = scan_spectra(scans, cfg.polarity) if scans else None
+    return spectrum_to_grid(raw[0], raw[1], cfg.polarity, cfg.grid_step, cfg.grid_mz_max, True,
+                            frames=frames)
 
 
 def pipeline_comb(meta: dict, z_max: int = 60, isotope_charges: bool | None = None):

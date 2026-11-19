@@ -10,16 +10,22 @@ from lcmsdeconv.synth.frames import generate_frame
 
 
 def test_training_features_equal_inference_features():
-    """Same summed spectrum, same grid, same noise estimate, same features."""
+    """The frame's scans summed as a region's are and gridded as deconvolve_spectrum grids them:
+    same grid, same noise estimate, same features."""
+    from lcmsdeconv.core.model import Run
+    from lcmsdeconv.synth.frames import scan_spectra
+
     for polarity, classes, mode in ((1, [ClassConfig("peptide", (8000.0, 30000.0))], "rplc"),
                                     (-1, [ClassConfig("ps_rna", (4000.0, 12000.0))], "iprp")):
         cfg = SynthConfig(classes=classes, mode=mode, polarity=polarity, crop_size=8192)
         for seed in (0, 1):
             fs = generate_frame(cfg, np.random.default_rng(seed))
-            mz, inten = fs.meta["raw"]
-            grid, observed, sigma = spectrum_to_grid(mz, inten, polarity, cfg.grid_step,
-                                                     cfg.grid_mz_max)
-            assert sigma == fs.meta["noise_sigma"]
+            scans = [s for s in scan_spectra(fs.meta["scans"], polarity) if s.mz.size]
+            summed = Run(scans).sum_frames(scans)
+            grid, observed, sigma = spectrum_to_grid(summed.mz, summed.intensity, polarity,
+                                                     cfg.grid_step, cfg.grid_mz_max, True,
+                                                     frames=summed.meta["frames"])
+            assert np.isclose(sigma, fs.meta["noise_sigma"], rtol=1e-9)
             window = np.zeros(cfg.crop_size)
             seg = observed[fs.b0:fs.b0 + cfg.crop_size]
             window[:seg.size] = seg

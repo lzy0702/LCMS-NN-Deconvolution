@@ -181,9 +181,14 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
 
     mz = np.asarray(mz, dtype=float)
     intensity = np.asarray(intensity, dtype=float)
-    if mz.size:
-        lo = max(50.0, float(mz.min()) * 0.995)
-        hi = min(mz_max, float(mz.max()) * 1.005)
+    # the measured range: the scans' own when they are given, so that the grid does not depend
+    # on how their axes were merged for the summed spectrum
+    span = [np.asarray(f.mz, dtype=float) for f in frames if np.size(f.mz)] if frames else []
+    if not span and mz.size:
+        span = [mz]
+    if span:
+        lo = max(50.0, min(float(a.min()) for a in span) * 0.995)
+        hi = min(mz_max, max(float(a.max()) for a in span) * 1.005)
     else:
         lo, hi = 50.0, mz_max
     if hi <= lo * 1.01:

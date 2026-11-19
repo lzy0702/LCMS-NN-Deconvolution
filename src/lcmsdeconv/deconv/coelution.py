@@ -45,6 +45,14 @@ class FrameStack:
     def __len__(self) -> int:
         return len(self.mz)
 
+    def spacing(self, lo: float, hi: float) -> float | None:
+        """The scans' own point spacing (m/z) within [lo, hi], the median over the scans that
+        have points there (:func:`lcmsdeconv.core.profile.scan_spacing`), or None."""
+        from ..core.profile import scan_spacing
+
+        vals = [v for v in (scan_spacing(mz, lo, hi) for mz in self.mz) if v is not None and v > 0]
+        return float(np.median(vals)) if vals else None
+
     def traces(self, centres, halves) -> np.ndarray:
         """Summed intensity within ``centre +- half`` in every scan: shape (windows, scans)."""
         c = np.atleast_1d(np.asarray(centres, dtype=float))

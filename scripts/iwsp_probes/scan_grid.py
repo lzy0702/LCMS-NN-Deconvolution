@@ -2,15 +2,17 @@
 
 Vendor software writes thresholded profiles: only the points near peaks survive, so a scan is a
 set of short segments separated by gaps of up to thousands of bins. ``LogMzGrid.resample_profile``
-gives every sample the width 0.5 (u[i+1] - u[i-1]); a segment's edge point then represents half
-the gap beside it and lands in one bin multiplied by up to that many bins (2 938 in scan 379 of
-the IP-RPLC GalNAc run). ``resample_scan`` gives each sample the smaller of its two neighbour
+gave every sample the width 0.5 (u[i+1] - u[i-1]) until commit 820bd97; a segment's edge point
+then represented half the gap beside it and landed in one bin multiplied by up to that many bins
+(2 938 in scan 379 of the IP-RPLC GalNAc run). ``resample_scan`` gives each sample the smaller of its two neighbour
 spacings, at most three times the scan's median spacing, so a segment's edges weigh what its
 interior points do and an isolated point weighs at most three ordinary ones. For dense data both
 rules agree.
 
-The probes resample every scan with this function. The package's pipeline still uses
-``resample_profile`` on its region sums (docs/iwsp_transformer.md, section 2).
+The probes resample every scan with this function. When they were run, the package's pipeline
+used that ``resample_profile`` on its region sums (docs/iwsp_transformer.md, section 2); it has
+since been fixed (``lcmsdeconv.core.profile``, docs/lessons.md section 14), and its region grid
+views are now sums of per-scan resamplings.
 """
 
 from __future__ import annotations

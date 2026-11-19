@@ -401,7 +401,7 @@ def isotope_charge_unique(mass: float, z: int, centre_mz: float, raw_mz: np.ndar
 
 def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarray,
                            raw_int: np.ndarray, fwhm: float, min_coverage: float = 0.35,
-                           rel_level: float = 0.2) -> bool:
+                           rel_level: float = 0.2, spacing: float | None = None) -> bool:
     """True when an envelope that should be a continuous hump is a few separate spikes.
 
     An envelope whose isotopes the instrument cannot separate, and which is much wider than one
@@ -410,6 +410,10 @@ def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarr
     ``min_coverage`` of that interval, the "envelope" is made of narrow peaks belonging to
     something else - typically the resolved isotopes of a low-charge species, read at a high
     charge as a much heavier one.
+
+    A spacing of more than three of the scans' own point spacings is a gap. ``spacing`` gives
+    that spacing; without it, it is read off ``raw_mz``, which is right for one scan but not for
+    the union of scans calibrated one by one, whose points fall several to a scan spacing.
     """
     if half_width < 3.0 * fwhm:
         return False  # a single peak is the whole envelope: nothing to test
@@ -423,7 +427,9 @@ def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarr
     if level <= 0:
         return True
     dx = np.diff(x)
-    gap = 3.0 * float(np.median(dx)) if dx.size else 0.0
+    own = spacing if spacing is not None and spacing > 0 else (
+        float(np.median(dx)) if dx.size else 0.0)
+    gap = 3.0 * own
     above = (y[:-1] >= level) & (y[1:] >= level) & (dx <= max(gap, 1e-12))
     return float(dx[above].sum()) < min_coverage * 2.0 * half_width
 
@@ -540,9 +546,11 @@ def refine_candidate_masses(
             if isotopes_contradict_charge(m, z, pos, raw_mz, raw_int, thr, polarity,
                                           compound_class, fwhm, height=core):
                 continue
-            if (profile and ISOTOPE_SPACING / z < 2.0 * fwhm
-                    and envelope_discontinuous(pos, env_sigma / z, raw_mz, raw_int, fwhm)):
-                continue
+            if profile and ISOTOPE_SPACING / z < 2.0 * fwhm:
+                hw = env_sigma / z
+                own = frames.spacing(pos - hw, pos + hw) if frames is not None else None
+                if envelope_discontinuous(pos, hw, raw_mz, raw_int, fwhm, spacing=own):
+                    continue
             masses.append(m)
             weights.append(kw)
             matched_z.append(int(z))
