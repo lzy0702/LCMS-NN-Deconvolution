@@ -18,7 +18,14 @@ and scores the result with scripts/validate_oligo_runs.py's truth and scoring:
     snr       for each missed species, the signal-to-noise ratio of its strongest charge
               state's envelope in its region's summed spectrum and in 7 scans around it
 
---single-charge sets the method's ``single_charge: true`` for any of them.
+--single-charge sets the method's ``single_charge: true`` for any of them. --resample changes how
+spectra reach the grid (docs/iwsp_transformer.md, section 2):
+              pipeline   as the package does it: a region's scans summed on one scan's m/z axis,
+                         then resampled with each point standing for half the gap beside it
+              capped     every resampling uses scan_grid's widths (no point stands for a gap)
+              scans      capped, and a region's grid view is the sum of its scans each resampled
+                         onto the grid, instead of the resampled sum on one scan's axis (the
+                         decoder's raw-point checks still read the summed spectrum)
 
     python scripts/iwsp_probes/real_run_probes.py validate --rule oracle IPRPLC_*.raw IPHILIC_*.raw
 """
@@ -31,9 +38,11 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import validate_oligo_runs as vor  # noqa: E402
+from scan_grid import resample_scan  # noqa: E402
 
 from lcmsdeconv.chem.instrument import estimate_noise_sigma  # noqa: E402
 from lcmsdeconv.core.method import Method  # noqa: E402
@@ -198,6 +207,46 @@ def apply_rule(rule: str) -> None:
         decode.isotopes_contradict_charge = _isotopes_contradict_adjacent
 
 
+# ------------------------------------------------------------------------------- resampling
+#: summed region spectra by the id of their m/z array: (the array, its frames)
+_FRAMES: dict = {}
+
+
+def apply_resample(mode: str) -> None:
+    from lcmsdeconv.core.model import Run
+    from lcmsdeconv.deconv import pipeline as pipeline_mod
+    from lcmsdeconv.nn.grid import LogMzGrid
+
+    if mode == "pipeline":
+        return
+
+    def resample_capped(self, mz, intensity, centroided=None):
+        return resample_scan(self, mz, intensity)
+
+    LogMzGrid.resample_profile = resample_capped
+    if mode != "scans":
+        return
+    orig_sum, orig_to_grid = Run.sum_frames, pipeline_mod.spectrum_to_grid
+
+    def sum_frames(self, frames):
+        out = orig_sum(self, frames)
+        _FRAMES[id(out.mz)] = (out.mz, frames)
+        return out
+
+    def to_grid(mz, intensity, polarity, step=2e-5, mz_max=10000.0, is_profile=True,
+                instrument=None):
+        grid, observed, sigma = orig_to_grid(mz, intensity, polarity, step, mz_max, is_profile,
+                                             instrument)
+        hit = _FRAMES.get(id(mz))
+        if hit is None or hit[0] is not mz or is_profile is False:
+            return grid, observed, sigma
+        observed = sum(resample_scan(grid, f.mz, f.intensity) for f in hit[1])
+        return grid, observed, estimate_noise_sigma(observed)
+
+    Run.sum_frames = sum_frames
+    pipeline_mod.spectrum_to_grid = to_grid
+
+
 # ------------------------------------------------------------------------------- the probes
 def _missed(key, species):
     found = [(s.mass, s.rt_apex) for s in species]
@@ -263,6 +312,7 @@ def snr(paths, single_charge: bool) -> None:
     rows = []
     for path in paths:
         key = vor.run_key(path)
+        STATE["key"] = key
         run = read_thermo_raw(path)
         res = process_run(run, _method(single_charge))
         ms1 = [s for s in run.spectra if s.ms_level == 1]
@@ -275,8 +325,7 @@ def snr(paths, single_charge: bool) -> None:
 
         def g(j, ms1=ms1, grid=grid, cache=cache):
             if j not in cache:
-                cache[j] = grid.resample_profile(np.asarray(ms1[j].mz, float),
-                                                 np.asarray(ms1[j].intensity, float))
+                cache[j] = resample_scan(grid, ms1[j].mz, ms1[j].intensity)
             return cache[j]
 
         for name, masses, srt in _missed(key, res.species):
@@ -321,7 +370,9 @@ def main():
     ap.add_argument("raw", nargs="+", type=Path)
     ap.add_argument("--rule", default="comb", choices=("comb", "inrange", "oracle", "adjacent"))
     ap.add_argument("--single-charge", action="store_true")
+    ap.add_argument("--resample", default="pipeline", choices=("pipeline", "capped", "scans"))
     args = ap.parse_args()
+    apply_resample(args.resample)
     apply_rule(args.rule)
     if args.probe == "validate":
         orig_run_key = vor.run_key

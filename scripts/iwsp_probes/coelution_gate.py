@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import comb_transformer_v0 as v0  # noqa: E402
+from scan_grid import resample_scan  # noqa: E402
 
 import lcmsdeconv.deconv.classical as classical  # noqa: E402
 import lcmsdeconv.features.regions as regions  # noqa: E402
@@ -123,7 +124,7 @@ class Gated:
         for f in run.frames(reg.polarity):
             if reg.start - w <= f.rt <= reg.end + w:
                 k = int(np.clip(np.searchsorted(edges, f.rt, side="right") - 1, 0, 11))
-                P[k] += grid.resample_profile(f.mz, f.intensity)
+                P[k] += resample_scan(grid, f.mz, f.intensity)
         E = _unit_rows(P.T)
         self.cache = (key, E)
         return E

@@ -2,9 +2,10 @@
 inhibition, as a predictor with CombPredictor's interface (a prototype, not part of the package).
 
 Per active bin and charge z whose isotope spacing d (in bins) is resolved (d >= 3 peak widths
-and d >= 3 bins), reads of the log-SNR s at the isotopologue positions:
-    N1, N2, N3 = max(s(+kd), s(-kd)) for k = 1, 2, 3
-    H          = max(s(+-d/2), s(+-3d/2))   (the positions only a 2z reading has isotopologues at)
+and d >= 3 bins), reads of the log-SNR s at the isotopologue positions. The k-th position lies
+ln(1 + k 1.0033548 / M) / step bins away (M = z (m/z -+ m_p)), not k times the first spacing:
+    N1, N2, N3 = max(s(+k), s(-k)) for k = 1, 2, 3
+    H          = max(s(+-1/2), s(+-3/2))   (the positions only a 2z reading has isotopologues at)
     E(z) = min(s0, N1) + 1/2 min(s0, N2) + 1/4 min(s0, N3) - 2 H                    (C2)
     E(z) = min(s0, N1) + 1/2 min(s0, N2) + 1/4 min(s0, N3) - 2 relu(H - 0.5 N1)     (C2b)
 A read is the bin at the position, or the maximum over +-1 bin where the instrument's peak is
@@ -63,11 +64,13 @@ class IsoCircuit:
         wide_peak = fwhm_b > 1.0  # read the maximum over +-1 bin
         s1 = maximum_filter1d(s, 3, mode="constant")
 
-        def side(k, d):
+        def side(k, z):
             def read(x):
                 x = np.clip(np.round(x).astype(np.int64), 0, B - 1)
                 return np.where(wide_peak, s1[x], s[x])
-            return np.maximum(read(idx + k * d), read(idx - k * d))
+            up = np.log1p(k * ISO / z / off) / grid.step
+            down = np.log1p(-k * ISO / z / off) / grid.step
+            return np.maximum(read(idx + up), read(idx + down))
 
         s0 = s[idx]
         best = np.full(idx.size, -np.inf)
@@ -78,8 +81,8 @@ class IsoCircuit:
             res = (d >= self.res_factor * fwhm_b) & (d >= 3.0)
             if not res.any():
                 break
-            n1, n2, n3 = side(1.0, d), side(2.0, d), side(3.0, d)
-            h = np.maximum(side(0.5, d), side(1.5, d))
+            n1, n2, n3 = side(1.0, z), side(2.0, z), side(3.0, z)
+            h = np.maximum(side(0.5, z), side(1.5, z))
             inhibit = h if self.rel_inhib is None else np.maximum(h - self.rel_inhib * n1, 0.0)
             e = (self.w[0] * np.minimum(s0, n1) + self.w[1] * np.minimum(s0, n2)
                  + self.w[2] * np.minimum(s0, n3) - self.inhib * inhibit)
