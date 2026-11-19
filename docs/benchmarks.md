@@ -243,21 +243,21 @@ two are not scored. That leaves 20 species named in the paper and 29 SI-listed o
 impurities in two chromatographies, minus the ones above, plus a 4842 Da form the SI shows at
 12.75 min). A reported species matches within 1 Da and 0.35 min.
 
-**Other reports** are sorted into: forms of a found species (+Na, +K, their combinations, or
-the +201.4 Da form described below), charge harmonics of a found species, the same molecule at
-another retention time (within 0.3 Da), and the rest, which are "EIC-confirmed" when two of
-their charge states have extracted-ion chromatograms that peak within 0.25 min of the reported
-time (the highest point there, also the highest within 0.1 min either side, carried by three
-scans or more and three times the trace's median within 1.5 min), and the two strongest such
-charge states co-vary (r >= 0.7 within 0.6 min); "unconfirmed" otherwise. Each chromatogram is judged against its own surroundings; an earlier
-version divided it by its maximum over the whole run, so that a weak species whose m/z window
-also passes the injection peak or the column wash failed (an independent review found five of
-fifteen sequence-identified NC impurities rejected that way). On the four runs the check
-confirms 47 of the 51 tabulated species at their tabulated times and none of 240 random
-(mass, time) pairs (4 without the three-scan rule, which the same review asked for: vendor-
-thresholded traces are zero most of the time, and one stray scan shared by two windows passed). It is a consistency check, not truth: a false charge ladder made of
-co-eluting background can pass it, and a species whose strongest charge states share their m/z
-windows with other signal can fail it.
+**Other reports** are sorted into: forms of a found species (+Na, +K, their combinations, or the
++201.4 Da form described below), charge harmonics of a found species, the same molecule at another
+retention time (within 0.3 Da), and the rest, which are "EIC-confirmed" when two of their charge
+states have extracted-ion chromatograms that peak within 0.25 min of the reported time (the highest
+point there, also the highest within 0.1 min either side, carried by three scans or more and three
+times the trace's median within 1.5 min), and the two strongest such charge states co-vary (r >= 0.7
+within 0.6 min); "unconfirmed" otherwise. Each chromatogram is judged against its own surroundings;
+an earlier version divided it by its maximum over the whole run, so that a weak species whose m/z
+window also passes the injection peak or the column wash failed (an independent review found five of
+fifteen sequence-identified NC impurities rejected that way). On the four runs the check confirms 47
+of the 51 tabulated species at their tabulated times and none of 240 random (mass, time) pairs (4
+without the three-scan rule, which the same review asked for: vendor- thresholded traces are zero
+most of the time, and one stray scan shared by two windows passed). It is a consistency check, not
+truth: a false charge ladder made of co-eluting background can pass it, and a species whose
+strongest charge states share their m/z windows with other signal can fail it.
 
 | Code, charge assignment | Paper's species | SI-listed | Reported | Forms of found | Same molecule, other time | EIC-confirmed | Unconfirmed |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -277,23 +277,23 @@ with its first version.)
 No report of any variant is a charge harmonic (half, a third, double or triple a found species'
 mass at its time), which the scoring now checks for before the extracted-ion test.
 
-The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the
-same species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity
-under NC at 10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion chromatogram),
-and in the GalNAc mixture find NC's own 7..16 10-mer (3208.66 Da at 14.2 min, 0.13-0.17 %),
-which the comb misses; but they add 13-21 more unconfirmed reports, nearly all below 0.13 % of
-the strongest species, 1.3-3.9 kDa, in the IP-RPLC column wash: singly charged background read
-as z = 2-3. Stage 1 never penalises that reading. Stage 2 (z = 1 trained on, and with up to 200
-background ions per spectrum, `--background-ions 200`) brings the number down from 28 to 20: the
-remedy is in the right direction, and six CPU epochs are far from enough of it;
-`gpu_training/README.md` runs both stages on a GPU. Trained on the corrected mixture (Orbitrap
-spectra at the real runs' resolving power), stage 1 drops four of the column-wash reports (28 to
-24) and finds one more SI-listed impurity; the second stage 2 learned singly charged ions far
-less in its six short epochs (per-bin table) and kept 27. What remains is mostly one singly
-charged background ion, read as a 2640.8 Da species at five retention times. (These tables are after a fix to species linking that had shrunk the masses
-of tracks with vanishingly weak frames toward zero; it removed two to three junk reports from
-every variant.) Most of the SI-listed impurities missed by every variant are small
-fragments (1.2-3.8 kDa) eluting at 3-15 min.
+The LadderNet rows use the CPU-trained `proof` models of the synthetic section. They find the same
+species as the comb but one (a 0.01 % n-2 shortmer), and estimate the PS-to-PO impurity under NC at
+10 % of NC where the comb reports 0.2 % (about 5 % by extracted-ion chromatogram), and in the GalNAc
+mixture find NC's own 7..16 10-mer (3208.66 Da at 14.2 min, 0.13-0.17 %), which the comb misses; but
+they add 13-21 more unconfirmed reports, nearly all below 0.13 % of the strongest species, 1.3-3.9
+kDa, in the IP-RPLC column wash: singly charged background read as z = 2-3. Stage 1 never penalises
+that reading. Stage 2 (z = 1 trained on, and with up to 200 background ions per spectrum,
+`--background-ions 200`) brings the number down from 28 to 20: the remedy is in the right direction,
+and six CPU epochs are far from enough of it; `gpu_training/README.md` runs both stages on a GPU.
+Trained on the corrected mixture (Orbitrap spectra at the real runs' resolving power), stage 1 drops
+four of the column-wash reports (28 to 24) and finds one more SI-listed impurity; the second stage 2
+learned singly charged ions far less in its six short epochs (per-bin table) and kept 27. What
+remains is mostly one singly charged background ion, read as a 2640.8 Da species at five retention
+times. (These tables are after a fix to species linking that had shrunk the masses of tracks with
+vanishingly weak frames toward zero; it removed two to three junk reports from every variant.) Most
+of the SI-listed impurities missed by every variant are small fragments (1.2-3.8 kDa) eluting at
+3-15 min.
 
 66 of the original code's 87 reports were heavier than 8 kDa, which nothing in these samples is
 (the largest is n+1 at 7139 Da): singly charged background in the column wash read as charge
@@ -323,14 +323,14 @@ masses look 0.1-0.5 Da high.
 What is still wrong on these runs:
 
 - The resampling of vendor-thresholded profiles distorts the spectra the pipeline deconvolves:
-  `resample_profile` lets the edge point of every thresholded segment stand for half the gap
-  beside it, and `Run.sum_frames` interpolates every scan across the other scans' gaps, which
-  together raise the noise estimate of a region's grid view 40-180-fold
-  (`docs/iwsp_transformer.md`, section 2). Patched in-process, the pipeline finds IP-HILIC
-  GalNAc's n-1 and PO at default settings and reports NC above DA-NC in IP-HILIC NC (DA-NC at
-  11 % of NC), so the first two items below are at least partly resampling artefacts; but the
-  same patches report about four times as many species, because the decoder's thresholds were
-  set on the distorted input. The fix needs a recalibration pass and retrained networks.
+  `resample_profile` lets the edge point of every thresholded segment stand for half the gap beside
+  it, and `Run.sum_frames` interpolates every scan onto the axis of the scan with most points,
+  filling its own gaps with ramps, which together raise the noise estimate of a region's grid view
+  40-180-fold (`docs/iwsp_transformer.md`, section 2). Patched in-process, the pipeline finds
+  IP-HILIC GalNAc's n-1 and PO at default settings and reports NC above DA-NC in IP-HILIC NC (DA-NC
+  at 11 % of NC), so the first two items below are at least partly resampling artefacts; but the
+  same patches report about four times as many species, because the decoder's thresholds were set on
+  the distorted input. The fix needs a recalibration pass and retrained networks.
 - IP-HILIC conjugate run: with triethylammonium acetate the impurities carry essentially one
   charge state (z = 4) above the noise, which the two-charge-state rule rejects;
   `deconvolution.single_charge: true` recovers n-1 and PO. n+1 is still missed, NC elutes where
@@ -343,7 +343,8 @@ What is still wrong on these runs:
   extracted-ion chromatogram); the paper does not mention it. It is reported as separate
   species. Its mass matches tributylamine N-oxide (C12H27NO, 201.35 Da), an oxidation product of
   the IP-RPLC ion-pairing amine, but that is a guess.
-- NC re-elutes late in the IP-RPLC gradient and wash (20.9 and 27.2 min) and is reported each
-  time, as the same mass at another retention time.
+- NC re-elutes late in the IP-RPLC gradient and wash and is reported each time (at 20.9 and
+  27.2 min), as the same mass at another retention time; its extracted-ion peaks are at 25.4 and
+  27.7 min, at 0.1-1 % of its height, on a low hump from about 21 min.
 - Average masses are reported. For isotope-resolved data a monoisotopic pattern fit would also
   separate a deaminated form from its parent inside one envelope.
