@@ -146,7 +146,7 @@ must follow each trace rather than a window. Of the pipeline's unconfirmed repor
 (5 of 19 with `single_charge: true`), among them two envelopes next to FLP with six co-eluting
 isotopologues each - probably species the truth table does not list.
 
-**Written corrections, scored end to end.** Four rules were tried by hand, as the search would
+**Written corrections, scored end to end.** Five rules were tried by hand, as the search would
 try them (section 4.4 gives their circuits):
 
 | Rule | Per bin | Real runs: paper / SI / reported / unconfirmed |
@@ -296,8 +296,8 @@ Each is a handful of weights on top of version 0. Section 3 gives the measured o
   A neuron firing when only the even rungs (k = ±2) are filled marks a reading at twice the true
   charge.
 - **C3, singly charged background:** a z = 1 isotope reading (1.0034 Th apart: 125 grid bins at
-  m/z 400, 20 at m/z 2 500, resolved on Orbitrap and TOF alike) that beats every z >= 2 isotope reading
-  sends the bin to z = 1 and removes it from other bins' rungs (relu(s - 5 BG) as value).
+  m/z 400, 20 at m/z 2 500, resolved on Orbitrap and TOF alike) that beats every z >= 2 isotope
+  reading sends the bin to z = 1 and removes it from other bins' rungs (relu(s - 5 BG) as value).
 - **Co-elution gate:** a rung's score gains gamma (r_query . r_key + 2 w_query + 2 w_key), with the
   sink moved to gamma theta: an exact rung is read only if its trace correlates with the bin's
   (r > theta) or either bin is weak (w = 1 below S/N 15), because weak traces are noise. Shared
@@ -323,8 +323,8 @@ event tokens (4.1) the same circuits can assemble species tokens directly.
 - **Graded co-elution.** Every partner read of the species circuits is gated as in 4.4, but by
   intensity: no gate where the partner's summed S/N is 5 or less (weak traces are noise), a
   correlation above 0.5 required from S/N 30 (a species' own charge states: r = 0.93-1.00;
-  unrelated peaks: 90th percentile 0.22-0.36), linear in between. A hard persistence gate zeroed weak isotopologues
-  of real species in the first probe (section 3).
+  unrelated peaks: 90th percentile 0.22-0.36), linear in between. A hard persistence gate
+  zeroed weak isotopologues of real species in the first probe (section 3).
 - **Isotope-chain confirmation** (the single-charge acceptance). Sum heads at the isotopologue
   positions ±j 1.0034/z Th (j = 1, 2, 3) and at the half-spacing positions, co-elution gated,
   count co-eluting isotopologues (n_iso) and half-spacing peaks (n_half). The article's
@@ -350,8 +350,9 @@ event tokens (4.1) the same circuits can assemble species tokens directly.
 - **Near-isobaric partners** (DA, 0.984 Da above FLP). For a strong token's main envelope, two
   sum heads collect the light and heavy halves scan by scan; a one-sided drift of ln(heavy/light)
   over two consecutive strong scans proposes a partner at M + 0.984 Da with its apex, for the
-  template bank to separate - FLP and FLP + 0.984 Da templates correlate at 0.94, so only the
-  time profile separates them, and where they co-elute exactly (IP-RPLC) nothing can.
+  template bank to separate - the z = 4 envelopes of FLP and FLP + 0.984 Da correlate at 0.94 on
+  the grid (Gram condition number 34), so only the time profile separates them, and where they
+  co-elute exactly (IP-RPLC) nothing here can.
 - **Forms and other elutions (run level).** Heavier co-eluting partners at the method's adduct
   deltas (Na 21.982, K 37.956, the ion-pairing amines) are annotated as forms of the stronger
   parent; a heavier delta recurring beside three or more parents becomes a "co-eluting form
@@ -627,7 +628,7 @@ $1 000-1 500.
 - **Rules that help one regime hurt another** (the in-range mean; C2b at high charge). The reports
   split by kind and charge band so that this shows.
 - **Out of reach.** DA under FLP in IP-RPLC and DA-NC under NC co-elute less than one dalton
-  apart, with isotope patterns whose cosine is 0.96: that needs exact-formula pattern fits. The
+  apart, with z = 4 envelopes that correlate at 0.94: that needs exact-formula pattern fits. The
   PO abundance under FLP is an NNLS problem. The identity of the +201.4 Da form is chemistry. NC's
   re-elution reports are a linking problem.
 - **Time alignment.** The pipeline's apex can sit early (the 1 908 Da fragment: reported at 5.25
