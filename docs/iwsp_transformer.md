@@ -21,11 +21,12 @@ estimates are called estimates.
 - On the real runs the charge map is not what loses species. In FLP's tiles version 0 reads
   80-84 % of the known species' envelope intensity as z = 5 where it is z = 4 (it gets 10-15 %
   right) and the isotope filter C2b gets 98 % right, yet both find the same 13/20 paper and 5/29
-  SI-listed species; true charges inside every
-  known envelope find 13/20 and 6/29. The missed species are strong in correctly resampled sums (median S/N about 1 700) but
-  sit at a median of about 220, and as low as 8-16, in the view the package deconvolves; they
-  are also seen at one charge state, judged in a summed spectrum, or outside any TIC region. In the time-resolved data 23 of the 31 show three or more co-eluting isotopologues
-  and at most one co-eluting half-spacing peak; 1 of 240 random positions does (section 3).
+  SI-listed species; true charges inside every known envelope find 13/20 and 6/29. The missed
+  species are strong in correctly resampled sums (median S/N about 1 700) but sit at a median of
+  about 220, and as low as 8-16, in the view the package deconvolves; they are also seen at one
+  charge state, judged in a summed spectrum, or outside any TIC region. In the time-resolved data
+  23 of the 31 show three or more co-eluting isotopologues and at most one co-eluting
+  half-spacing peak; 1 of 240 random positions does (section 3).
 - How scans reach the grid matters. The package's resampling lets the edge point of every
   vendor-thresholded segment stand for half the gap beside it, and its region sums interpolate
   every scan across the others' gaps; together they raise the noise estimate of the spectra it
@@ -108,32 +109,32 @@ with each profile point's width capped as described below the table:
 | Later elutions | NC (IP-RPLC NC) returns at 25.4 min at 0.98 % of its apex height (0.63 % of its area) and at 27.7 min at 0.13 %; FLP does not return |
 | Co-eluting forms beside the paper species (trace correlation with the parent, height relative to it) | +201.4 Da: beside all nine IP-RPLC species, r = 0.89-1.00, 6-15 %; under IP-HILIC co-eluting only beside FLP (r = 0.95, 2.8 %). -16.06 Da (PS to PO): beside all five IP-RPLC GalNAc species, r = 0.79-0.97, 3-13 %. Na and K, where no stronger species shares the window: 1-5 % under IP-RPLC; Na 16-59 %, K 4-46 % under IP-HILIC |
 
-**Resampling.** The runs are vendor-thresholded: a scan is a set of short segments of profile
-points separated by gaps of up to thousands of bins. The package's `resample_profile` gives every
-point the width 0.5 (u[i+1] - u[i-1]), so a segment's edge point stands for half the gap beside
-it and lands in one bin multiplied by up to that many bins. In single scans 24-31 % of the points
-are wider than three median spacings (the widest 960-4 892 bins) and they carry 77-97 % of the
-resampled signal; in the pipeline's region sums 82-96 %. Those sums add a second distortion:
-`Run.sum_frames` interpolates every scan onto the m/z axis of the scan with most points, which
-fills each scan's gaps with ramps between its segment edges (4-21 % of the summed signal in five
-regions of the four runs) and drops signal off that axis. Together they make the noise estimate
-of the region's grid view 40-180 times that of the same scans resampled one by one and summed
-(the widths account for about 4-5 times), and leave 5-20 % of the summed points above the
-decoder's 3-sigma tests, against all of them in the per-scan sum. Every tile measurement of sections 2-4 instead gives
-each point the smaller of its two neighbour spacings, at most three median spacings
-(`scripts/iwsp_probes/scan_grid.py`), as do section 3's signal-to-noise and isotope-chain probes;
-the pipeline results of section 3 and the per-call figures of 4.1-4.3 (active bins, leakage,
-timings) come from the package as it runs.
-Patched in-process, the pipeline with capped widths, or with the grid view replaced by the
-per-scan sum, finds 13-14/20 paper and 9-10/29 SI-listed species but reports 154-158 species,
-52-55 of them unconfirmed, against 39 and 7. Neither patch is the fix: the first keeps the
-interpolated sum, the second leaves the decoder's raw-point checks reading it against the lower
-noise level, where 69-100 % of its points pass, so those counts come from a partly disabled
-envelope gate. The fix - per-scan grids summed, with the decoder's raw-point checks on the same
-input and its thresholds recalibrated - is a separate change (section 8); the design's tokenizer
-resamples this way from the start.
-(Measured with the distortion, an earlier version of this document took one- and two-scan
-events for a third of the comb's votes; they carry under 1 %.)
+**Resampling.** The runs are vendor-thresholded: a scan is a set of short segments of profile points
+separated by gaps of up to thousands of bins. The package's `resample_profile` gives every point the
+width 0.5 (u[i+1] - u[i-1]), so a segment's edge point stands for half the gap beside it and lands
+in one bin multiplied by up to that many bins. In single scans 24-31 % of the points are wider than
+three median spacings (the widest 960-4 892 bins) and they carry 77-97 % of the resampled signal; in
+the pipeline's region sums 82-96 %. Those sums add a second distortion: `Run.sum_frames`
+interpolates every scan onto the m/z axis of the scan with most points, which fills each scan's gaps
+with ramps between its segment edges (4-21 % of the summed signal in five regions of the four runs)
+and drops signal off that axis. Together they make the noise estimate of the region's grid view
+40-180 times that of the same scans resampled one by one and summed (the widths account for about
+4-5 times), and leave 5-20 % of the summed points above the decoder's 3-sigma tests, against all of
+them in the per-scan sum.
+
+Every tile measurement of sections 2-4 instead gives each point the smaller of its two neighbour
+spacings, at most three median spacings (`scripts/iwsp_probes/scan_grid.py`), as do section 3's
+signal-to-noise and isotope-chain probes; the pipeline results of section 3 and the per-call figures
+of 4.1-4.3 (active bins, leakage, timings) come from the package as it runs. Patched in-process, the
+pipeline with capped widths, or with the grid view replaced by the per-scan sum, finds 13-14/20
+paper and 9-10/29 SI-listed species but reports 154-158 species, 52-55 of them unconfirmed, against
+39 and 7. Neither patch is the fix: the first keeps the interpolated sum, the second leaves the
+decoder's raw-point checks reading it against the lower noise level, where 69-100 % of its points
+pass, so those counts come from a partly disabled envelope gate. The fix - per-scan grids summed,
+with the decoder's raw-point checks on the same input and its thresholds recalibrated - is a
+separate change (section 8); the design's tokenizer resamples this way from the start. (Measured
+with the distortion, an earlier version of this document took one- and two-scan events for a third
+of the comb's votes; they carry under 1 %.)
 
 Three things follow. Charges are decided by isotope spacing more than by the ladder: one or two
 charge states carry nearly all of a 5-7 kDa phosphorothioate's signal, its z = 1-2 rungs lie above
@@ -179,19 +180,19 @@ today, and with the oracle's charges and single charge states accepted:
 | Lost in the NNLS fit or after it (linking, flat or edge rules, one-to-one matching: DA one dalton from FLP) | 4 | 6 |
 | Missed in all | 31 | 25 |
 
-They are not weak in the data: resampled scan by scan, the strongest charge state of the
-in-region misses stands at a median signal-to-noise ratio of about 1 700 in the region's sum
-(about 900 in a 7-scan window around each). In the grid view the package deconvolves, the same
-windows give a median of about 220 (IQR 21-680), and 8-16 for the IP-HILIC GalNAc n-1, DA, PO and
-n+1, the run whose impurities the pipeline misses entirely: there the inflated noise estimate
-leaves their minor isotopologues below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC impurities seen mainly at z = 2-3 (the
-SI lists each fragment by one m/z and one charge), and the IP-HILIC GalNAc impurities at z = 4.
-Once charges and the charge count are no longer the barrier, the envelope gate is: under oracle
-charges with single charge states accepted, it rejects nine picked species (four IP-RPLC NC
-fragments, five IP-HILIC NC species), six of which pass the time-resolved test below. It judges an
-envelope in the summed spectrum, where other ions share the m/z window. What is missing is not
-charge accuracy but **time-resolved evidence that an envelope belongs to one eluting species**,
-and **regions where the TIC shows no band**.
+They are not weak in the data: resampled scan by scan, the strongest charge state of the in-region
+misses stands at a median signal-to-noise ratio of about 1 700 in the region's sum (about 900 in a
+7-scan window around each). In the grid view the package deconvolves, the same windows give a median
+of about 220 (IQR 21-680), and 8-16 for the IP-HILIC GalNAc n-1, DA, PO and n+1, the run whose
+impurities the pipeline misses entirely: there the inflated noise estimate leaves their minor
+isotopologues below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC impurities
+seen mainly at z = 2-3 (the SI lists each fragment by one m/z and one charge), and the IP-HILIC
+GalNAc impurities at z = 4. Once charges and the charge count are no longer the barrier, the
+envelope gate is: under oracle charges with single charge states accepted, it rejects nine picked
+species (four IP-RPLC NC fragments, five IP-HILIC NC species), six of which pass the time-resolved
+test below. It judges an envelope in the summed spectrum, where other ions share the m/z window.
+What is missing is not charge accuracy but **time-resolved evidence that an envelope belongs to one
+eluting species**, and **regions where the TIC shows no band**.
 
 **The evidence is in the traces.** A test of exactly that kind - in the 7 scans around the
 envelope's largest summed scan within ±0.3 min, with signal in at least 4 of them, three or more
@@ -350,17 +351,17 @@ these, and a new one enters only by proposal and audit (rule 10):
   elsewhere the confidences are best/(best + second + 1e-12) in float32; an apex neuron from two
   pointers at p ± 1 (a local maximum above 3 sigma).
 
-About 170 hand-set numbers plus a Z_max x 7 table of offsets and counts from one formula. As a
-numpy program in the exact limit of these heads - hard pointers, tent reads, comparisons in numpy
-where the network has step neurons - it matches `CombPredictor` in top1_z, top2_z, top1_p,
-top2_p and apex on every active bin of 128 synthetic spectra (64 time-of-flight, 64 Orbitrap at
-35 000-280 000; Z_max 40 and 60; 10.8 million active-bin evaluations) and of all 96 predictor
-calls of the four real runs (150 773 active bins, both detection passes), whose species tables
-come out identical. It has not yet run as a network built from the layer library; that is the
-first test of stage 0. It takes about three times the comb's time on dense synthetic spectra
-(0.33 s against 0.11 s) and a sixth to a third of it on real regions (per-call medians
-0.007-0.017 s against 0.042-0.047 s). Its weakness on Orbitrap data is the override (section 3). This is the
-starting point of the search, as the untrained LadderNet is the comb.
+About 170 hand-set numbers plus a Z_max x 7 table of offsets and counts from one formula. As a numpy
+program in the exact limit of these heads - hard pointers, tent reads, comparisons in numpy where
+the network has step neurons - it matches `CombPredictor` in top1_z, top2_z, top1_p, top2_p and apex
+on every active bin of 128 synthetic spectra (64 time-of-flight, 64 Orbitrap at 35 000-280 000;
+Z_max 40 and 60; 10.8 million active-bin evaluations) and of all 96 predictor calls of the four real
+runs (150 773 active bins, both detection passes), whose species tables come out identical. It has
+not yet run as a network built from the layer library; that is the first test of stage 0. It takes
+about three times the comb's time on dense synthetic spectra (0.33 s against 0.11 s) and a sixth to
+a third of it on real regions (per-call medians 0.007-0.017 s against 0.042-0.047 s). Its weakness
+on Orbitrap data is the override (section 3). This is the starting point of the search, as the
+untrained LadderNet is the comb.
 
 ### 4.4 Charge-map circuits
 
@@ -391,19 +392,19 @@ are proposals, not yet built.
   m/z 400, 20 at m/z 2 500) that beats every z >= 2 isotope reading sends the bin to z = 1 and
   removes it from other bins' rungs (relu(s - 5 BG) as value); 82-89 % of the strong broad wash
   peaks have such a partner.
-- **Co-elution gate:** each ladder pointer also reads the key's unit-length trace and weak flag
-  w (1 below S/N 15); a product unit forms r = r_query . r_key; a step neuron
-  g = [r + 2 w_query + 2 w_key > θ] gates the read through the select idiom. A blocked rung reads 0
-  and still counts in n_z. Version 0 is g = 1. Written as a term in the attention score instead,
-  the gate cannot be exact: with the sink moved to gamma θ, keys one bin off stay unread only for
-  gamma < beta/(5 - θ) (89 at beta = 400), and a softmax then still reads a rung at r = θ - 0.1
-  with weight e^-8.9 = 1.4e-4, far above the floor. One-scan events cannot be handled by θ: a
-  spike at an analyte's apex correlates with its trace at r ≈ √(2/PR), PR ≈ 1.5 FWHM in scans
-  (0.38 at FWHM 9 scans, 0.52 at 5, 0.67 at 3, the narrowest impurities here), so sparing
-  3-scan impurities from spikes would need θ above 0.7, which already cuts a strong species' own
-  outer states. Spikes are rejected by their one-scan shape (4.5) or the traces despiked first. The gate cuts a species' own outer states too: 5 of FLP's 14 z = 7
-  bins sit above the weak exemption at r <= 0.5, and half of NC's 8 strongest z = 6 bins (log-SNR
-  1.6-2.4) correlate at 0.40-0.46.
+- **Co-elution gate:** each ladder pointer also reads the key's unit-length trace and weak flag w (1
+  below S/N 15); a product unit forms r = r_query . r_key; a step neuron g = [r + 2 w_query + 2
+  w_key > θ] gates the read through the select idiom. A blocked rung reads 0 and still counts in
+  n_z. Version 0 is g = 1. Written as a term in the attention score instead, the gate cannot be
+  exact: with the sink moved to gamma θ, keys one bin off stay unread only for gamma < beta/(5 - θ)
+  (89 at beta = 400), and a softmax then still reads a rung at r = θ - 0.1 with weight e^-8.9 =
+  1.4e-4, far above the floor. One-scan events cannot be handled by θ: a spike at an analyte's apex
+  correlates with its trace at r ≈ √(2/PR), PR ≈ 1.5 FWHM in scans (0.38 at FWHM 9 scans, 0.52 at 5,
+  0.67 at 3, the narrowest impurities here), so sparing 3-scan impurities from spikes would need θ
+  above 0.7, which already cuts a strong species' own outer states. Spikes are rejected by their
+  one-scan shape (4.5) or the traces despiked first. The gate cuts a species' own outer states too:
+  5 of FLP's 14 z = 7 bins sit above the weak exemption at r <= 0.5, and half of NC's 8 strongest z
+  = 6 bins (log-SNR 1.6-2.4) correlate at 0.40-0.46.
 - **Flat-background veto:** a bin within a third of its maximum in both outer slots (the
   pipeline's own flat-species test, per bin) supports no rung and casts no ladder vote; its
   isotope reading still stands, so a flat multiply charged ion keeps an isotope-read charge.
@@ -715,13 +716,13 @@ adoption gate (section 7).
 ### 5.5 Runs, selection and budget
 
 Per fold, two Opus runs and one Sonnet run of 40 iterations, and in fold A the empty-file control:
-seven runs, about 280 evaluations at about 35 core-minutes each - about 20 hours on an 8-core
-CPU, about 41 on the 4-core development container. The RTX 4080 adds little: everything is numpy float64 and limited by
-memory gathers, and the card runs float64 at 1/64 of its float32 rate. A run without a visible
-gain of 0.01 in J, or of one species in R_real, by iteration 15 is stopped. After a plateau the
-remaining iterations may compress the model (fewer formulas at J within 0.005), as the article's
-algorithmic runs did once they reached 100 %; its NLP runs, which like this task have no exact
-solution, plateaued late and stayed near 190 000 parameters.
+seven runs, about 280 evaluations at about 35 core-minutes each - about 20 hours on an 8-core CPU,
+about 41 on the 4-core development container. The RTX 4080 adds little: everything is numpy float64
+and limited by memory gathers, and the card runs float64 at 1/64 of its float32 rate. A run without
+a visible gain of 0.01 in J, or of one species in R_real, by iteration 15 is stopped. After a
+plateau the remaining iterations may compress the model (fewer formulas at J within 0.005), as the
+article's algorithmic runs did once they reached 100 %; its NLP runs, which like this task have no
+exact solution, plateaued late and stayed near 190 000 parameters.
 
 Selection is pre-registered: from each fold's Opus runs, the smallest model (fewest formulas,
 then fewest non-zero weights) within 0.005 of the best visible J, scored on that fold's hidden
