@@ -26,7 +26,7 @@ four-run validation takes about 30 s.
 | `python scripts/iwsp_probes/pointer_attention.py check GALNAC` | the ladder part as softmax pointer heads (beta 200) with a sink, against the comb |
 | `python scripts/iwsp_probes/pointer_attention.py inrange` | the in-range ladder mean per bin on the 96-spectrum benchmark (3) |
 | `python scripts/iwsp_probes/real_run_probes.py validate RAW` | the reference: 13/20, 5/29, 39 reported, 7 unconfirmed (3) |
-| `... validate --resample capped RAW`, `... validate --resample scans RAW` | the pipeline with the resampling corrected in-process: 13-14/20, 9-10/29, 154-158 reported, 52-55 unconfirmed (2) |
+| `... validate --resample capped RAW`, `... validate --resample scans RAW` | the pipeline with its resampling patched in-process (not the fix: the envelope gate is largely disabled; section 2): 13-14/20, 9-10/29, 154-158 reported, 52-55 unconfirmed, and the changed amounts (2) |
 | `... validate --rule oracle RAW` (and `--single-charge`) | the charge oracle: 13/20 and 6/29 (16/20 and 8/29) (3) |
 | `... validate --single-charge RAW` | the comb accepting single charge states: 15/20, 7/29, 74, 19 (3) |
 | `... validate --rule inrange RAW` | the in-range ladder mean on the real runs (3) |
