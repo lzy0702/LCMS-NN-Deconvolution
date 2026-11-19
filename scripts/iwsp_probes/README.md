@@ -32,9 +32,9 @@ four-run validation takes about 30 s.
 | `... validate --rule inrange RAW` | the in-range ladder mean on the real runs (3) |
 | `... validate --rule adjacent RAW` (and `--single-charge`) | the adjacent-isotopologue condition in the decoder's isotope check (3) |
 | `... trace RAW`, `... trace --rule oracle --single-charge RAW` | where the missed species are lost; the nine envelope-gate rejections (3) |
-| `... snr RAW` | the missed species' signal-to-noise ratios (3) |
+| `... snr RAW` | the missed species' signal-to-noise ratios, resampled scan by scan and in the package's own view of the region (3) |
 | `python scripts/iwsp_probes/isotope_chains.py RAW` | the time-resolved isotope-chain test on known species, unconfirmed reports and random positions (3, 4.5) |
-| `python scripts/iwsp_probes/isotope_filter.py real --variant c2b RAW` (and `--variant c2`) | the isotope matched filter C2b (and C2: absolute half-spacing inhibition, margin s/4) on the real runs; per-run lines show the species C2 loses (3, 4.4) |
+| `python scripts/iwsp_probes/isotope_filter.py real --variant c2b RAW` (`--variant c2`, `--variant comb`) | the isotope matched filter C2b (and C2: absolute half-spacing inhibition, margin s/4) on the real runs, with the truth species each misses per run (3, 4.4) |
 | `python scripts/iwsp_probes/isotope_filter.py bins` | C2 and C2b per bin on the 96-spectrum benchmark (3) |
 | `python scripts/iwsp_probes/coelution_gate.py --theta 0.5 RAW` (0.3, 0.7) | the untuned co-elution gate on the real runs (3, 4.4) |
 | `python scripts/iwsp_probes/tile_statistics.py scans GALNAC --at 19.25 16.1 27.0 12.0`, `... scans NC --at 18.21 27.0 10.0`, `... scans HGALNAC --at 16.4`, `... scans HNC --at 13.41` | scan rate and signal bins per scan and per tile; version 0's and the comb's time on a tile (2, 4.7) |
@@ -48,7 +48,7 @@ four-run validation takes about 30 s.
 | `... pairs NC --scans 32 --at 18.21 27.0 10.0` | trace correlations of random peak pairs and of chance ladder pairs (2) |
 | `... wash GALNAC --scans 96 --at 27.0`, `... wash NC --scans 96 --at 27.0` | the column wash: breadth, z = 1 partners, apex spread, co-variation (2) |
 | `... reelution NC --species 5162.25@18.21`, `... reelution GALNAC --species 6793.98@19.21` | later elutions of NC and FLP (2) |
-| `... gaps GALNAC --at 19.29 27.0`, `... gaps NC --at 18.21` | points that stand for a gap under `resample_profile`, in scans and in the pipeline's region sums (2) |
+| `... gaps GALNAC --at 19.29 27.0`, `... gaps NC --at 18.21`, `... gaps HGALNAC --at 15.91`, `... gaps HNC --at 12.5` | points that stand for a gap under `resample_profile`, in scans and in the pipeline's region sums; the region sum's noise level three ways; the ramps `Run.sum_frames` interpolates across gaps (2) |
 | `... forms RUN` (each run) | the co-eluting +201.4 Da, Na, K and -16.06 Da forms of the paper species (2) |
 | `... events RUN` (each run) | elution-event tokens of a whole run and their one- or two-scan share (4.1) |
 

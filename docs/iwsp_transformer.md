@@ -18,18 +18,20 @@ estimates are called estimates.
   every field of `ChargePrediction` on every bin of 128 synthetic spectra and of all 96 predictor
   calls of the four real runs (section 4.3). That is version 0. Building it from the layer
   library and running it as a network is the first test of stage 0.
-- On the real runs the charge map is not what loses species. Version 0 reads FLP's main z = 4
-  envelope as z = 5 on 80-84 % of its intensity and the isotope filter C2b reads it right on
-  98 %, yet both find the same 13/20 paper and 5/29 SI-listed species; true charges inside every
-  known envelope find 13/20 and 6/29. The missed species are strong (median S/N about 1 700 in
-  their region's sum) but seen at one charge state, judged in a summed spectrum, or outside any
-  TIC region. In the time-resolved data 23 of the 31 show three or more co-eluting isotopologues
+- On the real runs the charge map is not what loses species. In FLP's tiles version 0 reads
+  80-84 % of the known species' envelope intensity as z = 5 where it is z = 4 (it gets 10-15 %
+  right) and the isotope filter C2b gets 98 % right, yet both find the same 13/20 paper and 5/29
+  SI-listed species; true charges inside every
+  known envelope find 13/20 and 6/29. The missed species are strong in correctly resampled sums (median S/N about 1 700) but
+  sit at a median of about 220, and as low as 8-16, in the view the package deconvolves; they
+  are also seen at one charge state, judged in a summed spectrum, or outside any TIC region. In the time-resolved data 23 of the 31 show three or more co-eluting isotopologues
   and at most one co-eluting half-spacing peak; 1 of 240 random positions does (section 3).
 - How scans reach the grid matters. The package's resampling lets the edge point of every
-  vendor-thresholded segment stand for half the gap beside it, and such points carry 82-94 % of
-  what the pipeline's region sums put on the grid. The measurements here resample each scan
-  correctly; corrected inside the pipeline, today's thresholds report four times as many
-  species, so the package fix needs its own recalibration (section 2).
+  vendor-thresholded segment stand for half the gap beside it, and its region sums interpolate
+  every scan across the others' gaps; together they raise the noise estimate of the spectra it
+  deconvolves 40-180-fold. The measurements here resample each scan correctly. Part of what the
+  pipeline loses, it loses to its own resampling; the fix is a separate change that needs the
+  decoder recalibrated (section 2).
 - The design has two parts on 48-scan tiles that cover the whole run: **charge-map circuits**
   that remove false reports (C2b keeps the comb's species with 5 instead of 7 unconfirmed
   reports - a variant chosen on all four runs), and **species circuits** that use the time axis -
@@ -94,14 +96,14 @@ with each profile point's width capped as described below the table:
 | --- | --- |
 | MS1 scans | IP-RPLC GalNAc run: 609 in 30 min (3.09 s each); IP-RPLC NC run: 692 (2.61 s); IP-HILIC runs: 589-592 in 23 min (2.33 s) |
 | Elution width (FWHM of a charge state's envelope trace) | main peaks: IP-RPLC FLP 9-11 scans (28-34 s), NC 7-10 (18-26 s); IP-HILIC FLP 5 (12 s), NC 6 (14 s). Impurities: IP-RPLC 3-6 scans (9-19 s), IP-HILIC 3-8 (7-19 s) |
-| Charge-state shares at the apex (envelope sums) | FLP: z = 4 carries 86 % under IP-RPLC (z = 4: 4.9e8; z = 3: 6.6e7; z = 5: 1.4e7; z = 6: 2.2e6; z = 7: 6.4e5) and 88 % under IP-HILIC. NC: z = 3 and z = 4 carry 43-58 % each, in all three runs that hold it |
+| Charge-state shares at the apex (envelope sums) | FLP: z = 4 carries 86 % under IP-RPLC (z = 4: 4.9e8; z = 3: 6.6e7; z = 5: 1.4e7; z = 6: 2.2e6; z = 7: 6.4e5) and 88 % under IP-HILIC. NC: z = 3 and z = 4 carry 42-58 % each in IP-RPLC GalNAc, IP-RPLC NC and IP-HILIC NC; 62/38 in IP-HILIC GalNAc, where NC is minor |
 | Grid bins with signal in one scan | GalNAc run: 1 600-3 900 (1.7-4.3 %); NC run: 800-1 800 (0.9-1.9 %) |
 | Grid bins with signal in a 24-scan tile (75 s), four GalNAc tiles | 9 600-13 300; 4 400-6 600 of them above three sigma of the summed spectrum ("active") |
-| Active bins with signal in at most 2 of the 24 scans | 30 % at FLP's apex, 3-5 % elsewhere; median summed intensity a third of the persistent bins' (FLP tile: 6.0e3 against 2.1e4); 0.1-0.7 % of the comb's mass-vote weight at z >= 2 |
+| Active bins with signal in at most 2 of the 24 scans | 30 % at FLP's apex, 3-5 % elsewhere; median summed intensity a quarter to a third of the persistent bins' (0.22-0.29; FLP tile: 6.0e3 against 2.1e4); 0.1-0.7 % of the comb's mass-vote weight at z >= 2 |
 | Where the comb's winning ladder evidence comes from (same tiles) | 77-94 % from persistent neighbours whose traces correlate below 0.5 with the bin's; 2-10 % from one- or two-scan neighbours |
-| Trace correlation of a species' own charge states | FLP against its z = 4 trace (medians): z = 3 0.96, z = 5 0.98, z = 6 0.85, z = 7 0.64; NC against its z = 4 trace (IP-RPLC NC, 8 strongest bins): z = 3 0.97-1.00, z = 5 0.88-0.95 |
+| Trace correlation of a species' own charge states | FLP against its z = 4 trace (medians): z = 3 0.96, z = 5 0.98, z = 6 0.85, z = 7 0.64; NC against its z = 4 trace (IP-RPLC NC, 8 strongest bins): z = 3 0.97-1.00, z = 5 0.88-0.95, z = 6 0.40-0.66 at log-SNR 1.6-2.4, z = 7 -0.12-0.33 |
 | Trace correlation of unrelated signal | other bins of FLP's tile: median 0.26; random pairs of peaks above 10 sigma (IP-RPLC NC, 32-scan tiles): 90th percentile 0.29-0.47, 0.2-2.3 % above 0.9 |
-| Chance ladder partners (peaks at a z -> z+1 offset) correlating above 0.9 | 0.6-4.9 % away from the analytes; 10.8 % at NC's apex, where its own charge states and forms are among them |
+| Chance ladder partners (peaks at a z -> z+1 offset) correlating above 0.9 | 0.6 % in the wash tile and 4.9 % in a tile holding a strong fragment (2 887 Da at 10.42 min); 10.8 % at NC's apex, where its own charge states and forms are among them |
 | Column wash (96 scans around 27 min, both IP-RPLC runs) | 786-1 549 strong peaks spanning at least 20 scans (participation ratio); 82-89 % of them with a z = 1 isotope partner (17 % at a non-isotopic offset); FWHM median 18-23 scans (90th percentile 34-40); apexes spread over about a minute (IQR); pairwise trace r median 0.54-0.56, 12-17 % of pairs above 0.9 |
 | Later elutions | NC (IP-RPLC NC) returns at 25.4 min at 0.98 % of its apex height (0.63 % of its area) and at 27.7 min at 0.13 %; FLP does not return |
 | Co-eluting forms beside the paper species (trace correlation with the parent, height relative to it) | +201.4 Da: beside all nine IP-RPLC species, r = 0.89-1.00, 6-15 %; under IP-HILIC co-eluting only beside FLP (r = 0.95, 2.8 %). -16.06 Da (PS to PO): beside all five IP-RPLC GalNAc species, r = 0.79-0.97, 3-13 %. Na and K, where no stronger species shares the window: 1-5 % under IP-RPLC; Na 16-59 %, K 4-46 % under IP-HILIC |
@@ -109,16 +111,27 @@ with each profile point's width capped as described below the table:
 **Resampling.** The runs are vendor-thresholded: a scan is a set of short segments of profile
 points separated by gaps of up to thousands of bins. The package's `resample_profile` gives every
 point the width 0.5 (u[i+1] - u[i-1]), so a segment's edge point stands for half the gap beside
-it and lands in one bin multiplied by up to that many bins. In single scans 24-28 % of the points
-are wider than three median spacings (the widest 2 938-4 892 bins) and they carry 77-92 % of the
-resampled signal; in the pipeline's region sums, where every scan is interpolated onto the m/z
-axis of the scan with most points, 82-94 %. Every measurement in sections 2 and 4 instead gives
+it and lands in one bin multiplied by up to that many bins. In single scans 24-31 % of the points
+are wider than three median spacings (the widest 960-4 892 bins) and they carry 77-97 % of the
+resampled signal; in the pipeline's region sums 82-96 %. Those sums add a second distortion:
+`Run.sum_frames` interpolates every scan onto the m/z axis of the scan with most points, which
+fills each scan's gaps with ramps between its segment edges (4-21 % of the summed signal in five
+regions of the four runs) and drops signal off that axis. Together they make the noise estimate
+of the region's grid view 40-180 times that of the same scans resampled one by one and summed
+(the widths account for about 4-5 times), and leave 5-20 % of the summed points above the
+decoder's 3-sigma tests, against all of them in the per-scan sum. Every tile measurement of sections 2-4 instead gives
 each point the smaller of its two neighbour spacings, at most three median spacings
-(`scripts/iwsp_probes/scan_grid.py`). Section 3 measures the pipeline as the package runs it.
-The same correction made inside the pipeline finds 13-14/20 paper and 9-10/29 SI-listed species
-but reports 154-158 species, 52-55 of them unconfirmed, against 39 and 7: the decoder's
-thresholds were set on the distorted grid. The design's tokenizer resamples correctly from the
-start; the package fix is a separate change that needs its thresholds recalibrated (section 8).
+(`scripts/iwsp_probes/scan_grid.py`), as do section 3's signal-to-noise and isotope-chain probes;
+the pipeline results of section 3 and the per-call figures of 4.1-4.3 (active bins, leakage,
+timings) come from the package as it runs.
+Patched in-process, the pipeline with capped widths, or with the grid view replaced by the
+per-scan sum, finds 13-14/20 paper and 9-10/29 SI-listed species but reports 154-158 species,
+52-55 of them unconfirmed, against 39 and 7. Neither patch is the fix: the first keeps the
+interpolated sum, the second leaves the decoder's raw-point checks reading it against the lower
+noise level, where 69-100 % of its points pass, so those counts come from a partly disabled
+envelope gate. The fix - per-scan grids summed, with the decoder's raw-point checks on the same
+input and its thresholds recalibrated - is a separate change (section 8); the design's tokenizer
+resamples this way from the start.
 (Measured with the distortion, an earlier version of this document took one- and two-scan
 events for a third of the comb's votes; they carry under 1 %.)
 
@@ -128,9 +141,10 @@ m/z 2 500, and its isotopologues are 7-10 bins apart. Most of the evidence the c
 the analyte's: in every tile examined, 77-94 % of the ladder evidence that decides a charge comes
 from persistent signal that does not co-elute with the bin, while one- and two-scan events are
 weak and carry under 1 % of the votes. And co-elution is specific for strong signal: a species'
-strong charge states move together (r = 0.85-1.00) where unrelated peaks rarely do (0.2-2.3 % of
-random pairs above 0.9); a species' weak charge states (FLP's z = 7, 0.64) and the column wash
-(12-17 % of its pairs above 0.9) are the cases a gate must handle.
+main charge states move together (z = 3-5: r = 0.88-1.00) where unrelated peaks rarely do (0.2-2.3 %
+of random pairs above 0.9); its outer states (z = 6: 0.85 for FLP but 0.40-0.66 for NC; FLP's
+z = 7: 0.64) and the column wash (12-17 % of its pairs above 0.9) are the cases a gate must
+handle.
 
 ## 3. What limits the pipeline on the real runs
 
@@ -165,9 +179,12 @@ today, and with the oracle's charges and single charge states accepted:
 | Lost in the NNLS fit or after it (linking, flat or edge rules, one-to-one matching: DA one dalton from FLP) | 4 | 6 |
 | Missed in all | 31 | 25 |
 
-They are not weak: the strongest charge state of the in-region misses stands at a median
-signal-to-noise ratio of about 1 700 in the region's summed spectrum (about 900 in a 7-scan
-window around each). Most are 1.2-4.8 kDa fragments and NC impurities seen mainly at z = 2-3 (the
+They are not weak in the data: resampled scan by scan, the strongest charge state of the
+in-region misses stands at a median signal-to-noise ratio of about 1 700 in the region's sum
+(about 900 in a 7-scan window around each). In the grid view the package deconvolves, the same
+windows give a median of about 220 (IQR 21-680), and 8-16 for the IP-HILIC GalNAc n-1, DA, PO and
+n+1, the run whose impurities the pipeline misses entirely: there the inflated noise estimate
+leaves their minor isotopologues below the decoder's 3-sigma tests. Most are 1.2-4.8 kDa fragments and NC impurities seen mainly at z = 2-3 (the
 SI lists each fragment by one m/z and one charge), and the IP-HILIC GalNAc impurities at z = 4.
 Once charges and the charge count are no longer the barrier, the envelope gate is: under oracle
 charges with single charge states accepted, it rejects nine picked species (four IP-RPLC NC
@@ -195,18 +212,18 @@ them (section 4.4 gives their circuits):
 | Rule | Per bin | Real runs: paper / SI / reported / unconfirmed |
 | --- | --- | --- |
 | comb (version 0) | synthetic: TOF 0.65 / 0.84 / 0.86; Orbitrap 0.36 / 0.43 / 0.26. Real tiles, labelled envelopes: 0.10 / 0.15 / 0.83 | 13/20, 5/29, 39, 7 |
-| ladder mean over in-range neighbours only (a neighbour beyond the acquired m/z range is unknown, not absent) | with the isotope override kept, as validated: no bin changes, real or synthetic Orbitrap. The ladder alone, without the override: real tiles 0.92 / 0.87 / 0.41 -> 0.94 / 0.93 / 0.91; synthetic TOF 0.65 -> 0.58 (log-SNR) | 13/20, 5/29, 40, 7 |
+| ladder mean over in-range neighbours only (a neighbour beyond the acquired m/z range is unknown, not absent) | with the isotope override kept, as validated: unchanged on the labelled envelopes and in synthetic Orbitrap accuracy. The ladder alone, without the override: real tiles 0.92 / 0.87 / 0.41 -> 0.94 / 0.93 / 0.91; synthetic TOF 0.65 -> 0.58 (log-SNR) | 13/20, 5/29, 40, 7 (one more EIC-confirmed report) |
 | C2b: isotope matched filter with half-spacing inhibition relative to the first isotopologue, no margin | synthetic Orbitrap 0.62 / 0.73 / 0.81 (z = 2-5 up, z = 6-40 down against the ladder alone); real tiles 0.98 / 0.98 / 0.98 | 13/20, 5/29, 38, **5** |
-| C2: absolute half-spacing inhibition and a decision margin of s/4 | synthetic Orbitrap 0.61 / 0.79 / 0.96; real tiles 0.97 / 0.96 / 0.83 | 11/20, 4/29, 30, 5: PO-NC and DA-NC lost |
+| C2: absolute half-spacing inhibition and a decision margin of s/4 | synthetic Orbitrap 0.61 / 0.79 / 0.96; real tiles 0.97 / 0.96 / 0.83 | 11/20, 4/29, 30, 5: PO-NC, DA-NC and the SI-listed 4 512.6 Da fragment lost |
 | co-elution gate on ladder rungs (12-slot profiles over the region ± one width; weak bins exempt), untuned, θ = 0.3, 0.5, 0.7 | - | 13/20, 5/29, 41, 7 at all three (top charge changed at 6-8 % of active bins; added: a +K form and one EIC-confirmed report) |
 | decoder: isotope check requires two adjacent populated isotopologue positions for z >= 2 | - | 13/20, 5/29, 38, 6 (with `single_charge: true`: 15/20, 7/29, 73, 18) |
 
 (Per-bin numbers: z >= 2, weighted by log-SNR / intensity / intensity pooled, on the 96 spectra of
 `scripts/eval_charge_bins.py`; on the real tiles, intensity-weighted over the known species'
 envelope bins at 19.21, 18.71 and 20.3 min in IP-RPLC GalNAc.) Per-bin accuracy and species come
-apart in both directions: C2 is the best per bin on synthetic spectra and loses two paper species;
-C2b and version 0 differ by a factor of seven to ten per bin on FLP's envelopes and find the
-same species. This is
+apart in both directions: C2 is the best per bin on synthetic Orbitrap spectra by intensity (0.79,
+pooled 0.96) and loses two paper species; C2b and version 0 differ by a factor of six to ten per
+bin on FLP's envelopes and find the same species. This is
 the loop the harness of section 5 runs, and why its objective is species, not bins. C2b's two
 fewer unconfirmed reports are in-sample: it was chosen from five variants of the filter, each
 scored on all four runs, and its gain falls on one run (IP-RPLC GalNAc, 5 -> 3).
@@ -304,7 +321,8 @@ these, and a new one enters only by proposal and audit (rule 10):
 - **Broadcast head.** A pointer from each hypothesis to its own bin.
 - **MLP idioms**, exact for the values that occur: max(a, b) = a + relu(b - a); a step
   [a > b] = 1 - relu(1 - relu(K (a - b))) with a large K (exact for a - b >= 1/K and 0 for
-  a <= b; the form relu(K (a - b)) - relu(K (a - b) - 1) returns 0 once K (a - b) reaches 2^53) and
+  a <= b; the form relu(K (a - b)) - relu(K (a - b) - 1) fails once K (a - b) passes 2^53, giving 0
+  or 2 up to 2^54 and 0 beyond) and
   [a >= b] = 1 - [b > a]; a select relu(a - M (1 - f)) + relu(b - M f) for a 0/1 flag f and
   0 <= a, b < M (bit-exact at M = 1e6); a gated (GLU-type) product unit where a product is needed.
 - **Frozen readouts.** None of the above divides: the confidences best/(best + second + 1e-12)
@@ -340,8 +358,8 @@ top2_p and apex on every active bin of 128 synthetic spectra (64 time-of-flight,
 calls of the four real runs (150 773 active bins, both detection passes), whose species tables
 come out identical. It has not yet run as a network built from the layer library; that is the
 first test of stage 0. It takes about three times the comb's time on dense synthetic spectra
-(0.33 s against 0.11 s) and about a fifth of it on real regions (per-call medians 0.007-0.017 s
-against 0.042-0.047 s over two reruns). Its weakness on Orbitrap data is the override (section 3). This is the
+(0.33 s against 0.11 s) and a sixth to a third of it on real regions (per-call medians
+0.007-0.017 s against 0.042-0.047 s). Its weakness on Orbitrap data is the override (section 3). This is the
 starting point of the search, as the untrained LadderNet is the comb.
 
 ### 4.4 Charge-map circuits
@@ -360,8 +378,9 @@ are proposals, not yet built.
   replaces the comb's override). Variant C2: -2 H in place of the relative term, and a winner
   margin of s/4. For the true z the half positions are valleys; a 2z reading has an empty N1; a
   z/2 reading has filled half positions and is inhibited; min(s, .) keeps the flanks of a strong
-  envelope from voting for z + 1, the override's failure. Both lose synthetic Orbitrap accuracy at
-  z = 6-40, which the consensus below is meant to recover.
+  envelope from voting for z + 1, the override's failure. C2b loses synthetic Orbitrap accuracy at
+  z = 6-40 (0.53 and 0.44 against the ladder's 0.66 and 0.89, log-SNR; C2 at most 0.01), which
+  the consensus below is meant to recover.
 - **C1, capped comb:** each rung reads min(s_rung, s + 1), so one strong unrelated ion cannot
   decide a weak ion's charge.
 - **C4, harmonics:** two more pointers per hypothesis at round(ln(2z/(2z ± 1))/step), rungs only a
@@ -378,11 +397,13 @@ are proposals, not yet built.
   and still counts in n_z. Version 0 is g = 1. Written as a term in the attention score instead,
   the gate cannot be exact: with the sink moved to gamma θ, keys one bin off stay unread only for
   gamma < beta/(5 - θ) (89 at beta = 400), and a softmax then still reads a rung at r = θ - 0.1
-  with weight e^-8.9 = 1.4e-4, far above the floor. One-scan events bound θ from below: a spike
-  at an analyte's apex correlates with its trace at r ≈ √(2/PR), PR ≈ 1.5 FWHM in scans (0.38 at
-  FWHM 9 scans, 0.52 at 5), so θ sits above that plus a margin for each chromatography, or the
-  traces are despiked first. The gate cuts a species' own weak states too: 5 of FLP's 14 z = 7
-  bins are above the weak exemption at r <= 0.5.
+  with weight e^-8.9 = 1.4e-4, far above the floor. One-scan events cannot be handled by θ: a
+  spike at an analyte's apex correlates with its trace at r ≈ √(2/PR), PR ≈ 1.5 FWHM in scans
+  (0.38 at FWHM 9 scans, 0.52 at 5, 0.67 at 3, the narrowest impurities here), so sparing
+  3-scan impurities from spikes would need θ above 0.7, which already cuts a strong species' own
+  outer states. Spikes are rejected by their one-scan shape (4.5) or the traces despiked first. The gate cuts a species' own outer states too: 5 of FLP's 14 z = 7
+  bins sit above the weak exemption at r <= 0.5, and half of NC's 8 strongest z = 6 bins (log-SNR
+  1.6-2.4) correlate at 0.40-0.46.
 - **Flat-background veto:** a bin within a third of its maximum in both outer slots (the
   pipeline's own flat-species test, per bin) supports no rung and casts no ladder vote; its
   isotope reading still stands, so a flat multiply charged ion keeps an isotope-read charge.
@@ -450,8 +471,10 @@ folds are drawn.
   (ln M, tile start + apex scan); votes are smoothed over 1.2 Da (the existing function) and ±2
   scans; local maxima above 1e-4 of the strongest within ±2 min become candidates (a local floor:
   one tied to the global maximum deletes weak, late species, `lessons.md` section 6); a candidate's
-  spectrum is summed over its own elution window (apex ± 1.5 x the width of its vote trace), then
-  the existing envelope gate, NNLS fit, template bank, linking and flat-background rule run. This
+  spectrum is the sum of its own elution window's per-scan grids (apex ± 1.5 x the width of its
+  vote trace), which the decoder's raw-point checks read as well; then the existing envelope
+  gate, NNLS fit, template bank, linking and flat-background rule run, with their thresholds
+  recalibrated on that input. This
   replaces TIC regions (6 of the 31 missed species had none) and detection in region-summed
   spectra.
 - **Flags at every charge-count check.** Today's decoder enforces two charge states three times.
@@ -496,36 +519,40 @@ named constants (beta, θ, thresholds, kernel widths), each with a one-line phys
 Written as dense matrices, every co-elution-gated head repeats one constant across the 48 trace
 channels of query and key - tens of thousands of non-zero weights that say one thing each - which
 is why the rules count formulas and constants and cap non-zero weights at 50 000. LadderNet has
-9 500-22 000 trained parameters. Version 0 takes 0.04-0.06 s per 48-scan tile on one core, about
-the comb's time (0.05-0.07 s); the generic softmax-pointer ladder of `pointer_attention.py` takes
-1.4-2.9 s on the same tiles because it evaluates every bin with signal at Z_max = 60. The gated
+9 500-22 000 trained parameters. On one thread, version 0 takes 0.05-0.06 s per 48-scan tile, a
+little less than the comb (0.06-0.07 s); the generic softmax-pointer ladder of
+`pointer_attention.py` takes 1.6-2.9 s on the same tiles because it evaluates every bin with
+signal at Z_max = 60. The gated
 version is not timed: its co-elution reads add about 1.3e8 multiply-adds per tile (11 000 active
 bins x 40 charges x 6 rungs x 48 scans), an estimated well under a second against the limit of
-5 s per tile. Memory, estimated: about 35 MB of channels per tile and 40 MB in flight per gated
-head, evaluated one head at a time.
+5 s per tile. Memory, estimated: about 35 MB of channels per tile, and about 170 MB per gated
+head if all charges are gathered at once (about 40 MB evaluated ten charges at a time).
 
 ### 4.8 The 200-word description
 
 The article's test of interpretability is that a description of at most 200 words rebuilds the
 model. Version 0 with the co-elution gate, the model `coelution_gate.py` ran in section 3 (TIC
-regions, 12-slot traces), in 196 words:
+regions, 12-slot traces), in 200 words (whitespace-separated):
 
-> Float64, no training. Keys: every grid bin of a region's summed spectrum: s = clip(log10(1+I/σ),
-> 0, 5), I, position p, and a centred unit-length 12-slot elution profile over region ± its
-> width. Each bin with I > 3σ queries once per charge z ≤ Zmax.
+> Float64, no training. Keys: every grid bin of a region's summed spectrum: s =
+> clip(log10(1+I/σ),0,5), I, position p, a centred unit-length 12-slot profile over region ± width.
+> Each bin with I > 3σ queries once per charge z ≤ Zmax; other bins output zeros.
 > Layer 1: six hard pointer heads, tied across z, score −400(q−p)² against a zero sink at −100,
-> read s at p + round(ln(z/(z±k))/step), k = 1..3, summed in that order; a read is 0 unless the
-> profiles correlate (r > 0.5) or either s < 1.2. Count every rung at charge ≥ 1 with offset
-> shorter than the grid, blocked or past the edge; EV = s·sum/count. Two tent heads read s at
-> p ± ln(1 + 1.0033548/(z·m))/step, m = |m/z − carrier|; ISO = s·(0.75max + 0.25min) where that
-> spacing ≥ 2.5·max(FWHM in bins, 2).
-> Layers 2-4, hard argmax over each bin's hypotheses (sink first, ties to smaller z): Z1 = argmax
-> EV; Z2 = argmax without Z1; ZI = largest z with ISO ≥ 0.6·maxISO, kept if maxISO ≥ 0.25s².
-> If ZI > 0 it is top charge (p 0.9), a different Z1 second (p float32(1)−float32(0.9));
-> otherwise p = EV/(EV1+EV2+1e−12) in float32. Apex: local maximum above 3σ.
+> read s at p+round(ln(z/(z±k))/step), k=1..3, summed in that order; a read is 0 unless profiles
+> correlate (r>0.5) or either s<1.2. Count every rung at charge ≥1 with offset shorter than the
+> grid, blocked or past the edge; EV = s·sum/count. Two tent heads read s at p ±
+> ln(1+1.0033548/(z·m))/step, m = |m/z − carrier|; ISO = s·(0.75max+0.25min) where that spacing ≥
+> 2.5·max(FWHM in bins, 2).
+> Layers 2-4, hard argmax over a bin's hypotheses (zero sink first, ties to smaller z): Z1 = argmax
+> EV; Z2 = argmax of the others (sink if none). ZI = largest z with ISO ≥ 0.6·maxISO, if maxISO ≥
+> 0.25s². Without ZI, p = EV/(EV1+EV2+1e−12) in float64, rounded to float32. With ZI: ZI first (p
+> float32 0.9); Z1 second (p float32(1)−float32(0.9)) unless Z1 = ZI, when Z2 stays second. Apex:
+> local maximum above 3σ.
 
 No rebuild from it has been attempted; the flat veto and the harmonic term of 4.4 are not in it
-because no probe has built them.
+because no probe has built them. A description must settle every case the code settles; an
+earlier draft left the second charge undetermined where the isotope charge equals the ladder's and
+where no rung reads anything.
 
 ## 5. The search harness
 
@@ -650,9 +677,9 @@ profile and adds no background. `generate_run` gains:
 | --- | --- | --- |
 | Instrument | Orbitrap, R proportional to (m/z)^-0.5 with R0 fitted to the runs' peak widths (140 000 nominal at m/z 200); vendor thresholding that leaves segments and gaps as real scans do; 2.3-3.1 s per scan; m/z 400-2500, negative mode | 1-4 % of grid bins with signal per scan |
 | Elution | an exponentially modified Gaussian per species, width by class (main peaks broader under load), tail jittered; impurity offsets by kind (shortmers earlier, n+1 later; PO and DA co-eluting under IP-RPLC, 0.46-0.70 min away under IP-HILIC: DA earlier, PO later) | main peaks 5-11 scans FWHM, impurities 3-8 |
-| Charge regimes | FLP-like: one state carrying 86-88 %; NC-like: two adjacent states near 55/45 | shares by molecule, the same under both chromatographies |
+| Charge regimes | FLP-like: one state carrying 86-88 %; NC-like: two adjacent states between 58/42 and 62/38 | shares by molecule, similar under both chromatographies |
 | Background | persistent singly charged ions, flat or rising with the gradient; a wash of several hundred to 1 500 broad, mostly singly charged ions, FWHM about twice a main peak's, apexes spread over about a minute, partly co-varying; late re-elution of the main species at 0.1-1 % | wash: pairwise r median 0.54-0.56, 12-17 % of pairs above 0.9, 82-89 % with a z = 1 partner |
-| Spikes | one- and two-scan events at the measured rate and intensity | 3-5 % of active bins (30 % at a strong apex), a third of persistent bins' intensity |
+| Spikes | one- and two-scan events at the measured rate and intensity | 3-5 % of active bins (30 % at a strong apex), a quarter to a third of persistent bins' intensity |
 | Drift and spray | m/z drift of ±2 ppm over a run, 0.5 ppm jitter per scan, a common intensity factor per scan | to be measured |
 | Labels | soft charge shares per (bin, scan); species truth with apex time and detectability | |
 
@@ -688,8 +715,8 @@ adoption gate (section 7).
 ### 5.5 Runs, selection and budget
 
 Per fold, two Opus runs and one Sonnet run of 40 iterations, and in fold A the empty-file control:
-seven runs, about 280 evaluations - about 23 hours on an 8-core CPU, about 41 on the 4-core
-development container. The RTX 4080 adds little: everything is numpy float64 and limited by
+seven runs, about 280 evaluations at about 35 core-minutes each - about 20 hours on an 8-core
+CPU, about 41 on the 4-core development container. The RTX 4080 adds little: everything is numpy float64 and limited by
 memory gathers, and the card runs float64 at 1/64 of its float32 rate. A run without a visible
 gain of 0.01 in J, or of one species in R_real, by iteration 15 is stopped. After a plateau the
 remaining iterations may compress the model (fewer formulas at J within 0.005), as the article's
@@ -702,10 +729,10 @@ data once. The shipped candidate is the fold model with the larger pooled hidden
 the smaller); it alone is scored on the sealed fifth run, and rebuild outcomes do not change the
 choice.
 
-Agent cost: the article's Opus runs on its 34 algorithmic and NLP tasks cost $449 for 1 334
+Agent cost: the article's 34 Opus runs on its 17 algorithmic and NLP tasks cost $449 for 1 334
 iterations (Tables A2 and A7), $0.34 per iteration; its ECoG searches cost at least $1 540, a
 lower bound covering a 902-iteration final search, precursor and clean-slate searches and runs
-stopped at their time limit. At $1-2 per iteration the seven runs cost $300-560, audits and
+stopped at their time limit. At $1-2 per iteration the seven runs cost $280-560, audits and
 rebuilds about $150, and exploratory runs - which the article estimates at about twice its final
 runs (eight times for the visual cortex) - bring the total to about $1 000-2 000.
 
@@ -739,7 +766,7 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   and the harness, with at most six visible evaluations to make it run (as in the article's fMRI
   rebuilds) and no hidden data - once from version 0 (the description may cite its heads: a test
   of the change), and once, as in the article, from an empty `write_weights` and the layer library
-  (version 0 with one gate takes 196 words, 4.8). A rebuild passes when it loses no paper species the
+  (version 0 with one gate takes 200, 4.8). A rebuild passes when it loses no paper species the
   original finds on its hidden runs, keeps at least 75 % of the original's hidden gain over
   version 0 and at least one species or two fewer reports outside the truth table, and agrees with
   the original's charges on at least 95 % of hidden synthetic active intensity. A control session
@@ -778,8 +805,8 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   benefit: a written rule names what it relies on, so a search can expose the generator's
   artefacts, as the article's fMRI search exposed a signal at the start and end of every scan.
 - **Gates delete real species.** Co-elution gates cut true partners whose positions are shared,
-  a strong species' own weak charge states (5 of FLP's 14 z = 7 bins sit above the weak exemption
-  at r <= 0.5) and the Poisson-noisy traces of 0.1 % impurities; persistence removes the votes of
+  a strong species' own outer charge states (FLP's z = 7, NC's z = 6: 4.4) and the Poisson-noisy
+  traces of 0.1 % impurities; persistence removes the votes of
   narrow weak species (impurities elute in 3-6 scans) and of species cut at a tile's edge (the
   overlapping tiles reduce that); a breadth rule can delete a broad main band, since the wash is
   only about twice as broad as a main peak, so the z = 1 isotope veto is preferred to breadth.
@@ -789,12 +816,15 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   unconfirmed); the decoder's own narrow windows can lose broad species, which stage 0 measures.
 - **Rules that help one regime hurt another** (the in-range mean on time-of-flight; C2b at high
   charge). The reports split by kind, charge band and chromatography so that this shows.
-- **The resampling fix moves the baseline.** Corrected inside the pipeline, today's thresholds
-  report 154-158 species; comb-1D (the package as it runs) and comb-2D (built on the corrected
-  tokenizer) therefore see different inputs, and the package fix, with its thresholds
-  recalibrated, is best made before stage 0 so that both baselines share one input.
+- **The resampling fix moves the baseline.** Today's pipeline judges inputs whose noise estimate
+  is 40-180 times too high, and patched halfway it reports 154-158 species. Comb-1D (the package
+  as it runs) and comb-2D (built on the corrected tokenizer) would see different inputs, and part
+  of any gain would be the resampling's, not the decoder's or the network's; the package fix,
+  with the decoder recalibrated, is best made before stage 0 so that both baselines share one
+  input.
 - **Out of reach.** DA under FLP in IP-RPLC and DA-NC under NC co-elute less than one dalton
-  apart, with z = 4 envelopes whose cosine is 0.95: that needs exact-formula pattern fits. The
+  apart, with z = 4 envelopes whose cosines are 0.95 (FLP) and 0.92 (NC): that needs exact-formula
+  pattern fits. The
   PO abundance under FLP is an NNLS problem. The identity of the +201.4 Da form is chemistry. NC's
   re-elution reports are a linking problem.
 - **Time alignment.** The pipeline's apex can sit early (the 1 908 Da fragment, found under
@@ -836,7 +866,7 @@ Each fold's model must pass items 1 and 3-7; item 2 is pooled; item 8 decides.
 
 | Stage | Work | Go / no-go |
 | --- | --- | --- |
-| 0 (3-4 days) | the package's resampling fix with its thresholds recalibrated (or the decision to keep both inputs); plumbing; tokenizer and layer library with their tests; version 0 built from the library and run as a network; the 2D decoder, frozen with its provenance log; comb-2D, oracle-2D and oracle-flag-2D (true charges, plus chain flags on the known single-charge species) on all four runs and synthetic data; the chain flag's pass rates on random positions; the noise floor | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D finds at least two more real species than today's pipeline with no more reports outside the truth table - otherwise stop the transformer and fix the decoder** |
+| 0 (3-4 days) | the package's resampling fix (per-scan grids summed, raw-point checks on the same input, thresholds recalibrated) or the decision to keep both inputs; plumbing; tokenizer and layer library with their tests; version 0 built from the library and run as a network; the 2D decoder, frozen with its provenance log; comb-2D, oracle-2D and oracle-flag-2D (true charges, plus chain flags on the known single-charge species) on all four runs and synthetic data; the chain flag's pass rates on random positions; the noise floor | version 0, executed, equals `CombPredictor`; sparse and dense attention agree to 1e-12; **oracle-flag-2D finds at least two more real species than today's pipeline with no more reports outside the truth table - otherwise stop the transformer and fix the decoder** |
 | 1 (2-3 days) | the 2D generator additions of 5.4, calibrated per fold | synthetic tiles within a factor of 1.5 of the visible real statistics; the ranking test |
 | 2 (1 day) | a 10-iteration pilot; a break-in test of the sandbox; invariance, determinism and audit dry runs; the counts-only feedback | harness bugs fixed; the hidden runs and this document cannot be read |
 | 3 (about a week) | the seven searches of 5.5, from version 0 | each run passes or is stopped at iteration 15 |
