@@ -106,6 +106,7 @@ def _deconv_params(method: Method) -> DeconvParams:
         adduct_require_evidence=getattr(d.adducts, "require_evidence", True),
         single_charge_isotopes=bool(getattr(d, "single_charge", False)),
         isotope_charges=_isotope_mode(method),
+        coelution_r=float(getattr(d, "coelution_r", 0.5)),
     )
 
 

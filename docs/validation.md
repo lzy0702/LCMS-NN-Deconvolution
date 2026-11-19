@@ -64,19 +64,39 @@ A second round, driven by charge oracles and per-species loss attribution
   to be explained as false species.
 - Inference imported PyTorch, which only training needs.
 
+A third round followed from resampling vendor-thresholded profiles correctly (`lessons.md`,
+section 14), which removed a 40-180-fold inflation of the noise estimate on real Orbitrap
+regions and with it what that inflation had hidden:
+
+- A thresholded segment's edge point stood for half the gap beside it, and region sums
+  interpolated every scan onto one scan's axis, ramping across its own gaps and dropping what
+  lay off that axis.
+- On thresholded data some ion stands above the noise near almost every position, so the
+  envelope gate's "isotopologue position populated" and "envelope present" passed charge ladders
+  of unrelated ions; the comb now needs peaks of the predicted size and the charge states of a
+  region's sum must co-elute.
+- Least-squares weights taken from each bin's own value scaled the main species to a fifth of its
+  envelope (Neyman's chi-square bias); they now come from the local maximum over a peak width.
+- The class's average isotope pattern placed resolved isotopologues 0.11 Da off a real product's;
+  templates are aligned to the resolved peaks before the fit.
+- A weaker species' adduct column could take a stronger one's coinciding adduct (the PS-to-PO
+  impurity plus potassium is the main species plus sodium to 0.07 Da).
+
+
 ## Real Orbitrap runs
 
-Four Thermo Q Exactive runs of oligonucleotide mixtures (a GalNAc-conjugated phosphorothioate
-16-mer spiked with 2 % of each of five impurities, and its non-conjugated form spiked with its
-deaminated form; ion-pairing reversed phase and ion-pairing HILIC; negative mode, profile at
-140k) are read directly from `.raw` (`lcmsdeconv.io.read_thermo_raw`). They are the runs of
-Tutiš et al., Anal. Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407),
-whose Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run against
-them, and checks every other report with extracted-ion chromatograms. Of 20 known species the
-original code found 2 among 87 reports; the current code finds 13 among 39, with 15 of 20 when
-species seen at one charge state are accepted (`deconvolution.single_charge`). Details, mass
-errors and what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what
-the truth table changed, are in `lessons.md`, section 11.
+Four Thermo Q Exactive runs of oligonucleotide mixtures (a GalNAc-conjugated phosphorothioate 16-mer
+spiked with 2 % of each of five impurities, and its non-conjugated form spiked with its deaminated
+form; ion-pairing reversed phase and ion-pairing HILIC; negative mode, profile at 140k) are read
+directly from `.raw` (`lcmsdeconv.io.read_thermo_raw`). They are the runs of Tutiš et al., Anal.
+Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407), whose Table 1 gives the
+average masses; `scripts/validate_oligo_runs.py` scores a run against them, and checks every other
+report with extracted-ion chromatograms. Of 20 known species the original code found 2 among 87
+reports; before the resampling fix the code found 13 among 39 (15 of 20 with
+`deconvolution.single_charge`), and the current code finds 15, and 15 of 29 SI-listed impurities,
+among 198 reports, with impurity amounts close to their extracted-ion areas. Details, mass errors
+and what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what the truth
+table changed, are in `lessons.md`, section 11.
 
 ## Public data
 
@@ -121,9 +141,17 @@ package could not reach:
   happens for sodium on a monoclonal antibody at a resolving power of 10 000.
 - Thermo `.raw` files are read directly (optional `opentfraw` dependency); other vendor formats
   must be converted to mzML first.
-- Under ion-pairing HILIC with triethylammonium acetate, oligonucleotide impurities may carry a
-  single charge state above the noise and are missed unless `deconvolution.single_charge` is on,
-  which accepts them when resolved isotope spacing fixes the charge, at the cost of more
-  unconfirmed reports.
-- Abundances of a minor species overlapping a much stronger one (the PS-to-PO form under its
-  parent in IP-RPLC) can be underestimated by orders of magnitude.
+- Under ion-pairing HILIC with triethylammonium acetate, oligonucleotide impurities may carry one
+  dominant charge state; once the resampling was fixed their weaker states are seen, but an
+  impurity with a single state above the noise is still missed unless
+  `deconvolution.single_charge` is on, which accepts it when resolved isotope spacing fixes the
+  charge, at the cost of more unconfirmed reports.
+- On vendor-thresholded data the decoder separates species from charge ladders of unrelated
+  ions by isotope sizes and by the co-elution of charge states, not by the noise level. Species
+  seen in only a few scans of a region, or whose charge states share their m/z windows with
+  other ions, can be rejected; a ladder of ions that co-elute (a broad column wash) can still
+  pass where the isotopes are not resolved.
+- Abundances of a minor species next to a much stronger one depend on templates matching the
+  strong species' resolved isotopologues; with the alignment step they agree with
+  extracted-ion areas to within about 25 % under IP-RPLC and a factor of two to three under
+  IP-HILIC on the real runs, where they were off by orders of magnitude before.

@@ -116,6 +116,10 @@ comb and the loss weights are computed from the same kind of spectrum, with the 
 estimate, at training and at run time. Earlier models were trained on spectra rendered straight
 onto the grid with the generator's own noise parameter, a different input from the one they were
 later run on; that mismatch is the most common way a network that trains well fails in use.
+The same applies to the resampling: a thresholded segment's edge point once stood for half the
+gap beside it, in training as at run time. Since that was fixed (`lessons.md`, section 14) the
+grid views differ, and models trained before the fix - the CPU `proof` LadderNets and any GPU
+run started before it - must be retrained.
 
 ## Checks before a long run
 

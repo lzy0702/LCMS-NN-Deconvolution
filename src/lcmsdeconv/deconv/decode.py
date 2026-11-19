@@ -41,6 +41,9 @@ class Candidate:
     intensity: float = 0.0
     # seen at one charge state only, the charge fixed by resolved isotope spacing
     single_charge: bool = False
+    # where the class's isotope pattern puts this species' resolved isotopologues against where
+    # the data show them, in ln(mass) units: templates are built at mass * exp(template_shift)
+    template_shift: float = 0.0
 
 
 def accumulate_mass_histogram(
@@ -280,7 +283,8 @@ def envelope_geometry(mass: float, compound_class: str) -> tuple[float, float]:
 def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np.ndarray,
                                raw_int: np.ndarray, thr: float, polarity: int,
                                compound_class: str, fwhm: float,
-                               min_populated: float = 0.6, min_rel: float = 0.3) -> bool:
+                               min_populated: float = 0.6, min_rel: float = 0.3,
+                               height: float = 0.0, min_fill: float = 1.0 / 3.0) -> bool:
     """True when resolved isotopes show the envelope at ``centre_mz`` is not charge ``z``.
 
     At charge z the isotopologues of a species lie 1.00336/z apart. When the instrument resolves
@@ -291,6 +295,12 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     populated - the test removes the false high-charge ladders such background otherwise
     forms on real data. When the spacing is not resolved the test cannot speak and returns
     False.
+
+    A position counts as populated by a peak above ``thr`` and, given the envelope's
+    ``height`` (its strongest isotopologue, where the envelope was found), of at least
+    ``min_fill`` of the height the isotope pattern predicts there. Vendor software keeps only
+    signal, so in a correctly resampled spectrum some ion stands above the noise near almost
+    every position; what a comb read at the wrong charge lacks is peaks of the right size.
     """
     from ..chem.adducts import carrier_mass
     from ..chem.classes import class_isotope_pattern
@@ -306,6 +316,7 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     carrier = carrier_mass(polarity)
     avg = float((pat.abundances * pat.masses).sum() / max(pat.abundances.sum(), 1e-300))
     iso_mz = (pat.masses[major] - avg + mass + z * carrier) / z
+    need = np.maximum(thr, min_fill * a[major] * max(height, 0.0))
     tol = max(0.5 * fwhm, 0.2 * spacing)
     # The comb is slid across one spacing and the best placement counts: the measured mass can
     # be off by a fraction of a dalton (a neighbouring adduct or impurity pulls the envelope's
@@ -314,10 +325,10 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     best = 0
     for shift in np.linspace(-0.5, 0.5, 11) * spacing:
         populated = 0
-        for x in iso_mz + shift:
+        for x, level in zip(iso_mz + shift, need):
             lo = int(np.searchsorted(raw_mz, x - tol))
             hi = int(np.searchsorted(raw_mz, x + tol))
-            if hi > lo and raw_int[lo:hi].max() > thr:
+            if hi > lo and raw_int[lo:hi].max() > level:
                 populated += 1
         best = max(best, populated)
     return best < min_populated * major.sum()
@@ -363,7 +374,7 @@ def isotope_ladder_spacing(centre_mz: float, half_width: float, raw_mz: np.ndarr
 
 def isotope_charge_unique(mass: float, z: int, centre_mz: float, raw_mz: np.ndarray,
                           raw_int: np.ndarray, thr: float, polarity: int, compound_class: str,
-                          fwhm: float, min_populated: float = 0.8) -> bool:
+                          fwhm: float, min_populated: float = 0.8, height: float = 0.0) -> bool:
     """True when resolved isotopes fix the envelope at ``centre_mz`` at charge ``z`` alone.
 
     One charge state is evidence enough for a species when the instrument resolves its
@@ -384,7 +395,8 @@ def isotope_charge_unique(mass: float, z: int, centre_mz: float, raw_mz: np.ndar
     if abs(d - expected) > expected / (3.0 * (z + 1)):
         return False
     return not isotopes_contradict_charge(mass, z, centre_mz, raw_mz, raw_int, thr, polarity,
-                                          compound_class, fwhm, min_populated=min_populated)
+                                          compound_class, fwhm, min_populated=min_populated,
+                                          height=height)
 
 
 def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarray,
@@ -436,6 +448,8 @@ def refine_candidate_masses(
     profile: bool = False,
     single_charge_ok: bool = False,
     envelope_move: bool = False,
+    frames=None,
+    coelution_r: float = 0.5,
 ) -> list[Candidate]:
     """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
@@ -459,8 +473,17 @@ def refine_candidate_masses(
     isotope spacing fixes that charge (:func:`isotope_charge_unique`); it is marked
     ``single_charge``. Under ion pairing, oligonucleotides often carry one dominant charge state,
     and an impurity at a few percent then shows that state alone above the noise.
+
+    ``frames``, a :class:`~lcmsdeconv.deconv.coelution.FrameStack` of the scans the spectrum
+    sums, adds the test that the noise threshold cannot make on vendor-thresholded data: the
+    charge states of the deciding cluster must co-elute with its strongest one (scan-by-scan
+    traces of their envelope cores correlating at ``coelution_r`` or better,
+    :func:`~lcmsdeconv.deconv.coelution.coeluting`). A state that does not is another
+    species' envelope under this one's window and leaves the cluster, which must still have
+    ``min_charges`` members. ``coelution_r <= 0`` turns the test off.
     """
     from ..chem.adducts import carrier_mass
+    from .coelution import coeluting
 
     carrier = carrier_mass(polarity)
     thr = snr * noise_sigma
@@ -473,9 +496,9 @@ def refine_candidate_masses(
         """Keep ``c`` on its one charge state ``i`` if resolved isotopes fix that charge."""
         if not (single_charge_ok and instrument is not None):
             return False
-        pos_i, fwhm_i = where[i]
+        pos_i, fwhm_i, _half_i, core_i = where[i]
         if not isotope_charge_unique(masses[i], matched_z[i], pos_i, raw_mz, raw_int, thr,
-                                     polarity, compound_class, fwhm_i):
+                                     polarity, compound_class, fwhm_i, height=core_i):
             return False
         c.mass = float(masses[i])
         c.charges = {int(matched_z[i])}
@@ -509,12 +532,13 @@ def refine_candidate_masses(
             half = max(0.5 * kern_da / z, 2.0 * pos / max(resolution, 1.0))
             lo = int(np.searchsorted(raw_mz, pos - half))
             hi = int(np.searchsorted(raw_mz, pos + half))
-            if hi <= lo or raw_int[lo:hi].max() <= thr:
+            core = float(raw_int[lo:hi].max()) if hi > lo else 0.0
+            if core <= thr:
                 continue
             r_here = float(instrument.resolving_power(pos)) if instrument is not None else resolution
             fwhm = pos / max(r_here, 1.0)
             if isotopes_contradict_charge(m, z, pos, raw_mz, raw_int, thr, polarity,
-                                          compound_class, fwhm):
+                                          compound_class, fwhm, height=core):
                 continue
             if (profile and ISOTOPE_SPACING / z < 2.0 * fwhm
                     and envelope_discontinuous(pos, env_sigma / z, raw_mz, raw_int, fwhm)):
@@ -522,7 +546,7 @@ def refine_candidate_masses(
             masses.append(m)
             weights.append(kw)
             matched_z.append(int(z))
-            where.append((pos, fwhm))
+            where.append((pos, fwhm, half, core))
 
         if len(masses) < min_charges:
             if len(masses) == 1 and accept_single(c, masses, matched_z, where, 0):
@@ -540,6 +564,10 @@ def refine_candidate_masses(
         breaks = np.nonzero(np.diff(ms) > link)[0] + 1
         groups = np.split(np.arange(ms.size), breaks)
         best = max(groups, key=lambda g: ws[g].sum())
+        if frames is not None and coelution_r > 0 and best.size >= 2:
+            members = srt[best]
+            traces = frames.traces([where[i][0] for i in members], [where[i][2] for i in members])
+            best = best[coeluting(traces, int(np.argmax(ws[best])), coelution_r)]
         if best.size < min_charges or ws[best].sum() < min_cluster_weight * ws.sum():
             if (best.size == 1 and ws[best].sum() >= min_cluster_weight * ws.sum()
                     and accept_single(c, masses, matched_z, where, int(srt[best[0]]))):

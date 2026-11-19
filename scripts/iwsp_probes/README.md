@@ -6,11 +6,13 @@ are scored with `scripts/validate_oligo_runs.py`'s truth and scoring. They are e
 design, not the harness it describes (that is stage 0 of its plan).
 
 Every probe that reads single scans resamples them with `scan_grid.resample_scan`, which caps each
-profile point's width at its smaller neighbour spacing (at most three median spacings). The
-package's `resample_profile` lets the edge point of a vendor-thresholded segment stand for half
-the gap beside it (`tile_statistics.py gaps`); the probes that run the pipeline itself
-(`real_run_probes.py validate` and `trace`, the predictor probes) measure the package as it runs,
-unless `--resample` says otherwise.
+profile point's width at its smaller neighbour spacing (at most three median spacings). When
+these probes were run, the package's `resample_profile` let the edge point of a
+vendor-thresholded segment stand for half the gap beside it (`tile_statistics.py gaps`); the
+probes that run the pipeline itself (`real_run_probes.py validate` and `trace`, the predictor
+probes) measured the package as it ran then, unless `--resample` says otherwise. The package has
+since been fixed (`docs/lessons.md`, section 14), so those probes now measure the fixed package
+and no longer reproduce the design's pipeline counts; run them on commit `e79e0ad` to do so.
 
 `RAW` below stands for the four Thermo runs of `docs/benchmarks.md`
 (`IPRPLC_GalNAc_conjugated_mix.raw IPRPLC_NC_mix.raw IPHILIC_GalNAc_conjugated_mix.raw

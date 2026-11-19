@@ -46,6 +46,7 @@ deconvolution:
   compound_class: peptide  # or auto, dna, rna, ps_dna, ps_rna, glycan, peg, small_molecule
   min_relative_abundance: 0.0001   # 0.01 % detection floor
   min_charge_support: 2    # charge states a species must show; set 1 for small molecules
+  coelution_r: 0.5         # charge states of a region must co-elute (Pearson r); 0 = no test
   adducts:
     mode: rplc             # rplc | rplc_tfa | iprp | hilic | ip-hilic | sec | native | polymer
     include: []            # extra adducts, e.g. ["TEA"] or a formula like "C7H17N"

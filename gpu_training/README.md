@@ -9,6 +9,11 @@ processor. The training spectra are synthesised by data-worker processes on the 
 while the GPU trains; that part cannot run on the GPU. By default everything stays within
 **16 GB of RAM** and **14 GB of GPU memory**, leaving the rest to Windows.
 
+**Retrain after updating.** The package now resamples vendor-thresholded profile scans
+correctly (a segment's edge point no longer stands for the gap beside it), which changes the
+spectra the network sees in training and in use. A model trained with an earlier version of
+this folder was trained on the old grid views: start a new run rather than resuming one.
+
 ## Quick start (Windows 11, RTX 4080 Super)
 
 **Before you start**

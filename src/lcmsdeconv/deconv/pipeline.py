@@ -11,6 +11,7 @@ from ..chem.instrument import InstrumentModel
 from ..core.model import Component, FrameResult, Spectrum
 from ..nn.grid import spectrum_to_grid
 from ..nn.infer import ChargePredictor
+from .coelution import FrameStack
 from .decode import (
     accumulate_mass_histogram,
     dedupe_adduct_candidates,
@@ -19,7 +20,8 @@ from .decode import (
     refine_candidate_masses,
     suppress_harmonics,
 )
-from .refine import drop_shared_evidence, refine_frame
+from .nnls_solve import fit_weights
+from .refine import drop_coincident_adducts, drop_shared_evidence, refine_frame
 
 
 @dataclass
@@ -51,6 +53,9 @@ class DeconvParams:
     # displaced by peaks that inherit an envelope's ladder charge, and the gate lets them climb
     # to the envelope's centre from anywhere within its half-width
     isotope_charges: bool = False
+    # a summed spectrum's charge states must co-elute over its scans (Pearson r of their
+    # scan-by-scan traces at least this; 0 turns the test off); see deconv.coelution
+    coelution_r: float = 0.5
 
 
 def choose_class_auto(mass: float, candidates) -> str:
@@ -79,7 +84,7 @@ def deconvolve_spectrum(
     # nothing); training frames go through this same function
     grid, observed, noise_sigma = spectrum_to_grid(
         spectrum.mz, spectrum.intensity, polarity, params.grid_step, params.grid_mz_max,
-        spectrum.is_profile, instrument)
+        spectrum.is_profile, instrument, frames=spectrum.meta.get("frames"))
     if observed.max() <= 0:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0, meta={"grid": grid})
 
@@ -89,6 +94,8 @@ def deconvolve_spectrum(
                                       max_total=params.adduct_max_total)
     raw_order = np.argsort(spectrum.mz)
     raw_mz, raw_int = spectrum.mz[raw_order], spectrum.intensity[raw_order]
+    # the scans a region's spectrum sums, for the co-elution of charge states
+    frames = FrameStack.from_spectrum(spectrum) if params.coelution_r > 0 else None
     # the class sets the isotope-envelope width used to locate each charge state's envelope;
     # with automatic selection the class is only known after detection, and the first
     # candidate class is the best prior
@@ -129,7 +136,8 @@ def deconvolve_spectrum(
                                         instrument=instrument,
                                         profile=spectrum.is_profile is not False,
                                         single_charge_ok=params.single_charge_isotopes,
-                                        envelope_move=params.isotope_charges)
+                                        envelope_move=params.isotope_charges,
+                                        frames=frames, coelution_r=params.coelution_r)
         snap("gated", cands, it)
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
@@ -147,9 +155,13 @@ def deconvolve_spectrum(
     if not candidates:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 1.0, meta={"grid": grid})
 
+    # every adduct the mobile phase could make, evidenced or not: what a stronger species'
+    # adduct ladder may put where a weaker one's adduct column would sit
+    mode_library = library
     if params.adduct_require_evidence and library.adducts:
         names = evidenced_adducts(candidates, library, raw_mz, raw_int, polarity, noise_sigma,
-                                  params, gate_class, instrument, spectrum.is_profile is not False)
+                                  params, gate_class, instrument, spectrum.is_profile is not False,
+                                  frames=frames)
         if trace is not None:
             trace.append({"pass": 0, "stage": "adducts", "kept": sorted(names),
                           "library": library.names()})
@@ -190,7 +202,7 @@ def deconvolve_spectrum(
             max_mass_spread_ppm=params.max_mass_spread_ppm,
             residual=residual, start_id=len(components),
             strongest_explained=max((c.intensity for c in components), default=0.0),
-            trace=trace, trace_pass=iteration,
+            trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
         )
         if not new:
             break
@@ -198,6 +210,7 @@ def deconvolve_spectrum(
     components = drop_shared_evidence(components, library, polarity,
                                       resolution=float(instrument.resolving_power(1000.0)),
                                       trace=trace)
+    components = drop_coincident_adducts(components, mode_library, trace=trace)
     snap("components", components, -1)
 
     for c in components:
@@ -237,7 +250,7 @@ def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, cl
     from .refine import _fit_candidate
 
     cand = max(candidates, key=lambda c: c.score)
-    weights = 1.0 / np.sqrt(np.clip(observed, 0, None) + noise_sigma**2 + 1e-9)
+    weights = fit_weights(observed, noise_sigma, grid.step, float(instrument.resolving_power(1000.0)))
     states = library.states()
     best_cls, best_score = class_candidates[0], -np.inf
     for cls in class_candidates:
@@ -259,7 +272,7 @@ def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, cl
 
 def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polarity: int,
                       noise_sigma: float, params: DeconvParams, compound_class: str,
-                      instrument, profile: bool, n_species: int = 2) -> set[str]:
+                      instrument, profile: bool, n_species: int = 2, frames=None) -> set[str]:
     """Adduct types whose envelopes the spectrum actually shows next to its strongest species.
 
     An adduct library describes what a mobile phase *could* contribute. Fitting every
@@ -283,7 +296,8 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
                                          compound_class=compound_class,
                                          resolution=float(instrument.resolving_power(1000.0)),
                                          instrument=instrument, profile=profile,
-                                         tol_ppm=50.0)
+                                         tol_ppm=50.0, frames=frames,
+                                         coelution_r=params.coelution_r)
             if ok and abs(ok[0].mass - (c.mass + adduct.mass)) <= max(2e-5 * c.mass, 0.3):
                 kept.add(adduct.name)
                 break
