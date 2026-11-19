@@ -168,8 +168,18 @@ particular molecule up to 0.1-0.2 Da from where they are (0.11 Da for the non-co
 of the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is
 fitted, its templates are slid together by up to 1.5 bins onto the spectrum and the shift with
 the largest normalized overlap is kept (`refine.align_template`; only where the instrument
-resolves the isotopes of the candidate's central charge). The shift moves the templates, not the
-reported mass, which is measured from the raw envelopes as below.
+resolves the isotopes of the candidate's central charge). The overlap is computed in quarter-bin
+steps and the optimum placed between them by a parabola through the best step and its
+neighbours: at 140 000 (m/z 200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5 bin, and
+the main species of the IP-RPLC conjugate run is fitted 2 % low with its templates an eighth of a
+bin off its peaks, 9 % a quarter bin off and 28 % half a bin off. The shift moves
+the templates, not the reported mass, which is measured from the raw envelopes as below; when the
+mass changes afterwards (that measurement, or two copies of one species merged) the shift is
+adjusted so that the templates stay where the alignment put them, and a candidate re-centred
+from an adducted form onto its base form is aligned afresh. Before this, re-measuring the mass
+moved the templates with it, and a re-centred candidate kept the shift found for its adducted
+form; on that main species, re-centred from an adducted form, the two cost 5 % of its amount
+(with only the first corrected, 20 %).
 
 Each candidate is fitted over every charge state the spectrum shows for it, not only over the
 charges that voted for it: starting from that band, charges are added outward while an envelope is
@@ -181,9 +191,11 @@ they are later explained as separate, false species.
 Detection uses only the base state — an adducted envelope still shows its base envelope — and the
 full adduct combination set is fitted only for components that pass the gates. Only adduct types
 the spectrum evidences are in that set: a type is kept when an envelope at M + delta of one of
-the strongest candidates passes the same gate as a species would (`require_evidence`); a library
-of five ion-pairing adduct types otherwise gives each charge state about fifty columns, and
-neighbouring species and adduct columns trade intensity. A component
+the strongest candidates passes the same gate as a species would (`require_evidence`), its mass
+measured as detection measures it and compared with the candidate's average mass plus the
+adduct's average-mass shift (K - H is 0.13 Da heavier than its monoisotopic shift, as potassium
+is 6.7 % 41K); a library of five ion-pairing adduct types otherwise gives each charge state about
+fifty columns, and neighbouring species and adduct columns trade intensity. A component
 centred on an adducted form is moved down the adduct ladder when the lighter form is present on
 most of the same charge states with at least half the height, and only if the same adduct model
 then explains more of the spectrum. Accepted components are subtracted from the residual before
@@ -208,8 +220,9 @@ carrying most of the fitted intensity gives the mass and its spread.
 
 Deconvolution runs on the summed spectrum of each chromatographic region, where the signal-to-noise
 ratio is highest. Regions are built around peaks of the TIC that stand ten times above the trace's
-noise (relative floors of 0.2 % of the tallest peak's height and 0.05 % of the total area only
-remove ripple); neighbouring peaks are split at their valley, and only peaks whose apexes are closer
+noise - three times with the oligonucleotide methods, as a 2 % impurity eluting on its own makes
+a TIC peak about four times the noise (relative floors of 0.2 % of the tallest peak's height and
+0.05 % of the total area only remove ripple); neighbouring peaks are split at their valley, and only peaks whose apexes are closer
 than their widths share a region. The components it finds define a template bank — one column per
 component and adduct state, with the charge distribution baked in — and every frame in the region is
 then quantified by a small non-negative least-squares solve against that bank. This gives a
@@ -221,9 +234,30 @@ within a third of its maximum at both ends - judged with one region width of qua
 either side, since a broad band can fill its own region - is chemical background and is dropped,
 and so is a species whose profile peaks in the outer tenth of its region (unless it is the
 region's strongest): a region is built around an elution band, so such a trace is a template
-absorbing a neighbour's tail. A species found in adjacent regions of one broad band is merged
-into one. In a polarity-switching run each
-polarity is processed separately and species are matched by neutral mass afterwards.
+absorbing a neighbour's tail. That last test is not made at a boundary the region shares with
+the next one: a boundary drawn at the valley between two bands is where a species eluting
+between them peaks, and the neighbouring region holds the rest of it. A species found in
+adjacent regions of one broad band is merged into one; the scan on their shared boundary is
+counted once, with the larger of its two readings. In a polarity-switching run each polarity is
+processed separately and species are matched by neutral mass afterwards.
+
+A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its
+total over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct
+forms are resolved depends on the region: a region attaches an adduct type to its species only
+where it shows that adduct next to its strongest species, and doing so everywhere makes
+near-coincident forms of co-eluting species trade signal (with sodium and potassium forced into
+every region, the IP-HILIC NC run lost its PS-to-PO impurity and NC - dG). Where a region does
+not attach an adduct, the same forms come out as species of their own; they are folded into the
+species they belong to - a species whose mass is a stronger, co-eluting species' plus an adduct
+state of the method's list (average-mass shifts, within twice the linking tolerance: 1 Da or 60
+ppm with the bundled methods; apexes within 0.1 min, traces correlating at r >= 0.8) is counted
+as that species' adduct form, unless a known modification of its class explains the difference
+as well (oxidation lies 1.04 Da from an ammonium adduct): a report too many is the lesser error. Base forms are measured for
+every species alike, and the retention-time apex is read on the base trace for the same reason.
+Base-form shares are exact only where co-eluting species carry the same adduct load: under ion
+pairing with acetate the main species' load falls at its own apex, and base-form shares there
+understate impurities by up to the ratio of the loads (1.05-1.2 on the IP-HILIC conjugate run,
+up to 1.7-1.9 on the IP-HILIC NC run; `benchmarks.md`).
 
 ## 6. Integration, purity and saturation
 

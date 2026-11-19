@@ -449,3 +449,52 @@ The lesson is the one of section 3 from the other side: a threshold tuned on a d
 encodes the distortion, and fixing the input means re-deriving every test that leaned on it - which
 here meant replacing a noise threshold with the physics it had been standing in for. Networks
 trained before the fix saw the distorted grid views and must be retrained.
+
+## 15. Make an amount mean the same thing for every species
+
+On the IP-HILIC runs the pipeline reported the conjugate's n-1 at 6.2 % of FLP where an
+extracted-ion ratio said 3.0 %, PO at 2.7 % against 3.6 % and n+1 at 5.6 % against 7.9 %. Three
+independent investigations - a better reference, the region boundaries, the missed species -
+took that apart:
+
+1. **The yardstick was wrong as often as the pipeline.** A +-1.2/z Th window holds two or three
+   isotopologue peaks depending on where a species' average mass falls between them: it caught
+   43 % of n+1's envelope and 31 % of FLP's, so the crude n+1 ratio was 1.39 times too high
+   (2887.4 Da in the NC run: 1.87 times). Windows over the whole envelope, every charge state that
+   carries the species, its own elution bounds and fitted overlaps give n+1 5.8 %, PO 2.9 % and
+   n-1 3.0 % of FLP. Check the reference before blaming the instrument it measures.
+2. **Adduct forms were counted for some species and not for others.** A region attaches an
+   adduct type to its species only when it shows that adduct next to its strongest species. The
+   test compared an average mass with a monoisotopic shift (K - H is 0.13 Da heavier on average,
+   half the tolerance) and measured the adduct form's mass differently from detection, so in
+   FLP's region, where one charge state dominates, it found none: FLP's +K, +Na, +Na+K and further
+   forms, together 90 % of FLP, came out as ten species of their own, while n-1's region attached
+   n-1's (55 % of its signal). n-1 was reported at twice its share. Now the test uses average-mass
+   shifts and detection's own measurement, adduct-form species are folded into the co-eluting
+   species they belong to, and shares compare base forms, which every species has measured the
+   same way. Forcing sodium and potassium into every region instead lost the NC run's PS-to-PO
+   impurity and NC - dG: PO-NC plus potassium is NC plus sodium to 0.07 Da. Base forms carry
+   their own bias where adduct loads differ - the main species' load falls at its own apex - so
+   base-form shares understate impurities by the ratio of the loads: up to 1.2 on the conjugate
+   run, 1.7-1.9 on the NC run.
+3. **Templates must stay where they were aligned.** At 140 000 (m/z 200) an Orbitrap peak at
+   m/z 1700 is narrower than a grid bin, and a template a quarter bin off its peaks is fitted
+   9 % low. Re-measuring a component's mass after the fit moved its templates by the change, and a
+   candidate re-centred from an adducted form onto its base kept the adducted form's alignment;
+   the main IP-RPLC species, re-centred that way, was fitted 5 % low, and every impurity's share
+   moved with it. Fixing the second exposed a third defect: a weak candidate stepped down two
+   adducts landed on the flank of the NC product's envelope, its freshly aligned template fitted
+   NC's isotopologues, and NC's own component in its tail region was dropped for two components
+   3 Da either side of it. A re-centred form must now be an envelope centred where the walk lands.
+4. **Region boundaries cut species.** The rule that a species peaking at its region's edge is a
+   neighbour's tail dropped the NC run's n-1 and the conjugate's deaminated form, which elute at
+   the valleys where two regions meet; it now applies only to a region's unshared sides. The
+   scan on a shared boundary belongs to both regions, and adding its two readings put the PS-to-PO
+   impurity's apex on the boundary; it is counted once.
+5. **What did not work.** Sliding templates over half an isotope spacing instead of 1.5 bins
+   (the IP-RPLC main species fell to 69 % of another report), adducts forced into every region
+   (above), and one template bank over abutting regions (the deaminated NC, 0.98 Da above NC,
+   took a quarter of NC).
+
+The lesson extends section 5: an amount is only comparable when every species' amount is made
+the same way, and a comparison against a reference is only as good as the reference.

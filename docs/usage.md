@@ -92,9 +92,15 @@ mobile phase cannot produce removes the ambiguity.
 ## Reading the output
 
 `species.csv` and the report's species table give, per species: mass, difference from the main
-species, retention time, area, percentage of the deconvolved ion signal, charge range,
+species, retention time, area of its base form (`area`) and of every adduct form resolved with it
+(`area_all_forms`), percentage of the deconvolved ion signal (base forms compared), charge range,
 mass spread across charge states (a quality measure — a real species agrees to a few parts per
-million), adduct fractions, and the modification that matches the mass difference.
+million), adduct fractions, and the modification that matches the mass difference. Adduct forms
+that were reported apart and belong to a co-eluting species are counted with it and listed in its
+flags. Percentages compare base forms because which adduct forms are resolved depends on the
+chromatographic region (`architecture.md`, section 5); where the adduct load differs between
+species - heavy ion pairing with acetate, the main species at its apex - they understate
+impurities by the ratio of the loads, which the adduct fractions of the two species show.
 
 `peaks_<signal>.csv` is a chromatographic peak table with retention time, boundaries, area,
 height, width at half height, area percentage, tailing factor and the baseline code.

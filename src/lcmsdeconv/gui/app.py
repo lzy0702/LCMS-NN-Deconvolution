@@ -139,10 +139,12 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         self.species_model = DictTableModel(
             [("name", "Species"), ("mass", "Mass (Da)"), ("delta_vs_main", "Δ vs main"),
-             ("rt", "RT (min)"), ("area", "Area"), ("percent", "% of ions"),
+             ("rt", "RT (min)"), ("area", "Area (base form)"),
+             ("area_all_forms", "Area (all forms)"), ("percent", "% of ions"),
              ("charges", "Charges"), ("mass_spread_ppm", "Spread (ppm)"),
              ("adducts", "Adducts"), ("annotation", "Annotation")],
             formats={"mass": ",.2f", "delta_vs_main": "+.3f", "rt": ".3f", "area": ",.0f",
+                     "area_all_forms": ",.0f",
                      "percent": ".4f", "mass_spread_ppm": ".1f"})
         self.species_view = QTableView()
         self.species_view.setModel(self.species_model)
@@ -420,7 +422,7 @@ class MainWindow(QMainWindow):
         self.mass_plot.clear()
         if self.result.species:
             masses = np.array([s.mass for s in self.result.species])
-            inten = np.array([s.total_intensity for s in self.result.species])
+            inten = np.array([s.base_intensity for s in self.result.species])
             for m, i in zip(masses, inten):
                 self.mass_plot.plot([m, m], [0, i], pen=pg.mkPen("#1b6ec2", width=2))
             self.mass_plot.setTitle("Deconvolved mass spectrum")
