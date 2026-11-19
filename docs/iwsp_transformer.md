@@ -399,8 +399,8 @@ named constants (beta, gamma, thresholds, the 0.6 Da kernel), each with a one-li
 reason. Written as dense matrices, every co-elution-gated head repeats one constant across the
 48 trace channels of query and key - tens of thousands of non-zero weights that say one thing
 each - which is why the rules count formulas and constants and cap non-zero weights at 50 000.
-LadderNet has 9 500-22 000 trained parameters. Version 0's ladder layer takes 1.6-2.1 s per
-48-scan tile on one core (40-53 s for a 30-min run; 0.05 s per TIC region in the drop-in mode);
+LadderNet has 9 500-22 000 trained parameters. Version 0's ladder layer takes 1.4-2.7 s per
+48-scan tile on one core (35-70 s for a 30-min run; 0.05 s per TIC region in the drop-in mode);
 the gated version is expected to cost about three times that, inside the limit of 5 s per tile.
 Memory, estimated: about 35 MB of channels per tile and 40 MB in flight per gated head, evaluated
 one head at a time.
