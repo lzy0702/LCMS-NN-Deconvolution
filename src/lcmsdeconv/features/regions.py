@@ -43,7 +43,11 @@ def find_regions(
     Uses the integrator when an :class:`IntegrationSettings` is supplied (peaks on the TIC or
     UV), otherwise falls back to fixed windows covering the whole run.
 
-    A peak is kept when it stands ``min_snr`` times above the trace's noise. The relative
+    A peak is kept when it stands ``min_snr`` times above the trace's noise. A 2 % impurity
+    eluting on its own (the non-conjugated product in the IP-HILIC conjugate run) makes a TIC
+    peak four times the noise, which ten times drops; the oligonucleotide methods use three,
+    where the decoder's own tests judge what such a region holds (on synthetic protein runs
+    three added false species, so the default stays ten). The relative
     floors (``min_rel_height`` of the tallest peak, ``min_rel_area`` of the total) are kept low
     on purpose: a second component at a few percent of the main one is an ordinary sample, and a
     floor tied to the tallest peak silently deletes it before deconvolution has a chance to

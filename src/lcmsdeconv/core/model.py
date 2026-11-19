@@ -249,8 +249,27 @@ class Species:
         return float(trapezoid(self.intensity, self.time)) if self.time.size > 1 else float(np.sum(self.intensity))
 
     @property
+    def base_intensity(self) -> float:
+        """The base form's part of ``total_intensity``, integrated the same way: all of it when
+        no adduct forms were resolved, none when only adducted forms were."""
+        if not self.adduct_intensity:
+            return self.total_intensity
+        y = self.adduct_intensity.get("base")
+        if y is None:
+            return 0.0
+        return float(trapezoid(y, self.time)) if self.time.size > 1 else float(np.sum(y))
+
+    @property
     def rt_apex(self) -> float:
-        return float(self.time[int(np.argmax(self.intensity))]) if self.time.size else float("nan")
+        """Retention time of the highest scan, read on the base form when adduct forms were
+        resolved: which adduct forms a region resolves differs from region to region, so a
+        species split over two regions can carry its adducts on one side only."""
+        if not self.time.size:
+            return float("nan")
+        y = self.adduct_intensity.get("base")
+        if y is None or np.shape(y) != self.time.shape or not np.any(np.asarray(y) > 0):
+            y = self.intensity
+        return float(self.time[int(np.argmax(y))])
 
     @property
     def max_intensity(self) -> float:
@@ -272,6 +291,7 @@ class Species:
             "rt_apex": self.rt_apex,
             "max_intensity": self.max_intensity,
             "total_intensity": self.total_intensity,
+            "base_intensity": self.base_intensity,
             "adduct_fractions": self.adduct_fractions(),
             "charges": {int(k): float(v) for k, v in self.charges.items()},
             "score": self.score,

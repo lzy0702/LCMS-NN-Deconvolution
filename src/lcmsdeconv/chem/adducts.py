@@ -28,6 +28,12 @@ class Adduct:
     def mass(self) -> float:
         return self.formula.mono_mass
 
+    @property
+    def avg_mass(self) -> float:
+        """The adduct's shift of an average mass (K - H is 0.13 Da more than its
+        monoisotopic shift: potassium is 6.7 % 41K)."""
+        return self.formula.avg_mass
+
 
 def _f(s: str) -> Formula:
     return Formula(s)
@@ -93,6 +99,35 @@ class AdductState:
     @property
     def mass(self) -> float:
         return sum(ADDUCTS[n].mass * k for n, k in self.counts)
+
+    @property
+    def avg_mass(self) -> float:
+        return sum(ADDUCTS[n].avg_mass * k for n, k in self.counts)
+
+    @classmethod
+    def from_label(cls, label: str, order: list[str] | None = None) -> AdductState:
+        """The state a label such as ``+2Na+K`` names ("" or "base" for none)."""
+        counts: dict[str, int] = {}
+        for tok in (label or "").split("+"):
+            if not tok or tok == "base":
+                continue
+            i = 0
+            while i < len(tok) and tok[i].isdigit():
+                i += 1
+            counts[tok[i:]] = counts.get(tok[i:], 0) + (int(tok[:i]) if i else 1)
+        return cls._ordered(counts, order)
+
+    def plus(self, other: AdductState, order: list[str] | None = None) -> AdductState:
+        """Both states' adducts together."""
+        counts = dict(self.counts)
+        for n, k in other.counts:
+            counts[n] = counts.get(n, 0) + k
+        return AdductState._ordered(counts, order)
+
+    @classmethod
+    def _ordered(cls, counts: dict[str, int], order: list[str] | None) -> AdductState:
+        rank = {n: i for i, n in enumerate(order or [])}
+        return cls(tuple(sorted(counts.items(), key=lambda t: (rank.get(t[0], len(rank)), t[0]))))
 
     @property
     def total(self) -> int:

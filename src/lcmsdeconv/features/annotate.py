@@ -16,7 +16,7 @@ def annotate_species(
     if not species:
         return species
     if main is None:
-        main = max(species, key=lambda s: s.total_intensity)
+        main = max(species, key=lambda s: s.base_intensity)
     main.annotations.append("main component")
     main.name = main.name or "main"
     for s in species:
@@ -39,15 +39,27 @@ def annotate_species(
 
 def impurity_table(species: list[Species], main: Species | None = None,
                    floor_pct: float = 0.01) -> list[dict]:
-    """Rows of impurity mass, delta, annotation and percentage of total deconvolved signal."""
+    """Rows of impurity mass, delta, annotation and percentage of the deconvolved signal.
+
+    A species' amount ("area", and the percentage) is its base form, without adducts, and its
+    total over every adduct form resolved is given beside it ("area_all_forms"). Which adduct
+    forms are resolved depends on the region: each region's decoder fits the adducts it sees
+    next to its strongest species, and fitting every adduct everywhere makes near-coincident
+    forms of co-eluting species trade signal (PO + K lies 0.09 Da from FLP + Na). All-forms
+    totals are therefore not comparable between species of different regions; base forms are
+    measured for every species alike. Where the adduct load differs between species - under
+    ion pairing with acetate it falls at the main species' own apex - base-form shares
+    understate an impurity by the ratio of the two species' adduct loads (up to 1.7 on the
+    IP-HILIC NC run, docs/benchmarks.md).
+    """
     if not species:
         return []
     if main is None:
-        main = max(species, key=lambda s: s.total_intensity)
-    total = sum(s.total_intensity for s in species)
+        main = max(species, key=lambda s: s.base_intensity)
+    total = sum(s.base_intensity for s in species)
     rows = []
-    for s in sorted(species, key=lambda x: -x.total_intensity):
-        pct = 100.0 * s.total_intensity / total if total > 0 else 0.0
+    for s in sorted(species, key=lambda x: -x.base_intensity):
+        pct = 100.0 * s.base_intensity / total if total > 0 else 0.0
         if pct < floor_pct and s is not main:
             continue
         rows.append({
@@ -56,7 +68,8 @@ def impurity_table(species: list[Species], main: Species | None = None,
             "mass": s.mass,
             "delta_vs_main": s.mass - main.mass,
             "rt": s.rt_apex,
-            "area": s.total_intensity,
+            "area": s.base_intensity,
+            "area_all_forms": s.total_intensity,
             "percent": pct,
             "annotation": "; ".join(s.annotations),
             "adducts": s.adduct_fractions(),

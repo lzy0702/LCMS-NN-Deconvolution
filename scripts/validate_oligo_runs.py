@@ -278,7 +278,11 @@ def main():
             method.deconvolution.coelution_r = args.coelution_r
         run = read_thermo_raw(path)
         species = process_run(run, method, model_path=args.model).species
-        top = max((s.total_intensity for s in species), default=1.0)
+        # amounts as the impurity table gives them: base forms, % of the strongest; the
+        # all-forms share (every adduct form the pipeline resolved) is shown beside it
+        top = max(species, key=lambda s: s.base_intensity, default=None)
+        base0 = top.base_intensity if top is not None else 1.0
+        all0 = top.total_intensity if top is not None else 1.0
         n_reported += len(species)
         sc = score(key, species, lambda m, t, run=run: joint_eic_peak(run, m, t))
         print(f"== {key} ({path.name}): {len(species)} species reported")
@@ -287,7 +291,8 @@ def main():
                 totals[kind][1] += 1
                 totals[kind][0] += s is not None
             got = "-" if s is None else (f"{s.mass:.2f} ({s.mass - mass:+.2f} Da) at {s.rt_apex:.2f} min, "
-                                         f"{100 * s.total_intensity / top:.2f} %")
+                                         f"{100 * s.base_intensity / base0:.2f} % "
+                                         f"(all forms {100 * s.total_intensity / all0:.2f} %)")
             print(f"   {kind:8s} {name:26s} {mass:9.2f} @ {rt:5.2f}: {got}")
         for s, why in sc["others"]:
             k = (why.split(" form")[0] if " form" in why
@@ -295,7 +300,7 @@ def main():
                  else "same molecule" if why.startswith("same molecule") else why)
             kinds[k] = kinds.get(k, 0) + 1
             print(f"   other    {s.mass:9.2f} @ {s.rt_apex:5.2f} "
-                  f"({100 * s.total_intensity / top:.3f} %): {why}")
+                  f"({100 * s.base_intensity / base0:.3f} %): {why}")
     print(f"\npaper species found {totals['paper'][0]}/{totals['paper'][1]}, SI-listed species "
           f"{totals['si'][0]}/{totals['si'][1]}; {n_reported} reported, of the others: "
           + ", ".join(f"{k} {v}" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])))

@@ -107,9 +107,12 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     power and charge four. A least-squares fit cannot absorb that: a template a bin off the
     peaks it should explain is scaled to a third of them. Every charge state's base template
     is slid over +-``max_bins`` (the same shift in ln(m/z) for all of them, as a mass error
-    would be) and the shift with the largest normalized overlap with the spectrum is kept.
-    Only where the instrument resolves the isotopes of the candidate's central charge state;
-    elsewhere a bin is a small part of an envelope and the shift is 0.
+    would be) and the shift with the largest normalized overlap with the spectrum is kept,
+    no shift unless one does clearly better. The overlap is smooth in the shift, so a parabola
+    through the best step and its neighbours puts the optimum between steps: at Orbitrap
+    resolving power a peak is narrower than a bin, and a quarter bin off its peaks a template
+    is scaled 2 % low. Only where the instrument resolves the isotopes of the candidate's
+    central charge state; elsewhere a bin is a small part of an envelope and the shift is 0.
     """
     from ..chem.adducts import carrier_mass
 
@@ -123,21 +126,29 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     if len(zs) > max_charges:
         mid = len(zs) // 2
         zs = zs[max(0, mid - max_charges // 2): mid + max_charges // 2]
-    best_s, best = 0.0, -np.inf
-    for s in np.arange(-max_bins, max_bins + 1e-9, step_bins):
+    shifts = np.arange(-max_bins, max_bins + 1e-9, step_bins)
+    scores = np.zeros(shifts.size)
+    for k, s in enumerate(shifts):
         m = cand.mass * float(np.exp(s * grid.step))
-        score = 0.0
         for z in zs:
             t = build_template(m, z, grid, instrument, compound_class)
             if t is None:
                 continue
             norm = float(np.sqrt(t.values @ t.values))
             if norm > 0:
-                score += float(spectrum[t.bins] @ t.values) / norm
-        # prefer no shift unless one explains clearly more
-        if score > best * (1.0 + 1e-3) or (s == 0.0 and score >= best):
-            best_s, best = float(s), score
-    return best_s * grid.step
+                scores[k] += float(spectrum[t.bins] @ t.values) / norm
+    k = int(np.argmax(scores))
+    zero = int(np.argmin(np.abs(shifts)))
+    # prefer no shift unless one explains clearly more
+    if scores[k] <= 0 or scores[zero] >= (1.0 - 1e-3) * scores[k]:
+        return 0.0
+    best = float(shifts[k])
+    if 0 < k < shifts.size - 1:
+        a, b, c = scores[k - 1], scores[k], scores[k + 1]
+        den = a - 2.0 * b + c
+        if den < 0:
+            best += float(np.clip(0.5 * (a - c) / den, -0.5, 0.5)) * step_bins
+    return best * grid.step
 
 
 def refine_frame(
@@ -255,8 +266,10 @@ def refine_frame(
             )
             if moved is not cand:
                 cand, full = moved, full2
-                # re-centred: measure the mass again from the raw envelopes at the new centre
+                # re-centred: measure the mass again from the raw envelopes at the new centre,
+                # with the templates where the lighter form's own alignment put them
                 comp.mass = cand.mass
+                comp.template_shift = cand.template_shift
                 if raw_mz is not None:
                     _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
         if full is not None:
@@ -363,13 +376,51 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
         moved = True
     if not moved:
         return cand, full
+    # the lighter form must be an envelope of its own, centred where the walk lands: a weak
+    # candidate stepped down by adducts can land on the flank of a much stronger species'
+    # envelope, whose isotopologues an aligned template then fits (the IP-RPLC NC product's
+    # tail was split into 5159.3 and 5166.1 Da that way, its own component dropped)
+    env_sigma, _off = envelope_geometry(mass, compound_class)
+    centre = _envelope_centre(mass, charges, raw_mz, raw_int, grid.polarity, compound_class,
+                              resolution)
+    if centre is None or abs(centre - mass) > max(0.5 * env_sigma, 0.5):
+        return cand, full
     trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
-                      intensity=cand.intensity, template_shift=cand.template_shift)
+                      intensity=cand.intensity)
+    # the lighter form's isotopologues are its own: the heavier centre's alignment is not theirs
+    trial.template_shift = align_template(trial, residual, grid, instrument, compound_class)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)
     if full2[2] >= full[2] * (1.0 + min_gain):
         return trial, full2
     return cand, full
+
+
+def _envelope_centre(mass: float, charges, raw_mz, raw_int, polarity: int, compound_class: str,
+                     resolution: float) -> float | None:
+    """Where the envelopes near ``mass`` are centred: the per-charge mean shifts of
+    :func:`_refine_mass`, started at ``mass`` and free to travel, averaged with their kernel
+    weights; None when no charge state shows an envelope."""
+    from .decode import _mean_shift, envelope_geometry
+
+    env_sigma, offset = envelope_geometry(mass, compound_class)
+    kern_da = float(np.sqrt(env_sigma ** 2 + (mass / max(resolution, 1.0) / 2.354820045) ** 2))
+    carrier = carrier_mass(polarity)
+    ms, ws = [], []
+    for z in charges:
+        pos, kw = _mean_shift(raw_mz, raw_int, (mass + offset + z * carrier) / z, kern_da / z)
+        if kw > 0:
+            ms.append(z * (pos - carrier) - offset)
+            ws.append(kw)
+    return float(np.average(ms, weights=ws)) if ms else None
+
+
+def _set_mass(comp: Component, mass: float) -> None:
+    """Move a component's mass without moving its templates: the template shift is adjusted so
+    that templates stay where the fit aligned them (mass * exp(template_shift) is kept)."""
+    if comp.mass > 0 and mass > 0:
+        comp.template_shift += float(np.log(comp.mass / mass))
+    comp.mass = float(mass)
 
 
 def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 200.0,
@@ -417,7 +468,7 @@ def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 20
     best = max(groups, key=lambda g: ws[g].sum())
     bm, bw = ms[best], ws[best]
     mean = float(np.average(bm, weights=bw))
-    comp.mass = mean
+    _set_mass(comp, mean)
     comp.mass_spread_ppm = (float(np.sqrt(np.average((bm - mean) ** 2, weights=bw)) / mean * 1e6)
                             if bm.size > 1 else 0.0)
 
@@ -437,12 +488,14 @@ def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da
             keep.append(c)
             continue
         w0, w1 = hit.intensity, c.intensity
-        hit.mass = (hit.mass * w0 + c.mass * w1) / max(w0 + w1, 1e-12)
+        _set_mass(hit, (hit.mass * w0 + c.mass * w1) / max(w0 + w1, 1e-12))
         hit.intensity += c.intensity
         for z, v in c.charges.items():
             hit.charges[z] = hit.charges.get(z, 0.0) + v
         for a, v in c.adducts.items():
             hit.adducts[a] = hit.adducts.get(a, 0.0) + v
+        for key, v in c.columns.items():
+            hit.columns[key] = hit.columns.get(key, 0.0) + v
     components[:] = keep
 
 

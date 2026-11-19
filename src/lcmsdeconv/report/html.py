@@ -117,11 +117,13 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
             adducts = ", ".join(f"{k} {v*100:.1f}%" for k, v in
                                 sorted(r["adducts"].items(), key=lambda x: -x[1])[:4])
             rows.append([r["name"] or "-", _fmt(r["mass"], 2), _fmt(r["delta_vs_main"], 3),
-                         _fmt(r["rt"], 3), _fmt(r["area"], 1), _fmt(r["percent"], 4),
+                         _fmt(r["rt"], 3), _fmt(r["area"], 1),
+                         _fmt(r.get("area_all_forms"), 1), _fmt(r["percent"], 4),
                          r["charges"], _fmt(r["mass_spread_ppm"], 1), adducts or "-",
                          r["annotation"]])
             classes.append("main" if "main component" in r["annotation"] else "")
-        parts.append(_table(["Species", "Mass (Da)", "Δ vs main", "RT (min)", "Area", "% of ions",
+        parts.append(_table(["Species", "Mass (Da)", "Δ vs main", "RT (min)", "Area (base form)",
+                             "Area (all forms)", "% of ions",
                              "Charges", "Spread (ppm)", "Adducts", "Annotation"], rows, classes))
 
     if result.purity:
@@ -208,7 +210,7 @@ def _plot_species(result) -> str:
     img = f'<img src="{_fig_to_uri(fig)}" alt="deconvolved EICs">'
 
     masses = np.array([s.mass for s in result.species])
-    inten = np.array([s.total_intensity for s in result.species])
+    inten = np.array([s.base_intensity for s in result.species])
     fig2, ax2 = plt.subplots(figsize=(9, 2.8))
     if masses.size:
         ax2.vlines(masses, 0, inten, color="#1b6ec2", lw=1.4)
@@ -216,6 +218,6 @@ def _plot_species(result) -> str:
         ax2.set_ylabel("Summed intensity", fontsize=9)
         ax2.tick_params(labelsize=8)
         top = result.species[0]
-        ax2.annotate(f"{top.mass:,.1f}", (top.mass, top.total_intensity), fontsize=8,
+        ax2.annotate(f"{top.mass:,.1f}", (top.mass, top.base_intensity), fontsize=8,
                      ha="center", va="bottom")
     return img + f'<img src="{_fig_to_uri(fig2)}" alt="deconvolved mass spectrum">'

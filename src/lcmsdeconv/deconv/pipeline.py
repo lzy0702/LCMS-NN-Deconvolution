@@ -282,7 +282,11 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
     out wrong even when every mass is right. A type is kept when, for one of the
     ``n_species`` strongest candidates, a candidate at M + delta with the same charges passes
     :func:`refine_candidate_masses` - at least two charge states agreeing on the mass, with the
-    isotope comb checked where it is resolved.
+    isotope comb checked where it is resolved, and the per-charge masses measured as detection
+    measures them - at the candidate's average mass plus the adduct's average-mass shift (for
+    K - H it is 0.13 Da more than the monoisotopic shift, half the tolerance). A region whose
+    strongest species shows an adduct form that this test misses reports that form as a
+    species of its own, while other regions attach the same adduct to their species.
     """
     from .decode import Candidate
 
@@ -298,8 +302,9 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
                                          resolution=float(instrument.resolving_power(1000.0)),
                                          instrument=instrument, profile=profile,
                                          tol_ppm=50.0, frames=frames,
-                                         coelution_r=params.coelution_r)
-            if ok and abs(ok[0].mass - (c.mass + adduct.mass)) <= max(2e-5 * c.mass, 0.3):
+                                         coelution_r=params.coelution_r,
+                                         envelope_move=params.isotope_charges)
+            if ok and abs(ok[0].mass - (c.mass + adduct.avg_mass)) <= max(2e-5 * c.mass, 0.3):
                 kept.add(adduct.name)
                 break
     return kept

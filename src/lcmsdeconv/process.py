@@ -16,6 +16,7 @@ from .deconv.pipeline import DeconvParams, deconvolve_spectrum
 from .features.annotate import annotate_species, impurity_table
 from .features.link import (
     _is_flat,
+    fold_adduct_forms,
     link_species,
     merge_adjacent_species,
     merge_species_across_polarity,
@@ -158,9 +159,15 @@ def process_run(
         result.chromatograms[f"TIC{'+' if pol > 0 else '-'}"] = tic
         regions = find_regions(run, method.regions.source, pol, method.regions.window_min,
                                method.regions.margin_min, method.regions.min_frames,
-                               integration=method.integration_for("tic"))
+                               integration=method.integration_for("tic"),
+                               min_snr=getattr(method.regions, "min_snr", 10.0))
         result.regions.extend(regions)
-        for region in regions:
+        # a boundary two regions share is drawn at the valley between their bands
+        rts = np.array([f.rt for f in run.frames(pol)])
+        step = float(np.median(np.diff(rts))) if rts.size > 1 else 0.0
+        for ri, region in enumerate(regions):
+            shared = (ri > 0 and region.start - regions[ri - 1].end <= 0.5 * step,
+                      ri + 1 < len(regions) and regions[ri + 1].start - region.end <= 0.5 * step)
             if progress:
                 progress(f"deconvolving region {region.id} ({region.start:.2f}-{region.end:.2f} min)")
             summed = region.summed(run)
@@ -188,7 +195,8 @@ def process_run(
                               method.linking.mass_tolerance_da, method.linking.min_frames,
                               method.linking.max_gap_frames, method.linking.noise_peak_ratio,
                               region_id=region.id, start_id=sid,
-                              flat_test=not method.deconvolution.quantify_frames)
+                              flat_test=not method.deconvolution.quantify_frames,
+                              shared_edges=shared)
             if method.deconvolution.quantify_frames and sp:
                 sp = _drop_flat_species(sp, bank, run, region, pol, method)
             sid += len(sp) + 1
@@ -198,9 +206,18 @@ def process_run(
 
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
                                          method.linking.mass_tolerance_da)
+    # a species' adduct forms count with it however each region's decoder reported them; the
+    # two masses are measured independently, each within the linking tolerance
+    all_species = fold_adduct_forms(all_species, {
+        pol: AdductLibrary.from_mode(params.adduct_mode, pol, include=params.adduct_include,
+                                     exclude=params.adduct_exclude,
+                                     max_per_type=params.adduct_max_per_type,
+                                     max_total=params.adduct_max_total)
+        for pol in polarities}, tolerance_da=2.0 * method.linking.mass_tolerance_da,
+        tolerance_ppm=2.0 * method.linking.mass_tolerance_ppm)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
-    all_species.sort(key=lambda s: -s.total_intensity)
+    all_species.sort(key=lambda s: -s.base_intensity)
     result.species = all_species
 
     # deconvolved EICs and their integration

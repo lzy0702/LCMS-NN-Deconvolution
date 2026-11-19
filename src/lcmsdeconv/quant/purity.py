@@ -98,14 +98,15 @@ def area_percent_purity(table: PeakTable, main_peak: Peak | None = None,
 
 
 def ms_purity(species: list[Species], main: Species | None = None) -> dict:
-    """Share of deconvolved ion signal belonging to the main species."""
+    """Share of deconvolved ion signal belonging to the main species, base forms compared
+    (:func:`lcmsdeconv.features.annotate.impurity_table` says why)."""
     if not species:
         return {"main_percent": 0.0, "n_species": 0}
-    total = sum(s.total_intensity for s in species)
+    total = sum(s.base_intensity for s in species)
     if main is None:
-        main = max(species, key=lambda s: s.total_intensity)
+        main = max(species, key=lambda s: s.base_intensity)
     return {
-        "main_percent": 100.0 * main.total_intensity / total if total > 0 else 0.0,
+        "main_percent": 100.0 * main.base_intensity / total if total > 0 else 0.0,
         "main_mass": main.mass,
         "n_species": len(species),
         "total_intensity": total,

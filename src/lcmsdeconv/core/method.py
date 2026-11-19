@@ -109,6 +109,10 @@ class RegionSettings:
     window_min: float = 0.5  # used for fixed windows or when no peaks are found
     margin_min: float = 0.05
     min_frames: int = 2
+    #: a chromatographic peak becomes a region when it stands this many times above the trace's
+    #: noise (the oligonucleotide methods use 3: a 2 % impurity eluting on its own makes a TIC
+    #: peak about four times the noise)
+    min_snr: float = 10.0
 
 
 @dataclass
