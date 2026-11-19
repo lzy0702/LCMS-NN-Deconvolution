@@ -143,7 +143,7 @@ def deconvolve_spectrum(
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
         snap("harmonics", cands, it)
-        cands = dedupe_adduct_candidates(cands, library.deltas())
+        cands = dedupe_adduct_candidates(cands, library.avg_deltas())
         snap("adduct_dedupe", cands, it)
         if cands:
             floor = params.min_relative_abundance * max(c.score for c in cands)
@@ -221,7 +221,8 @@ def deconvolve_spectrum(
             # classes are nearly identical, so an automatic choice is a hint, not a finding
             c.flags.append(f"compound class {cls} chosen automatically")
     return FrameResult(spectrum.rt, polarity, components, noise_sigma, residual_fraction,
-                       meta={"resolution": instrument.resolution, "grid": grid})
+                       meta={"resolution": instrument.resolution, "grid": grid,
+                             "adducts": library.names()})
 
 
 def _dedupe_by_mass(candidates, tol_ppm: float = 100.0, tol_da: float = 0.3):

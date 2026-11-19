@@ -109,7 +109,8 @@ def ms_purity(species: list[Species], main: Species | None = None) -> dict:
         "main_percent": 100.0 * main.base_intensity / total if total > 0 else 0.0,
         "main_mass": main.mass,
         "n_species": len(species),
-        "total_intensity": total,
+        "base_intensity": total,
+        "total_intensity": sum(s.total_intensity for s in species),
     }
 
 

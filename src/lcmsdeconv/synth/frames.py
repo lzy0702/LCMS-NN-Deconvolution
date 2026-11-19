@@ -145,6 +145,11 @@ def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: floa
     return out
 
 
+#: points written on either side of every point above a vendor threshold (as
+#: ``synth.chromatography._threshold_profile`` does for whole runs)
+VENDOR_PAD = 3
+
+
 def scan_spectra(scans, polarity: int) -> list:
     """The thresholded scans ``[(mz, intensity), ...]`` of a training frame as profile spectra,
     as a region hands its scans to ``spectrum_to_grid(..., frames=...)`` at inference."""
@@ -211,7 +216,13 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         scan = rng.poisson(lam).astype(np.float64) * gain + np.abs(rng.normal(0.0, esig, axis.size))
         if sat_level is not None:
             scan = np.minimum(scan, sat_level)
-        scan[scan < thr] = 0.0
+        if thr > 0:
+            # vendor thresholding writes every point above the threshold together with its
+            # neighbours, as segments (real Thermo scans hold no segment shorter than five
+            # points), never noise points one by one
+            above = scan >= thr
+            keep = np.convolve(above, np.ones(2 * VENDOR_PAD + 1), mode="same") > 0
+            scan[~keep] = 0.0
         frames_int.append(scan)
 
     # exactly the grid view inference builds for this summed spectrum: each scan resampled on

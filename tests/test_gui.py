@@ -34,7 +34,7 @@ def test_window_builds(qtbot):
     qtbot.addWidget(win)
     assert win.method.name
     assert win.event_type.count() > 20
-    assert win.species_model.columnCount() == 10
+    assert win.species_model.columnCount() == 11
 
 
 def test_load_run_and_plot(qtbot, demo_run):

@@ -118,9 +118,10 @@ def link_species(
 
 
 def merge_species_across_polarity(species: list[Species], tolerance_ppm: float = 50.0) -> list[Species]:
-    """Merge species detected in both polarities of a polarity-switching run."""
+    """Merge species detected in both polarities of a polarity-switching run, keeping the reading
+    with the larger base form (the amount reported)."""
     out: list[Species] = []
-    for s in sorted(species, key=lambda x: -x.total_intensity):
+    for s in sorted(species, key=lambda x: -x.base_intensity):
         hit = None
         for k in out:
             if k.polarity != s.polarity and abs(k.mass - s.mass) / k.mass * 1e6 < tolerance_ppm:
@@ -158,11 +159,11 @@ def _on(times: np.ndarray, t_src: np.ndarray, y_src: np.ndarray) -> np.ndarray:
 
 
 def _coelute(a: Species, b: Species, min_r: float, max_apex_min: float) -> bool:
-    """Do two species' traces peak together and rise and fall together?"""
-    if abs(a.rt_apex - b.rt_apex) > max_apex_min:
-        return False
+    """Do two species' traces (all forms) peak together and rise and fall together?"""
     times = np.union1d(a.time, b.time)
     ya, yb = _on(times, a.time, a.intensity), _on(times, b.time, b.intensity)
+    if abs(times[int(np.argmax(ya))] - times[int(np.argmax(yb))]) > max_apex_min:
+        return False
     carried = (ya > 0) | (yb > 0)
     if np.count_nonzero(carried) < 4:
         return True  # too few scans to show a profile: the apexes decide
@@ -172,8 +173,8 @@ def _coelute(a: Species, b: Species, min_r: float, max_apex_min: float) -> bool:
     return float(np.corrcoef(ya, yb)[0, 1]) >= min_r
 
 
-def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 1.0,
-                      tolerance_ppm: float = 60.0, min_r: float = 0.8,
+def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0.6,
+                      tolerance_ppm: float = 40.0, min_r: float = 0.8,
                       max_apex_min: float = 0.1) -> list[Species]:
     """Count every species' adduct forms with it, wherever the decoder reported them.
 
@@ -188,12 +189,15 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 1
     A species is an adduct form of another when its mass is the other's plus an adduct state
     of the method's library (average-mass shifts, within ``tolerance_da`` or
     ``tolerance_ppm``), the other is at least as strong, and the two elute together: apexes
-    within ``max_apex_min`` and traces correlating at ``min_r`` or better. Its trace is added
-    to the parent's under the combined adduct labels. Where several species qualify, the
-    strongest is the parent, as a weaker species does not keep a stronger one's adduct. A mass
-    difference that a known modification of the species' class explains as well (oxidation,
-    +15.99 Da, lies 1.04 Da from an ammonium adduct; a PEG unit 0.07 Da from two sodium ions)
-    is not folded: the species may be an impurity, and a report too many is the lesser error.
+    within ``max_apex_min`` and traces correlating at ``min_r`` or better (strength: the base
+    form's amount). Its trace is added to the parent's under the combined adduct labels. Where
+    several species qualify, the strongest is the parent, as a weaker species does not keep a
+    stronger one's adduct. A mass
+    difference that a known modification of the species' class explains as well (peptide
+    oxidation, +15.99 Da, lies 1.04 Da from an ammonium adduct; an oligonucleotide's n+1 can lie
+    within a dalton of amine and HFIP clusters) is not folded: the species may be an impurity,
+    and a report too many is the lesser error. Modifications listed for any class only (a PEG
+    unit, 0.07 Da from two sodium ions) do not count.
     ``libraries`` is an :class:`~lcmsdeconv.chem.adducts.AdductLibrary` or a dict of them by
     polarity.
     """
@@ -211,7 +215,9 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 1
 
     out: list[Species] = []
     folded: dict[int, list[str]] = {}
-    for s in sorted(species, key=lambda x: -x.total_intensity):
+    # strength is the base form's: a form reported apart can carry adduct columns of its own
+    # that took up a neighbour's ladder, and outweigh its parent on all forms
+    for s in sorted(species, key=lambda x: -x.base_intensity):
         st, shifts, order = states(s.polarity)
         parent = state = None
         for k in out if st else ():
@@ -222,7 +228,8 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 1
             tol = max(tolerance_da, k.mass * tolerance_ppm * 1e-6)
             if abs(shifts[j] - d) > tol:
                 continue
-            if annotate_delta(d, s.compound_class or k.compound_class, tolerance=tol):
+            cls = s.compound_class or k.compound_class
+            if any(cls in m.classes for m in annotate_delta(d, cls, tolerance=tol)):
                 continue
             if _coelute(k, s, min_r, max_apex_min):
                 parent, state = k, st[j]
@@ -251,8 +258,22 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 1
     return out
 
 
+def _one_band(times: np.ndarray, y_a: np.ndarray, y_b: np.ndarray, valley: float,
+              comparable: float = 0.1) -> bool:
+    """Do two pieces' traces (on one time axis) join into one elution band? A piece below
+    ``comparable`` of the other's height is a fragment of it (a tail, a stray scan) and joins."""
+    ia, ib = int(np.argmax(y_a)), int(np.argmax(y_b))
+    ha, hb = float(y_a[ia]), float(y_b[ib])
+    lo, hi = sorted((ia, ib))
+    if hi - lo < 2 or min(ha, hb) < comparable * max(ha, hb):
+        return True
+    joined = np.maximum(y_a, y_b)
+    return float(joined[lo:hi + 1].min()) >= valley * min(ha, hb)
+
+
 def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
-                           tolerance_da: float = 0.5, max_gap_min: float = 0.2) -> list[Species]:
+                           tolerance_da: float = 0.5, max_gap_min: float = 0.2,
+                           valley: float = 0.5) -> list[Species]:
     """Merge one species that was linked separately in neighbouring regions.
 
     A broad elution band can be split into several regions; the same species is then found in
@@ -261,6 +282,9 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
     strongest, concatenating their traces. A scan both regions hold (the one on their shared
     boundary) is counted once, with the larger of its two readings: the other region's bank
     may hold only a weak copy of the species there, and adding the two counted it twice.
+    Pieces of comparable height whose joined trace falls between their apexes below ``valley``
+    of the lower apex are two elution bands of one mass - isomers either side of a boundary -
+    and stay apart.
     """
     out: list[Species] = []
     for s in sorted(species, key=lambda x: -x.total_intensity):
@@ -272,8 +296,10 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
                 continue
             gap = max(float(s.time.min()) - float(k.time.max()), float(k.time.min()) - float(s.time.max()))
             if gap <= max_gap_min:
-                hit = k
-                break
+                t = np.union1d(k.time, s.time)
+                if _one_band(t, _on(t, k.time, k.intensity), _on(t, s.time, s.intensity), valley):
+                    hit = k
+                    break
         if hit is None:
             out.append(s)
             continue

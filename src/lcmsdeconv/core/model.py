@@ -128,7 +128,7 @@ class Run:
         decoder reads from them whether a species' charge states co-elute
         (:mod:`lcmsdeconv.deconv.coelution`).
         """
-        from .profile import profile_on_axis
+        from .profile import profiles_on_union
 
         if not frames:
             raise ValueError("No frames to sum")
@@ -140,13 +140,12 @@ class Run:
         else:
             ref = max(frames, key=lambda f: f.mz.size)
             mz = np.unique(np.concatenate([np.asarray(f.mz, dtype=float) for f in frames]))
-            total = np.zeros(mz.size)
+            total = profiles_on_union([(f.mz, f.intensity) for f in frames
+                                       if f.is_profile is not False], mz)
             for f in frames:
                 if f.is_profile is False:
                     idx = np.clip(np.searchsorted(mz, f.mz), 0, mz.size - 1)
                     np.add.at(total, idx, f.intensity)
-                else:
-                    total += profile_on_axis(mz, f.mz, f.intensity)
         rt = float(np.mean([f.rt for f in frames]))
         meta = {"n_frames": len(frames), "rt_range": (frames[0].rt, frames[-1].rt),
                 "frames": list(frames)}
@@ -262,12 +261,16 @@ class Species:
     @property
     def rt_apex(self) -> float:
         """Retention time of the highest scan, read on the base form when adduct forms were
-        resolved: which adduct forms a region resolves differs from region to region, so a
-        species split over two regions can carry its adducts on one side only."""
+        resolved and the base form carries a tenth of the species or more: which adduct forms a
+        region resolves differs from region to region, so a species split over two regions can
+        carry its adducts on one side only. A species that is nearly all adduct columns (an
+        adducted form reported apart) is read on all its forms: a stray base reading would set
+        its apex."""
         if not self.time.size:
             return float("nan")
         y = self.adduct_intensity.get("base")
-        if y is None or np.shape(y) != self.time.shape or not np.any(np.asarray(y) > 0):
+        if (y is None or np.shape(y) != self.time.shape
+                or self.base_intensity < 0.1 * self.total_intensity):
             y = self.intensity
         return float(self.time[int(np.argmax(y))])
 
@@ -276,7 +279,11 @@ class Species:
         return float(np.max(self.intensity)) if self.intensity.size else 0.0
 
     def adduct_fractions(self) -> dict[str, float]:
-        tot = {k: float(np.sum(v)) for k, v in self.adduct_intensity.items()}
+        """Each form's share of the species, integrated as ``total_intensity`` is."""
+        if self.time.size > 1:
+            tot = {k: float(trapezoid(v, self.time)) for k, v in self.adduct_intensity.items()}
+        else:
+            tot = {k: float(np.sum(v)) for k, v in self.adduct_intensity.items()}
         s = sum(tot.values())
         return {k: v / s for k, v in tot.items()} if s > 0 else {}
 

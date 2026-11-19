@@ -566,7 +566,8 @@ def cmd_gaps(tl: Tiles, args) -> None:
               f"wider than 3 median spacings, carrying {np.sum(y[wide] * du[wide]) / np.sum(y * du):.0%}"
               f" of the resampled signal")
         # the region's grid view three ways, on the grid the pipeline builds for this sum
-        grid, view_pkg, sig_pkg = spectrum_to_grid(tot.mz, tot.intensity, tl.polarity)
+        grid, view_pkg, sig_pkg = spectrum_to_grid(tot.mz, tot.intensity, tl.polarity,
+                                                   frames=tot.meta.get("frames"))
         view_cap = resample_scan(grid, tot.mz, tot.intensity)
         view_scans = sum(resample_scan(grid, f.mz, f.intensity) for f in frames)
         sigmas = [sig_pkg, estimate_noise_sigma(view_cap), estimate_noise_sigma(view_scans)]

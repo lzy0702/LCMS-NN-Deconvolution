@@ -213,3 +213,7 @@ class AdductLibrary:
 
     def deltas(self) -> dict[str, float]:
         return {a.name: a.mass for a in self.adducts}
+
+    def avg_deltas(self) -> dict[str, float]:
+        """Each adduct's shift of an average mass, for comparing average masses."""
+        return {a.name: a.avg_mass for a in self.adducts}
