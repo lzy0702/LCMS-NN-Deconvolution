@@ -94,8 +94,9 @@ def deconvolve_spectrum(
                                       max_total=params.adduct_max_total)
     raw_order = np.argsort(spectrum.mz)
     raw_mz, raw_int = spectrum.mz[raw_order], spectrum.intensity[raw_order]
-    # the scans a region's spectrum sums, for the co-elution of charge states
-    frames = FrameStack.from_spectrum(spectrum) if params.coelution_r > 0 else None
+    # the scans a region's spectrum sums: their own point spacing, and the co-elution of charge
+    # states (the co-elution tests abstain with fewer than four scans)
+    frames = FrameStack.from_spectrum(spectrum, min_frames=1)
     # the class sets the isotope-envelope width used to locate each charge state's envelope;
     # with automatic selection the class is only known after detection, and the first
     # candidate class is the best prior

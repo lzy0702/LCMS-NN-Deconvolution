@@ -9,8 +9,11 @@ must not read a gap as signal:
 * interpolating a scan onto another axis (:func:`profile_on_axis`): between two segments the
   scan holds nothing, not a ramp from one segment's edge to the next.
 
-A gap is a spacing more than ``GAP_FACTOR`` times the local median spacing (a running median
-over ``GAP_WINDOW`` spacings), measured in ln(m/z) so that it is the same at every m/z.
+A gap is a spacing more than ``GAP_FACTOR`` times the scan's own spacing there, measured in
+ln(m/z) so that it is the same at every m/z. The own spacing is a low percentile
+(``SPACING_PERCENTILE``) of the spacings in a window of ``GAP_WINDOW`` around each: where noise
+or weak ions leave many one- and two-point segments, gaps are most of the spacings, and a median
+would take them for the spacing.
 """
 
 from __future__ import annotations
@@ -18,17 +21,37 @@ from __future__ import annotations
 import numpy as np
 
 GAP_FACTOR = 3.0
-GAP_WINDOW = 33
+GAP_WINDOW = 65
+SPACING_PERCENTILE = 20.0
+#: a scan's own spacing changes with m/z by at most this factor about its typical value (the
+#: spacing of Orbitrap and time-of-flight profiles goes as a power of m/z: a factor of about
+#: 2.5 over m/z 400-2500), so a stretch where every spacing is wider holds isolated points
+SPACING_SPREAD = 3.0
 
 
 def local_spacing(gaps: np.ndarray, window: int = GAP_WINDOW) -> np.ndarray:
-    """Running median of consecutive spacings: the typical spacing around each one."""
-    from scipy.ndimage import median_filter
+    """The scan's own spacing around each of its consecutive spacings ``gaps``.
 
-    if gaps.size == 0:
-        return gaps.copy()
-    size = max(1, min(window, gaps.size))
-    return median_filter(gaps, size=size, mode="nearest")
+    The low percentile of each block of ``window`` consecutive spacings, interpolated between
+    block centres (held at the ends): the first and last spacing are judged against the
+    spacings inside the scan, and the whole scan costs one vectorized percentile. A block of
+    nothing but isolated points shows only gaps; its spacing is capped at ``SPACING_SPREAD``
+    times the median block's.
+    """
+    g = np.asarray(gaps, dtype=float)
+    n = g.size
+    if n == 0:
+        return g.copy()
+    w = max(1, min(window, n))
+    nb = n // w
+    vals = list(np.percentile(g[: nb * w].reshape(nb, w), SPACING_PERCENTILE, axis=1))
+    centres = list(np.arange(nb) * w + 0.5 * (w - 1))
+    if n > nb * w:  # the remainder, judged with the spacings just before it
+        vals.append(float(np.percentile(g[n - w:], SPACING_PERCENTILE)))
+        centres.append(n - 0.5 * (w + 1))
+    vals = np.asarray(vals)
+    vals = np.minimum(vals, SPACING_SPREAD * float(np.median(vals)))
+    return np.interp(np.arange(n, dtype=float), np.asarray(centres), vals)
 
 
 def gap_mask(x: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:
@@ -36,6 +59,16 @@ def gap_mask(x: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:
     lx = np.log(np.asarray(x, dtype=float))
     g = np.diff(lx)
     return g > factor * local_spacing(g)
+
+
+def scan_spacing(mz: np.ndarray, lo: float, hi: float, min_points: int = 4) -> float | None:
+    """A scan's own point spacing (m/z) within [lo, hi]: the low percentile of its spacings
+    there, or None when it has fewer than ``min_points`` points in the interval."""
+    mz = np.asarray(mz, dtype=float)
+    a, b = int(np.searchsorted(mz, lo)), int(np.searchsorted(mz, hi))
+    if b - a < min_points:
+        return None
+    return float(np.percentile(np.diff(mz[a:b]), SPACING_PERCENTILE))
 
 
 def sample_widths(u: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:

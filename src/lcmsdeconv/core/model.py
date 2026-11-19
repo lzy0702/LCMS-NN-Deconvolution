@@ -119,7 +119,10 @@ class Run:
         interpolation within its own segments and contributes nothing inside its gaps
         (:func:`lcmsdeconv.core.profile.profile_on_axis`): vendor-thresholded scans hold no
         signal there, and every point any frame measured is kept. Centroided frames add their
-        peaks at their own positions. The frames themselves are kept in ``meta["frames"]``: a
+        peaks at their own positions. When the scans are calibrated one by one, their points
+        do not coincide and the union holds several points per scan spacing, more where more
+        scans measured; anything reading spacings off it must take them from the scans
+        (``envelope_discontinuous`` does). The frames themselves are kept in ``meta["frames"]``: a
         grid view is built by resampling each of them (``spectrum_to_grid(..., frames=...)``),
         because the union of many scans' axes is too irregular to tell its gaps apart, and the
         decoder reads from them whether a species' charge states co-elute

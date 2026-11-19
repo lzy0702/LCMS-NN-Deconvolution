@@ -145,6 +145,15 @@ def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: floa
     return out
 
 
+def scan_spectra(scans, polarity: int) -> list:
+    """The thresholded scans ``[(mz, intensity), ...]`` of a training frame as profile spectra,
+    as a region hands its scans to ``spectrum_to_grid(..., frames=...)`` at inference."""
+    from ..core.model import Spectrum
+
+    return [Spectrum(np.asarray(mz, dtype=float), np.asarray(y, dtype=np.float32), 0.0,
+                     polarity, is_profile=True) for mz, y in scans]
+
+
 def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
                            library: AdductLibrary) -> FrameSample:
     """One training sample rendered along the same path inference takes.
@@ -205,11 +214,14 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         scan[scan < thr] = 0.0
         frames_int.append(scan)
 
-    # exactly the grid view inference builds for this summed spectrum
+    # exactly the grid view inference builds for this summed spectrum: each scan resampled on
+    # its own points (what it kept after thresholding) and added, as for a region's scans
     total = np.sum(frames_int, axis=0)
     kept = total > 0
+    scans = [(axis[s > 0], s[s > 0]) for s in frames_int]
     grid, observed, noise_sigma = spectrum_to_grid(axis[kept], total[kept], polarity,
-                                                   cfg.grid_step, cfg.grid_mz_max, True)
+                                                   cfg.grid_step, cfg.grid_mz_max, True,
+                                                   frames=scan_spectra(scans, polarity))
     g_lo = grid.mz_min
 
     L = cfg.crop_size
@@ -254,4 +266,5 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
                        scene.truths(), {"resolution": inst.resolution, "kind": inst.kind,
                                         "noise_sigma": noise_sigma, "n_sum": n_sum,
                                         "gain": gain, "grid_lo": g_lo,
-                                        "raw": (axis[kept], total[kept])})
+                                        "raw": (axis[kept], total[kept]),
+                                        "scans": scans})
