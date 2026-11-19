@@ -322,6 +322,15 @@ masses look 0.1-0.5 Da high.
 
 What is still wrong on these runs:
 
+- The resampling of vendor-thresholded profiles distorts the spectra the pipeline deconvolves:
+  `resample_profile` lets the edge point of every thresholded segment stand for half the gap
+  beside it, and `Run.sum_frames` interpolates every scan across the other scans' gaps, which
+  together raise the noise estimate of a region's grid view 40-180-fold
+  (`docs/iwsp_transformer.md`, section 2). Patched in-process, the pipeline finds IP-HILIC
+  GalNAc's n-1 and PO at default settings and reports NC above DA-NC in IP-HILIC NC (DA-NC at
+  11 % of NC), so the first two items below are at least partly resampling artefacts; but the
+  same patches report about four times as many species, because the decoder's thresholds were
+  set on the distorted input. The fix needs a recalibration pass and retrained networks.
 - IP-HILIC conjugate run: with triethylammonium acetate the impurities carry essentially one
   charge state (z = 4) above the noise, which the two-charge-state rule rejects;
   `deconvolution.single_charge: true` recovers n-1 and PO. n+1 is still missed, NC elutes where
