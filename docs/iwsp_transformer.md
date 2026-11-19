@@ -44,10 +44,10 @@ estimates are called estimates.
   search never saw it; audits check that no weight comes from data and that the executed network
   is the declared one; a 200-word description must rebuild the model, from version 0 and from an
   empty file.
-- Before any search, the comb and a charge oracle with chain flags, run through the new decoder,
-  must find at least two more real species than today's pipeline with no more reports outside the
-  truth table; otherwise the decoder, not a network, is the work. Every circuit here was measured
-  on all four runs, so a sealed fifth run is the adoption gate.
+- Before any search, a charge oracle with chain flags, run through the new decoder, must find at
+  least two more real species than today's pipeline with no more reports outside the truth table;
+  otherwise the decoder, not a network, is the work. Every circuit here was measured on all four
+  runs, so a sealed fifth run is the adoption gate.
 
 ## 1. The approach in the article
 
@@ -120,14 +120,14 @@ but reports 154-158 species, 52-55 of them unconfirmed, against 39 and 7: the de
 thresholds were set on the distorted grid. The design's tokenizer resamples correctly from the
 start; the package fix is a separate change that needs its thresholds recalibrated (section 8).
 (Measured with the distortion, an earlier version of this document took one- and two-scan
-events for a third of the comb's votes; they carry about 1 %.)
+events for a third of the comb's votes; they carry under 1 %.)
 
 Three things follow. Charges are decided by isotope spacing more than by the ladder: one or two
 charge states carry nearly all of a 5-7 kDa phosphorothioate's signal, its z = 1-2 rungs lie above
 m/z 2 500, and its isotopologues are 7-10 bins apart. Most of the evidence the comb reads is not
 the analyte's: in every tile examined, 77-94 % of the ladder evidence that decides a charge comes
 from persistent signal that does not co-elute with the bin, while one- and two-scan events are
-weak and carry about 1 % of the votes. And co-elution is specific for strong signal: a species'
+weak and carry under 1 % of the votes. And co-elution is specific for strong signal: a species'
 strong charge states move together (r = 0.85-1.00) where unrelated peaks rarely do (0.2-2.3 % of
 random pairs above 0.9); a species' weak charge states (FLP's z = 7, 0.64) and the column wash
 (12-17 % of its pairs above 0.9) are the cases a gate must handle.
@@ -205,7 +205,8 @@ them (section 4.4 gives their circuits):
 `scripts/eval_charge_bins.py`; on the real tiles, intensity-weighted over the known species'
 envelope bins at 19.21, 18.71 and 20.3 min in IP-RPLC GalNAc.) Per-bin accuracy and species come
 apart in both directions: C2 is the best per bin on synthetic spectra and loses two paper species;
-C2b and version 0 differ sevenfold per bin on FLP's envelopes and find the same species. This is
+C2b and version 0 differ by a factor of seven to ten per bin on FLP's envelopes and find the
+same species. This is
 the loop the harness of section 5 runs, and why its objective is species, not bins. C2b's two
 fewer unconfirmed reports are in-sample: it was chosen from five variants of the filter, each
 scored on all four runs, and its gain falls on one run (IP-RPLC GalNAc, 5 -> 3).
@@ -316,8 +317,9 @@ these, and a new one enters only by proposal and audit (rule 10):
   q = p + round(ln(z/(z ± k))/step), k = 1, 2, 3, with value s, summed in the comb's order into
   ACC; two interpolation heads at p ± ln(1 + 1.0033548/(z (m/z ∓ m_p)))/step.
 - **MLP 1:** EV = s · ACC / n_z, where n_z counts every rung at a charge z ± k >= 1 whose offset
-  is shorter than the grid, those beyond the grid's edge for this bin included; NEAR = 0.75 max + 0.25 min of the two isotope reads; ISO = s · NEAR where
-  the spacing in bins is at least 2.5 x max(FWHM in bins, 2), FWHM = (m/z)/R(m/z). On these runs
+  is shorter than the grid, rungs past this bin's edge of the spectrum included; NEAR = 0.75 max
+  + 0.25 min of the two isotope reads; ISO = s · NEAR where the spacing in bins is at least
+  2.5 x max(FWHM in bins, 2), FWHM = (m/z)/R(m/z). On these runs
   the FWHM is 0.5-1.3 bins, so the 2-bin floor always applies and "resolved" means at least 5
   bins: z <= 10 at m/z 1 000.
 - **Layer 2** (bin -> its hypotheses): argmax heads for the best ladder charge and the best
@@ -425,7 +427,7 @@ built yet; each is measured in stage 0 before any search.
   1.0034 Da ripple, would move it 5-7 % per pass.)
 - **Elution shape.** The normalised trace is correlated with three centred Gaussians set in
   seconds - a spike (one scan), an eluting analyte (FWHM 7-35 s here: impurities 7-19 s, main
-  peaks up to 34 s) and broad (the wash: FWHM 18-23 scans, 45-70 s) - and three-way lateral
+  peaks up to 34 s) and broad (the wash: FWHM 18-23 scans, 47-71 s) - and three-way lateral
   inhibition picks one; spikes and broad tokens lose vote weight. The wash is only about twice as
   broad as a main peak, so the z = 1 isotope veto of 4.4 carries more of the weight than breadth.
 - **Near-isobaric partners** (DA, 0.984 Da above FLP). For a strong token's main envelope, two
@@ -506,7 +508,7 @@ head, evaluated one head at a time.
 
 The article's test of interpretability is that a description of at most 200 words rebuilds the
 model. Version 0 with the co-elution gate, the model `coelution_gate.py` ran in section 3 (TIC
-regions, 12-slot traces), in 194 words:
+regions, 12-slot traces), in 196 words:
 
 > Float64, no training. Keys: every grid bin of a region's summed spectrum: s = clip(log10(1+I/σ),
 > 0, 5), I, position p, and a centred unit-length 12-slot elution profile over region ± its
@@ -514,8 +516,9 @@ regions, 12-slot traces), in 194 words:
 > Layer 1: six hard pointer heads, tied across z, score −400(q−p)² against a zero sink at −100,
 > read s at p + round(ln(z/(z±k))/step), k = 1..3, summed in that order; a read is 0 unless the
 > profiles correlate (r > 0.5) or either s < 1.2. Count every rung at charge ≥ 1 with offset
-> shorter than the grid, off-grid or blocked; EV = s·sum/count. Two tent heads read s at p ± ln(1 + 1.0033548/(z·m))/step,
-> m = |m/z − carrier|; ISO = s·(0.75max + 0.25min) where that spacing ≥ 2.5·max(FWHM in bins, 2).
+> shorter than the grid, blocked or past the edge; EV = s·sum/count. Two tent heads read s at
+> p ± ln(1 + 1.0033548/(z·m))/step, m = |m/z − carrier|; ISO = s·(0.75max + 0.25min) where that
+> spacing ≥ 2.5·max(FWHM in bins, 2).
 > Layers 2-4, hard argmax over each bin's hypotheses (sink first, ties to smaller z): Z1 = argmax
 > EV; Z2 = argmax without Z1; ZI = largest z with ISO ≥ 0.6·maxISO, kept if maxISO ≥ 0.25s².
 > If ZI > 0 it is top charge (p 0.9), a different Z1 second (p float32(1)−float32(0.9));
@@ -736,7 +739,7 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   and the harness, with at most six visible evaluations to make it run (as in the article's fMRI
   rebuilds) and no hidden data - once from version 0 (the description may cite its heads: a test
   of the change), and once, as in the article, from an empty `write_weights` and the layer library
-  (version 0 alone takes about 190 words, 4.8). A rebuild passes when it loses no paper species the
+  (version 0 with one gate takes 196 words, 4.8). A rebuild passes when it loses no paper species the
   original finds on its hidden runs, keeps at least 75 % of the original's hidden gain over
   version 0 and at least one species or two fewer reports outside the truth table, and agrees with
   the original's charges on at least 95 % of hidden synthetic active intensity. A control session
@@ -794,9 +797,9 @@ runs (eight times for the visual cortex) - bring the total to about $1 000-2 000
   apart, with z = 4 envelopes whose cosine is 0.95: that needs exact-formula pattern fits. The
   PO abundance under FLP is an NNLS problem. The identity of the +201.4 Da form is chemistry. NC's
   re-elution reports are a linking problem.
-- **Time alignment.** The pipeline's apex can sit early (the 1 908 Da fragment under oracle
-  charges: reported at 5.25 min, tabulated at 5.52), so evidence must follow each trace, not a
-  fixed window.
+- **Time alignment.** The pipeline's apex can sit early (the 1 908 Da fragment, found under
+  oracle charges with single charge states accepted, is reported at 5.25 min and tabulated at
+  5.52), so evidence must follow each trace, not a fixed window.
 - **Fallback value.** Even a model that is not adopted leaves an ablation table showing which
   time-resolved evidence matters; such rules can be folded into the comb.
 
