@@ -121,13 +121,17 @@ def cmd_real(args) -> None:
         species = process_run(run, method, predictor=pred).species
         sc = vor.score(key, species, lambda m, t, run=run: vor.joint_eic_peak(run, m, t))
         found = {"paper": [0, 0], "si": [0, 0]}
-        for _name, _mass, _rt, kind, s in sc["rows"]:
+        missed = []
+        for name, _mass, _rt, kind, s in sc["rows"]:
             if kind in found:
                 found[kind][1] += 1
                 found[kind][0] += s is not None
+                if s is None:
+                    missed.append(f"{name} ({kind})")
         unconfirmed = sum(1 for _s, why in sc["others"] if why.startswith("unconfirmed"))
         print(f"{key}: paper {found['paper'][0]}/{found['paper'][1]}, SI {found['si'][0]}/"
-              f"{found['si'][1]}, reported {len(species)}, unconfirmed {unconfirmed}", flush=True)
+              f"{found['si'][1]}, reported {len(species)}, unconfirmed {unconfirmed}; missed: "
+              + (", ".join(missed) or "none"), flush=True)
         for k in ("paper", "si"):
             tot[k][0] += found[k][0]
             tot[k][1] += found[k][1]

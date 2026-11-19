@@ -29,7 +29,9 @@ standing for the gaps beside them. A tile is ``--scans`` consecutive MS1 scans c
     wash       the column wash's strong peaks by breadth: z = 1 isotope partners, FWHM, apex
                spread and pairwise trace correlation (use --scans 96 around 27 min)
     gaps       vendor-thresholded scans and the pipeline's region sums under resample_profile: the
-               points that stand for a gap, and their share of the resampled signal
+               points that stand for a gap and their share of the resampled signal; the region
+               sum's noise sigma three ways (the package's view, capped widths, the sum of
+               per-scan grids) and the ramps Run.sum_frames' interpolation adds across gaps
     reelution  later elutions of a species (--species MASS@MIN): height and area against the main
                peak, from raw extracted-ion chromatograms
 
@@ -53,7 +55,7 @@ from scan_grid import resample_scan  # noqa: E402
 
 from lcmsdeconv.chem.instrument import estimate_noise_sigma  # noqa: E402
 from lcmsdeconv.io.thermo import read_thermo_raw  # noqa: E402
-from lcmsdeconv.nn.grid import LogMzGrid  # noqa: E402
+from lcmsdeconv.nn.grid import LogMzGrid, spectrum_to_grid  # noqa: E402
 
 MP = 1.00727646688
 STEP = 2e-5
@@ -352,6 +354,8 @@ def cmd_envelopes(tl: Tiles, args) -> None:
 def cmd_traces(tl: Tiles, args) -> None:
     mass, t0 = (float(v) for v in args.species[0].split("@"))
     tile = tl.tile(t0)
+    tot = tile.sum(0)
+    noise = estimate_noise_sigma(tot)
     a, b = tl.envelope_bins(mass, args.ref_z, 3.0)
     ref = _unit(tile[:, a:b + 1].sum(1)[None, :])[0]
     for z in range(2, 13):
@@ -364,9 +368,11 @@ def cmd_traces(tl: Tiles, args) -> None:
         rs = _unit(env[:, strong].T) @ ref
         both = (tr[1:] > 0) & (tr[:-1] > 0)
         jump = np.max(tr[1:][both] / tr[:-1][both], initial=0.0)
+        s = np.log10(1.0 + tot[lo:hi + 1][strong] / noise)
         print(f"z={z:2d}: trace max {tr.max():.3g}, {np.sum(tr == 0)} empty scans; largest rise "
               f"between non-empty scans x{jump:.3g}; r of its 8 strongest bins with the "
-              f"z={args.ref_z} trace: " + " ".join(f"{r:.2f}" for r in rs))
+              f"z={args.ref_z} trace: " + " ".join(f"{r:.2f}" for r in rs)
+              + f" (their log-SNR s in the tile's sum {s.min():.2f}-{s.max():.2f})")
 
 
 #: the paper's species of each run (validate_oligo_runs.py truth) except the near-isobaric DA forms,
@@ -556,6 +562,37 @@ def cmd_gaps(tl: Tiles, args) -> None:
         print(f"   the pipeline's sum of {len(frames)} scans: {mz.size} points; {wide.mean():.1%} "
               f"wider than 3 median spacings, carrying {np.sum(y[wide] * du[wide]) / np.sum(y * du):.0%}"
               f" of the resampled signal")
+        # the region's grid view three ways, on the grid the pipeline builds for this sum
+        grid, view_pkg, sig_pkg = spectrum_to_grid(tot.mz, tot.intensity, tl.polarity)
+        view_cap = resample_scan(grid, tot.mz, tot.intensity)
+        view_scans = sum(resample_scan(grid, f.mz, f.intensity) for f in frames)
+        sigmas = [sig_pkg, estimate_noise_sigma(view_cap), estimate_noise_sigma(view_scans)]
+        raw = np.asarray(tot.intensity, float)
+        print("   noise sigma of the region's grid view: " + " / ".join(
+            f"{name} {s:.3g}" for name, s in zip(("package", "capped widths", "per-scan sum"),
+                                                sigmas))
+              + "; raw summed points above 3 sigma: " + " / ".join(
+                  f"{np.mean(raw > 3 * s):.0%}" for s in sigmas))
+        # what Run.sum_frames' interpolation adds: points of the reference axis inside a gap of
+        # another scan (nearest point of that scan more than a bin away) get a ramp between its
+        # segment edges
+        ref = np.asarray(tot.mz, float)
+        u_ref = grid.mz_to_u(ref)
+        ramp = np.zeros(ref.size)
+        for f in frames:
+            fm, fy = np.asarray(f.mz, float), np.asarray(f.intensity, float)
+            if fm.size < 2:
+                continue
+            v = np.interp(ref, fm, fy, left=0.0, right=0.0)
+            pos = np.searchsorted(fm, ref)
+            lo_i, hi_i = np.clip(pos - 1, 0, fm.size - 1), np.clip(pos, 0, fm.size - 1)
+            uf = grid.mz_to_u(fm)
+            dist = np.minimum(np.abs(u_ref - uf[lo_i]), np.abs(u_ref - uf[hi_i])) / grid.step
+            ramp += np.where(dist > 1.0, v, 0.0)
+        ramp_grid = resample_scan(grid, ref, ramp)
+        print(f"   interpolated ramps across other scans' gaps: {ramp_grid.sum() / view_cap.sum():.1%} "
+              f"of the capped region sum, which holds {view_cap.sum() / view_scans.sum():.2f} of the "
+              f"per-scan sum's signal")
 
 
 def cmd_reelution(tl: Tiles, args) -> None:

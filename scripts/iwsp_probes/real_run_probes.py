@@ -16,7 +16,9 @@ and scores the result with scripts/validate_oligo_runs.py's truth and scoring:
     trace     for each missed species, the decoder stage at which it is lost (process_run's
               trace), optionally under --rule oracle
     snr       for each missed species, the signal-to-noise ratio of its strongest charge
-              state's envelope in its region's summed spectrum and in 7 scans around it
+              state's envelope in its region's summed spectrum and in 7 scans around it, each
+              scan resampled with scan_grid; and in the grid view the package itself
+              deconvolves (Run.sum_frames and resample_profile)
 
 --single-charge sets the method's ``single_charge: true`` for any of them. --resample changes how
 spectra reach the grid (docs/iwsp_transformer.md, section 2):
@@ -50,7 +52,7 @@ from lcmsdeconv.deconv import classical, decode  # noqa: E402
 from lcmsdeconv.features import regions as regions_mod  # noqa: E402
 from lcmsdeconv.io.thermo import read_thermo_raw  # noqa: E402
 from lcmsdeconv.nn.features import shifted  # noqa: E402
-from lcmsdeconv.nn.grid import LogMzGrid  # noqa: E402
+from lcmsdeconv.nn.grid import LogMzGrid, spectrum_to_grid  # noqa: E402
 from lcmsdeconv.nn.infer import ChargePrediction  # noqa: E402
 from lcmsdeconv.process import process_run  # noqa: E402
 
@@ -352,16 +354,26 @@ def snr(paths, single_charge: bool) -> None:
                 r = regs[0]
                 rsum = sum(g(j) for j in range(len(ms1)) if r.start <= rt[j] <= r.end)
                 snr_r = rsum[a:b + 1].max() / estimate_noise_sigma(rsum)
-                where = f"region {r.start:.2f}-{r.end:.2f}: S/N {snr_r:7.1f}"
+                # the same window in the grid view the package itself deconvolves
+                summed = r.summed(run)
+                pgrid, pview, psig = spectrum_to_grid(summed.mz, summed.intensity, pol)
+                mz_z = (m0 - z * MP) / z if pol < 0 else (m0 + z * MP) / z
+                pa, pb = sorted((int(pgrid.mz_to_bin(mz_z - 3.5 / z)),
+                                 int(pgrid.mz_to_bin(mz_z + 3.5 / z))))
+                snr_p = pview[max(pa, 0):pb + 1].max() / max(psig, 1e-12)
+                where = (f"region {r.start:.2f}-{r.end:.2f}: S/N {snr_r:7.1f} (package's view "
+                         f"{snr_p:6.1f})")
             else:
-                snr_r = float("nan")
-                where = "no region" + " " * 23
-            rows.append((snr_r, snr_w))
+                snr_r = snr_p = float("nan")
+                where = "no region" + " " * 46
+            rows.append((snr_r, snr_w, snr_p))
             print(f"{key:15s} {name:22s} z={z:2d}  {where}   7 scans: S/N {snr_w:7.1f}", flush=True)
     r = np.array([row for row in rows if np.isfinite(row[0])])
     if r.size:
+        q = np.percentile(r[:, 2], [25, 75])
         print(f"\nin-region misses: median S/N {np.median(r[:, 0]):.1f} in the region's sum, "
-              f"{np.median(r[:, 1]):.1f} in their own 7 scans")
+              f"{np.median(r[:, 1]):.1f} in their own 7 scans; in the package's own view of the "
+              f"region {np.median(r[:, 2]):.1f} (IQR {q[0]:.0f}-{q[1]:.0f})")
 
 
 def main():

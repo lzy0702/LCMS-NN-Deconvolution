@@ -6,7 +6,8 @@
                form, at integer targets on the 91 525-bin grid; its leakage bounds
     interp     the sink-free softmax interpolation head: weights 1 - f and f on the bracketing keys,
                with positions relative to the left key and with absolute grid positions
-    isobaric   FLP and FLP + 0.984 Da (DA) as z = 4 grid templates: cosine and Gram condition number
+    isobaric   FLP and NC against their + 0.984 Da forms (DA, DA-NC) as z = 4 grid templates: cosine
+               and Gram condition number
     consensus  how far one Gaussian mean-shift step moves an isotopologue token towards its
                envelope's centre, for the decoder's 0.6 Da kernel and an envelope-wide one
 
@@ -109,11 +110,12 @@ def _templates(mass: float, z: int, resolution: float, delta: float):
 
 
 def cmd_isobaric(args) -> None:
-    for res in (140000.0, 157000.0):
-        t1, t2 = _templates(6793.98, 4, res, 0.984)
-        cos = float(t1 @ t2 / np.linalg.norm(t1) / np.linalg.norm(t2))
-        print(f"Orbitrap {res:,.0f} at m/z 200: FLP and FLP + 0.984 Da at z = 4 on the grid: cosine "
-              f"{cos:.3f}, Gram condition number {(1 + cos) / (1 - cos):.1f}")
+    for name, mass in (("FLP", 6793.98), ("NC", 5162.25)):
+        for res in (140000.0, 157000.0):
+            t1, t2 = _templates(mass, 4, res, 0.984)
+            cos = float(t1 @ t2 / np.linalg.norm(t1) / np.linalg.norm(t2))
+            print(f"Orbitrap {res:,.0f} at m/z 200: {name} and {name} + 0.984 Da at z = 4 on the "
+                  f"grid: cosine {cos:.3f}, Gram condition number {(1 + cos) / (1 - cos):.1f}")
 
 
 def cmd_consensus(args) -> None:
