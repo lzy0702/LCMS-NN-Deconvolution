@@ -359,7 +359,8 @@ def snr(paths, single_charge: bool) -> None:
                 snr_r = rsum[a:b + 1].max() / estimate_noise_sigma(rsum)
                 # the same window in the grid view the package itself deconvolves
                 summed = r.summed(run)
-                pgrid, pview, psig = spectrum_to_grid(summed.mz, summed.intensity, pol)
+                pgrid, pview, psig = spectrum_to_grid(summed.mz, summed.intensity, pol,
+                                                      frames=summed.meta.get("frames"))
                 mz_z = (m0 - z * MP) / z if pol < 0 else (m0 + z * MP) / z
                 pa, pb = sorted((int(pgrid.mz_to_bin(mz_z - 3.5 / z)),
                                  int(pgrid.mz_to_bin(mz_z + 3.5 / z))))

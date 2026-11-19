@@ -99,20 +99,21 @@ def _fit_candidate(
 
 def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
                    compound_class: str, max_bins: float = 1.5, step_bins: float = 0.25,
-                   max_charges: int = 8) -> float:
+                   max_charges: int = 8, max_da: float = 0.3) -> float:
     """Shift (ln mass) that best lines the class's isotope pattern up with ``spectrum``.
 
     A compound class stands for an average composition, which puts each resolved isotopologue
     up to 0.1-0.2 Da from where a given molecule has it - one grid bin at Orbitrap resolving
     power and charge four. A least-squares fit cannot absorb that: a template a bin off the
     peaks it should explain is scaled to a third of them. Every charge state's base template
-    is slid over +-``max_bins`` (the same shift in ln(m/z) for all of them, as a mass error
-    would be) and the shift with the largest normalized overlap with the spectrum is kept,
-    no shift unless one does clearly better. The overlap is smooth in the shift, so a parabola
-    through the best step and its neighbours puts the optimum between steps: at Orbitrap
-    resolving power a peak is narrower than a bin, and a quarter bin off its peaks a template
-    is scaled 2 % low. Only where the instrument resolves the isotopes of the candidate's
-    central charge state; elsewhere a bin is a small part of an envelope and the shift is 0.
+    is slid over +-``max_bins``, or +-``max_da`` daltons where that is wider (the same shift in
+    ln(m/z) for all of them, as a mass error would be), and the shift with the largest
+    normalized overlap with the spectrum is kept, no shift unless one does clearly better. The
+    overlap is smooth in the shift, so a parabola through the best step and its neighbours puts
+    the optimum between steps: at Orbitrap resolving power a peak is narrower than a bin, and a
+    quarter bin off its peaks a template is scaled 2-9 % low. Only where the instrument resolves
+    the isotopes of the candidate's central charge state; elsewhere a bin is a small part of an
+    envelope and the shift is 0.
     """
     from ..chem.adducts import carrier_mass
 
@@ -126,7 +127,12 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     if len(zs) > max_charges:
         mid = len(zs) // 2
         zs = zs[max(0, mid - max_charges // 2): mid + max_charges // 2]
-    shifts = np.arange(-max_bins, max_bins + 1e-9, step_bins)
+    # +-max_bins, or +-max_da where that is wider: the offsets to absorb are in daltons, and
+    # 1.5 bins is 0.04 Da at 1.2 kDa (where half the alignments of the IP-HILIC NC run were
+    # pinned to the edge of the window, and a 1235 Da shortmer was quantified 400 times low)
+    reach = max(max_bins, max_da / max(cand.mass, 1.0) / grid.step)
+    reach = np.floor(reach / step_bins) * step_bins
+    shifts = np.arange(-reach, reach + 1e-9, step_bins)
     scores = np.zeros(shifts.size)
     for k, s in enumerate(shifts):
         m = cand.mass * float(np.exp(s * grid.step))
@@ -138,10 +144,12 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
             if norm > 0:
                 scores[k] += float(spectrum[t.bins] @ t.values) / norm
     k = int(np.argmax(scores))
-    zero = int(np.argmin(np.abs(shifts)))
-    # prefer no shift unless one explains clearly more
-    if scores[k] <= 0 or scores[zero] >= (1.0 - 1e-3) * scores[k]:
+    if scores[k] <= 0:
         return 0.0
+    zero = int(np.argmin(np.abs(shifts)))
+    # centred on no shift unless a step explains clearly more; the parabola refines either
+    if scores[zero] >= (1.0 - 1e-3) * scores[k]:
+        k = zero
     best = float(shifts[k])
     if 0 < k < shifts.size - 1:
         a, b, c = scores[k - 1], scores[k], scores[k + 1]
@@ -329,7 +337,9 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     """
     if raw_mz is None or raw_mz.size == 0 or not cand.charges or full is None:
         return cand, full
-    deltas = sorted({d for d in library.deltas().values() if d > 0})
+    # the candidate's mass is an average mass: step by average-mass shifts (K - H is 0.13 Da
+    # heavier than its monoisotopic shift)
+    deltas = sorted({d for d in library.avg_deltas().values() if d > 0})
     if not deltas:
         return cand, full
     from .decode import envelope_geometry
@@ -398,21 +408,23 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
 
 def _envelope_centre(mass: float, charges, raw_mz, raw_int, polarity: int, compound_class: str,
                      resolution: float) -> float | None:
-    """Where the envelopes near ``mass`` are centred: the per-charge mean shifts of
-    :func:`_refine_mass`, started at ``mass`` and free to travel, averaged with their kernel
-    weights; None when no charge state shows an envelope."""
+    """Where the envelopes near ``mass`` are centred: the median of the per-charge mean shifts of
+    :func:`_refine_mass`, started at ``mass``, over the charge states whose shift stays within
+    one envelope width of it; None when none does. A charge state whose window holds a
+    stronger co-eluting species' envelope converges onto that one and is left out, and on the
+    flank of a stronger envelope every charge state runs off toward its centre."""
     from .decode import _mean_shift, envelope_geometry
 
     env_sigma, offset = envelope_geometry(mass, compound_class)
     kern_da = float(np.sqrt(env_sigma ** 2 + (mass / max(resolution, 1.0) / 2.354820045) ** 2))
     carrier = carrier_mass(polarity)
-    ms, ws = [], []
+    ms = []
     for z in charges:
         pos, kw = _mean_shift(raw_mz, raw_int, (mass + offset + z * carrier) / z, kern_da / z)
-        if kw > 0:
-            ms.append(z * (pos - carrier) - offset)
-            ws.append(kw)
-    return float(np.average(ms, weights=ws)) if ms else None
+        m = z * (pos - carrier) - offset
+        if kw > 0 and abs(m - mass) <= env_sigma:
+            ms.append(m)
+    return float(np.median(ms)) if ms else None
 
 
 def _set_mass(comp: Component, mass: float) -> None:
@@ -501,7 +513,8 @@ def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da
 
 def _merge_adduct_components(components: list[Component], library: AdductLibrary, tol_da: float = 0.5):
     """Merge components separated by an adduct delta into the more intense (base) one."""
-    deltas = library.deltas()
+    deltas = library.avg_deltas()
+    names = library.names()
     components.sort(key=lambda c: -c.intensity)
     keep: list[Component] = []
     for c in components:
@@ -516,6 +529,12 @@ def _merge_adduct_components(components: list[Component], library: AdductLibrary
                         base.intensity += c.intensity
                         for z, v in c.charges.items():
                             base.charges[z] = base.charges.get(z, 0.0) + v
+                        # its columns too, under the combined labels: the coincident-adduct
+                        # step rebuilds a component from its columns
+                        step = AdductState.from_label(lab, names)
+                        for (z, clab), v in c.columns.items():
+                            key = (z, step.plus(AdductState.from_label(clab, names), names).label)
+                            base.columns[key] = base.columns.get(key, 0.0) + v
                         merged = True
                         break
                 if merged:
@@ -582,8 +601,9 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
     """
     if len(components) < 2:
         return components
-    shifts = sorted({s.mass for s in library.states()} | {0.0})
-    shift_of = {s.label or "base": s.mass for s in library.states()}
+    # average masses compared: average-mass shifts
+    shifts = sorted({s.avg_mass for s in library.states()} | {0.0})
+    shift_of = {s.label or "base": s.avg_mass for s in library.states()}
     kept: list[Component] = []
     for c in sorted(components, key=lambda c: -c.intensity):
         cols = dict(c.columns)

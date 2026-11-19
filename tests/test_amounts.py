@@ -230,3 +230,122 @@ def test_a_mass_difference_a_modification_explains_is_not_folded():
                  {20: 12.0})
     out = fold_adduct_forms([parent, ox], AdductLibrary.from_mode("rplc", 1))
     assert len(out) == 2
+
+
+def test_longmers_and_deaminated_oligonucleotides_are_named():
+    from lcmsdeconv.chem.modifications import annotate_delta
+
+    # the IP-HILIC conjugate run's n+1 and deaminated forms, as measured (average masses)
+    assert annotate_delta(7139.28 - 6794.00, "ps_rna", tolerance=0.27)[0].name == "n+1 (G)"
+    assert annotate_delta(6448.74 - 6794.00, "ps_rna", tolerance=0.27)[0].name == "n-1 (G)"
+    assert annotate_delta(6794.86 - 6794.00, "ps_rna", tolerance=0.27)[0].name.startswith(
+        "deamination")
+
+
+def test_a_form_reported_apart_in_one_region_counts_once_with_its_species():
+    """Region A fitted the species with a +Na column, region B fitted it base only and reported
+    its +Na form apart; they share one scan. Folding before merging (as process_run does)
+    gives one species whose +Na form is counted once on the shared scan."""
+    na = ADDUCTS["Na"].avg_mass
+    ta, tb = np.linspace(10.0, 10.4, 11), np.linspace(10.4, 10.8, 11)
+    prof = lambda t: np.exp(-0.5 * ((t - 10.44) / 0.1) ** 2)  # noqa: E731
+    a = _species(0, 5162.25, ta, 100 * prof(ta) * 1.1,
+                 {"base": 100 * prof(ta), "+Na": 10 * prof(ta)})
+    b = _species(1, 5162.27, tb, 100 * prof(tb))
+    b_na = _species(2, 5162.27 + na, tb, 10 * prof(tb))
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"))
+    out = merge_adjacent_species(fold_adduct_forms([a, b, b_na], lib))
+    assert len(out) == 1
+    s = out[0]
+    shared = np.searchsorted(s.time, 10.4)
+    assert np.isclose(s.adduct_intensity["+Na"][shared], 10 * prof(10.4))
+    assert np.isclose(s.base_intensity / s.total_intensity, 1 / 1.1, rtol=0.02)
+
+
+def test_the_apex_of_a_species_made_of_adduct_columns_is_read_on_all_its_forms():
+    t = np.linspace(16.0, 16.8, 21)
+    prof = np.exp(-0.5 * ((t - 16.44) / 0.08) ** 2)
+    base = np.zeros(t.size)
+    base[5] = 0.1  # one stray base reading
+    s = _species(0, 6854.23, t, 100 * prof + base, {"base": base, "+K": 100 * prof})
+    assert abs(s.rt_apex - 16.44) < 0.03
+    # a species with a material base form is read on its base trace
+    s2 = _species(1, 5146.2, t, 100 * prof, {"base": 60 * np.roll(prof, 3), "+Na": 40 * prof})
+    assert abs(s2.rt_apex - t[int(np.argmax(np.roll(prof, 3)))]) < 1e-9
+
+
+def test_alignment_refines_small_offsets_around_no_shift():
+    mass = 5162.25
+    grid = LogMzGrid(1000.0, 2500.0, 2e-5, -1)
+    spectrum = np.zeros(grid.size)
+    for z in (3, 4, 5):
+        t = build_template(mass * np.exp(0.10 * grid.step), z, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 1e6 * t.values
+    s = align_template(Candidate(mass, 1.0, {3, 4, 5}), spectrum, grid, ORBI, "ps_rna")
+    assert abs(s / grid.step - 0.10) < 0.04
+
+
+def test_the_envelope_centre_ignores_a_charge_state_on_another_species():
+    from lcmsdeconv.deconv.refine import _envelope_centre
+
+    x, y = _profile(4000.0, (3, 4, 5), 1e5, ORBI.fwhm)
+    # a stronger species whose z = 5 envelope sits 0.35 Th above this one's z = 4
+    _x, y2 = _profile(5001.75, (5,), 2e6, ORBI.fwhm)
+    centre = _envelope_centre(4000.0, (3, 4, 5), x, y + y2, -1, "ps_rna",
+                              float(ORBI.resolving_power(1000.0)))
+    assert centre is not None and abs(centre - 4000.0) < 0.3
+
+
+def test_a_potassium_ladder_is_walked_down_by_average_mass_shifts():
+    from lcmsdeconv.deconv.nnls_solve import fit_weights
+    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base
+    from lcmsdeconv.nn.grid import spectrum_to_grid
+
+    nc = 5162.25
+    x, y = _profile(nc, (3, 4, 5), 1e6, ORBI.fwhm)
+    _x, y1 = _profile(nc, (3, 4, 5), 6e5, ORBI.fwhm, potassium=1)
+    _x, y2 = _profile(nc, (3, 4, 5), 4e5, ORBI.fwhm, potassium=2)
+    y = y + y1 + y2
+    keep = y > 1.0
+    grid, obs, sigma = spectrum_to_grid(x[keep], y[keep], -1, instrument=ORBI)
+    res = float(ORBI.resolving_power(1000.0))
+    w = fit_weights(obs, sigma, grid.step, res)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"), max_per_type=2,
+                                  max_total=2)
+    cand = Candidate(nc + 2 * ADDUCTS["K"].avg_mass, 1.0, {3, 4, 5})  # the +2K form, as measured
+    cand.template_shift = align_template(cand, obs, grid, ORBI, "ps_rna")
+    full = _fit_candidate(cand, obs, w, grid, ORBI, "ps_rna", lib.states(), mz_range=(1000., 2500.))
+    moved, _f = _recenter_base(cand, full, obs, w, grid, ORBI, "ps_rna", lib.states(), lib,
+                               (1000.0, 2500.0), raw_mz=x[keep], raw_int=y[keep],
+                               noise_sigma=10.0, resolution=res)
+    assert abs(moved.mass - nc) < 0.05
+
+
+def test_an_adduct_form_merged_into_its_base_keeps_its_amount_through_coincident_drops():
+    from lcmsdeconv.deconv.refine import _merge_adduct_components, drop_coincident_adducts
+
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"))
+    flp = Component(6793.98, 100.0, charges={4: 100.0}, adducts={"base": 100.0},
+                    columns={(4, ""): 100.0})
+    po = Component(6777.92, 10.0, charges={4: 10.0}, adducts={"base": 7.0, "+K": 3.0},
+                   columns={(4, ""): 7.0, (4, "+K"): 3.0})
+    po_na = Component(6777.92 + ADDUCTS["Na"].avg_mass, 2.0, charges={4: 2.0},
+                      adducts={"base": 2.0}, columns={(4, ""): 2.0})
+    comps = [flp, po, po_na]
+    _merge_adduct_components(comps, lib)
+    assert len(comps) == 2
+    out = drop_coincident_adducts(comps, lib)
+    po_out = next(c for c in out if abs(c.mass - 6777.92) < 0.1)
+    # PO + K is FLP + Na: that column goes; PO's own +Na form stays
+    assert po_out.adducts == {"base": 7.0, "+Na": 2.0} and po_out.intensity == 9.0
+
+
+def test_isomers_either_side_of_a_boundary_stay_apart():
+    t1, t2 = np.linspace(12.0, 13.14, 30), np.linspace(13.14, 13.9, 20)
+    a = _species(0, 4841.90, t1, 50 * np.exp(-0.5 * ((t1 - 12.80) / 0.08) ** 2))
+    b = _species(1, 4841.78, t2, 70 * np.exp(-0.5 * ((t2 - 13.30) / 0.08) ** 2))
+    assert len(merge_adjacent_species([a, b])) == 2
+    # one band cut by the boundary is joined
+    c = _species(2, 4841.90, t1, 50 * np.exp(-0.5 * ((t1 - 13.10) / 0.15) ** 2))
+    d = _species(3, 4841.78, t2, 50 * np.exp(-0.5 * ((t2 - 13.10) / 0.15) ** 2))
+    assert len(merge_adjacent_species([c, d])) == 1

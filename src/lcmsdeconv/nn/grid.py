@@ -196,11 +196,15 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     grid = LogMzGrid(lo, hi, step, polarity)
     if is_profile is False:
         observed = grid.render_centroids(mz, intensity, instrument or InstrumentModel("tof", 30000.0))
-    elif (frames and all(f.is_profile is not False for f in frames)
-          and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames)):
+    elif frames and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames):
+        # scan by scan: profile scans resampled on their own points, centroided ones drawn
         observed = np.zeros(grid.size, dtype=np.float64)
         for f in frames:
-            observed += grid.resample_profile(f.mz, f.intensity)
+            if f.is_profile is False:
+                observed += grid.render_centroids(f.mz, f.intensity,
+                                                  instrument or InstrumentModel("tof", 30000.0))
+            else:
+                observed += grid.resample_profile(f.mz, f.intensity)
     else:
         observed = grid.resample_profile(mz, intensity)
     return grid, observed, estimate_noise_sigma(observed)

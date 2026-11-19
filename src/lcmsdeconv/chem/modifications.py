@@ -71,10 +71,22 @@ MODIFICATIONS: list[Modification] = [
     _m("n-1 (2'-OMe U)", -320.0410, ("rna", "ps_rna")),
     _m("n-1 (2'-F U)", -308.0209, ("rna", "ps_rna")),
     _m("n-1 (2'-F C)", -307.0369, ("rna", "ps_rna")),
+    _m("n-1 (2'-F A)", -331.0482, ("rna", "ps_rna")),
+    _m("n-1 (2'-F G)", -347.0431, ("rna", "ps_rna")),
+    _m("deamination (C -> U, A -> I)", "O-NH", ("dna", "rna", "ps_dna", "ps_rna"),
+       "NH2 -> OH on a nucleobase"),
     _m("+PEG unit", "C2H4O", ("peg", "any")),
     _m("-PEG unit", "-C2H4O", ("peg", "any")),
     _m("dimer", 0.0, ("any",), "M x 2 (handled by ratio, not delta)"),
 ]
+# a phosphorothioate residue weighs S - O more than its phosphodiester
+_S_O = Formula("S").mono_mass - Formula("O").mono_mass
+MODIFICATIONS += [Modification(m.name[:-1] + ", PS)", m.delta - _S_O,
+                               tuple(c for c in m.classes if c.startswith("ps_")), m.description)
+                  for m in list(MODIFICATIONS) if m.name.startswith("n-1 (")]
+# a longmer carries one extra residue: the n-1 deltas with the sign reversed
+MODIFICATIONS += [Modification("n+1" + m.name[3:], -m.delta, m.classes, m.description)
+                  for m in list(MODIFICATIONS) if m.name.startswith("n-1 ")]
 
 
 def annotate_delta(delta: float, cls: str, tolerance: float = 0.05, mass: float | None = None) -> list[Modification]:

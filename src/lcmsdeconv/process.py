@@ -153,6 +153,7 @@ def process_run(
         result.chromatograms[uv.name] = uv
 
     all_species: list[Species] = []
+    evidenced: dict[int, set[str]] = {}
     sid = 0
     for pol in polarities:
         tic = run.tic(pol)
@@ -176,6 +177,7 @@ def process_run(
             if trace is not None:
                 trace.append({"region": region.id, "start": region.start, "end": region.end,
                               "polarity": pol, "stages": region_trace, "species": []})
+            evidenced.setdefault(pol, set()).update(fr.meta.get("adducts", ()))
             if not fr.components:
                 continue
             grid = fr.meta.get("grid") or LogMzGrid(50.0, params.grid_mz_max, params.grid_step, pol)
@@ -197,24 +199,39 @@ def process_run(
                               region_id=region.id, start_id=sid,
                               flat_test=not method.deconvolution.quantify_frames,
                               shared_edges=shared)
+            n_linked = len(sp)
             if method.deconvolution.quantify_frames and sp:
                 sp = _drop_flat_species(sp, bank, run, region, pol, method)
-            sid += len(sp) + 1
+            # ids are numbered over every linked track: count the dropped ones too
+            sid += n_linked + 1
             all_species.extend(sp)
             if trace is not None:
                 trace[-1]["species"] = [{"mass": s.mass, "rt_apex": s.rt_apex} for s in sp]
 
+    # a species' adduct forms count with it however each region's decoder reported them: cation
+    # adducts (sodium, potassium, ammonium: every electrospray run has them), and the mobile
+    # phase's amines, acids and solvents where some region of the run evidenced them (their
+    # clusters lie within a dalton of an oligonucleotide's n+1). Region pieces are folded before they
+    # are merged: a form reported apart in one region is judged against its parent's piece in
+    # that region, and the merge then keeps one reading per scan. A weak form's average mass is
+    # read to a few tenths of a dalton (potassium forms 0.4-0.5 Da light on the IP-RPLC runs),
+    # and from envelopes of width M / R to a few such widths
+    fold_libraries = {}
+    for pol in polarities:
+        lib = AdductLibrary.from_mode(params.adduct_mode, pol, include=params.adduct_include,
+                                      exclude=params.adduct_exclude,
+                                      max_per_type=params.adduct_max_per_type,
+                                      max_total=params.adduct_max_total)
+        if params.adduct_require_evidence:
+            lib = AdductLibrary([a for a in lib.adducts if a.category == "cation"
+                                 or a.name in evidenced.get(pol, set())],
+                                lib.max_per_type, lib.max_total)
+        fold_libraries[pol] = lib
+    all_species = fold_adduct_forms(
+        all_species, fold_libraries, tolerance_da=0.6,
+        tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0))
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
                                          method.linking.mass_tolerance_da)
-    # a species' adduct forms count with it however each region's decoder reported them; the
-    # two masses are measured independently, each within the linking tolerance
-    all_species = fold_adduct_forms(all_species, {
-        pol: AdductLibrary.from_mode(params.adduct_mode, pol, include=params.adduct_include,
-                                     exclude=params.adduct_exclude,
-                                     max_per_type=params.adduct_max_per_type,
-                                     max_total=params.adduct_max_total)
-        for pol in polarities}, tolerance_da=2.0 * method.linking.mass_tolerance_da,
-        tolerance_ppm=2.0 * method.linking.mass_tolerance_ppm)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
     all_species.sort(key=lambda s: -s.base_intensity)

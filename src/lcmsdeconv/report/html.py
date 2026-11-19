@@ -123,7 +123,7 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
                          r["annotation"]])
             classes.append("main" if "main component" in r["annotation"] else "")
         parts.append(_table(["Species", "Mass (Da)", "Δ vs main", "RT (min)", "Area (base form)",
-                             "Area (all forms)", "% of ions",
+                             "Area (all forms)", "% (base forms)",
                              "Charges", "Spread (ppm)", "Adducts", "Annotation"], rows, classes))
 
     if result.purity:

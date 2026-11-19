@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self.species_model = DictTableModel(
             [("name", "Species"), ("mass", "Mass (Da)"), ("delta_vs_main", "Δ vs main"),
              ("rt", "RT (min)"), ("area", "Area (base form)"),
-             ("area_all_forms", "Area (all forms)"), ("percent", "% of ions"),
+             ("area_all_forms", "Area (all forms)"), ("percent", "% (base forms)"),
              ("charges", "Charges"), ("mass_spread_ppm", "Spread (ppm)"),
              ("adducts", "Adducts"), ("annotation", "Annotation")],
             formats={"mass": ",.2f", "delta_vs_main": "+.3f", "rt": ".3f", "area": ",.0f",
