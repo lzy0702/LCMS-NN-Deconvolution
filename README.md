@@ -120,6 +120,7 @@ three-month effort at the same problem, what went wrong there, and what that cha
 | `docs/synthetic_data.md` | what is simulated and why labels cannot drift from features |
 | `docs/training.md` | GPU training, model sizes, ONNX deployment, offline installation |
 | `docs/validation.md` | benchmarks, public-data checks, known limitations |
+| `docs/iwsp_transformer.md` | design of a transformer with hand-written weights for 2D deconvolution (interpretable weight-space programming), with the real-run measurements behind it (`scripts/iwsp_probes/`) |
 
 ## Validation
 
