@@ -26,9 +26,11 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import validate_oligo_runs as vor  # noqa: E402
+from scan_grid import resample_scan  # noqa: E402
 
 from lcmsdeconv.core.method import Method  # noqa: E402
 from lcmsdeconv.io.thermo import read_thermo_raw  # noqa: E402
@@ -54,8 +56,7 @@ class Chains:
     def scan(self, j: int) -> np.ndarray:
         if j not in self._cache:
             s = self.ms1[j]
-            self._cache[j] = self.grid.resample_profile(np.asarray(s.mz, float),
-                                                        np.asarray(s.intensity, float))
+            self._cache[j] = resample_scan(self.grid, s.mz, s.intensity)
         return self._cache[j]
 
     def __call__(self, mass: float, t: float) -> tuple[int, int, int]:
@@ -143,7 +144,7 @@ def main():
             n_pass = sum(1 for r in sel if r[3] >= 3 and r[4] <= 1)
             print(f"  {pop:28s} {n_pass:3d} of {len(sel):3d} pass ({n_pass / len(sel):.0%})")
     for r in rows:
-        if r[0] != "random":
+        if r[0] != "random" or (r[3] >= 3 and r[4] <= 1):
             print(f"    {r[0]:28s} {r[1]:15s} {r[2]:30s} isotopologues {r[3]}, half {r[4]}, z {r[5]}")
 
 

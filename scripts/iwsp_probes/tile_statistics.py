@@ -1,7 +1,8 @@
 """What real LC-MS data look like as 2D tiles: docs/iwsp_transformer.md, sections 2 and 3.
 
-Every scan is resampled onto the u grid (m/z 400-2500 unless --mz says otherwise) with the
-pipeline's ``resample_profile``. A tile is ``--scans`` consecutive MS1 scans centred on a time.
+Every scan is resampled onto the u grid (m/z 400-2500 unless --mz says otherwise) by
+``scan_grid.resample_scan``, which keeps the edge points of vendor-thresholded segments from
+standing for the gaps beside them. A tile is ``--scans`` consecutive MS1 scans centred on a time.
 
     scans      scan count and interval, profile points per scan, grid bins with signal per scan
                and per tile
@@ -13,8 +14,10 @@ pipeline's ``resample_profile``. A tile is ``--scans`` consecutive MS1 scans cen
                neighbours, persistent neighbours whose trace correlates below 0.5 with the bin's,
                and the share of the comb's z >= 2 mass votes on spike bins
     envelopes  bins inside the envelopes of the run's known species (validate_oligo_runs.py
-               truth) as labels: the comb against four ladder variants (in-range mean,
-               persistence gate, co-elution gate, all three)
+               truth) as labels: version 0 as the pipeline runs it (Z_max 40, the method's
+               Orbitrap model, its isotope override) with and without the in-range mean, and the
+               ladder part alone (softmax pointers, Z_max 60, no isotope override) against four
+               ladder variants (in-range mean, persistence gate, co-elution gate, all three)
     traces     a species' charge-state traces: the correlation of each charge state's strongest
                bins with one charge state's envelope trace (--species MASS@MIN, --ref-z)
     forms      for each known species of the run, the trace correlation and relative height of
@@ -23,6 +26,12 @@ pipeline's ``resample_profile``. A tile is ``--scans`` consecutive MS1 scans cen
                share of one- or two-scan events
     pairs      trace correlations of random pairs of strong peaks in a tile, and of the pairs
                that sit by chance at a charge-ladder offset
+    wash       the column wash's strong peaks by breadth: z = 1 isotope partners, FWHM, apex
+               spread and pairwise trace correlation (use --scans 96 around 27 min)
+    gaps       vendor-thresholded scans and the pipeline's region sums under resample_profile: the
+               points that stand for a gap, and their share of the resampled signal
+    reelution  later elutions of a species (--species MASS@MIN): height and area against the main
+               peak, from raw extracted-ion chromatograms
 
     python scripts/iwsp_probes/tile_statistics.py profiles IPRPLC_GalNAc_conjugated_mix.raw \
         --species 6793.98@19.25 --ref-z 4 --at 19.25 27.0 12.0
@@ -40,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pointer_attention import PointerHead, comb_layer, readout  # noqa: E402
+from scan_grid import resample_scan  # noqa: E402
 
 from lcmsdeconv.chem.instrument import estimate_noise_sigma  # noqa: E402
 from lcmsdeconv.io.thermo import read_thermo_raw  # noqa: E402
@@ -62,8 +72,7 @@ class Tiles:
     def scan(self, j: int) -> np.ndarray:
         if j not in self._cache:
             s = self.ms1[j]
-            self._cache[j] = self.grid.resample_profile(np.asarray(s.mz, float),
-                                                        np.asarray(s.intensity, float))
+            self._cache[j] = resample_scan(self.grid, s.mz, s.intensity)
         return self._cache[j]
 
     def tile(self, t0: float) -> np.ndarray:
@@ -96,6 +105,12 @@ def cmd_scans(tl: Tiles, args) -> None:
           f"{np.median(pts):.0f}; grid bins {tl.grid.size}")
     import time
 
+    import comb_transformer_v0 as v0
+
+    from lcmsdeconv.core.method import Method
+    from lcmsdeconv.deconv.classical import CombPredictor
+
+    inst = Method.load("orbitrap_iprp_neg_oligo").instrument
     for t0 in args.at:
         j = int(np.searchsorted(tl.rt, t0))
         nz = tl.scan(j) > 0
@@ -105,9 +120,19 @@ def cmd_scans(tl: Tiles, args) -> None:
         pos = np.nonzero(s_all > 0)[0]
         start = time.perf_counter()
         comb_layer(pos.astype(float), s_all[pos], tot.size)
+        t_soft = time.perf_counter() - start
+        start = time.perf_counter()
+        v0.forward(v0.write_weights(tl.grid.step, 40, tot.size), tl.grid, tot, noise, 40,
+                   instrument=inst)
+        t_v0 = time.perf_counter() - start
+        start = time.perf_counter()
+        CombPredictor(z_max=40, instrument=inst).predict_grid(tl.grid, tot, noise)
+        t_comb = time.perf_counter() - start
         print(f"  {t0:6.2f} min: bins with signal in one scan {nz.sum()} ({nz.mean():.1%}); in a "
-              f"{tl.T}-scan tile {np.sum(tot > 0)}, above 3 sigma {np.sum(tot > 3 * noise)}; "
-              f"version 0's ladder layer {time.perf_counter() - start:.2f} s")
+              f"{tl.T}-scan tile {np.sum(tot > 0)}, above 3 sigma {np.sum(tot > 3 * noise)}; on "
+              f"the tile's sum, version 0 (Z_max 40) {t_v0:.3f} s, the comb {t_comb:.3f} s, the "
+              f"softmax-pointer ladder of pointer_attention.py (Z_max 60, every bin with signal) "
+              f"{t_soft:.2f} s")
 
 
 def cmd_widths(tl: Tiles, args) -> None:
@@ -152,12 +177,19 @@ def cmd_profiles(tl: Tiles, args) -> None:
         print(f"   r with the {mass} Da z={args.ref_z} trace: {_q(corr)}")
         if abs(t0 - ts) < 0.3:
             own = np.zeros(tok.size, bool)
+            cells = []
             for z in range(3, 8):
                 lo, hi = tl.envelope_bins(mass, z, 4.0)
-                own |= (tok >= lo) & (tok <= hi)
-            print(f"   the species' own z = 3-7 bins: {own.sum()}, median r "
-                  f"{np.median(corr[own]):.2f}, median max/mean {np.median(peak[own]):.2f}; "
-                  f"other bins median r {np.median(corr[~own]):.2f}")
+                inside = (tok >= lo) & (tok <= hi)
+                own |= inside
+                if z != args.ref_z and inside.any():
+                    s = np.log10(1.0 + tot[tok[inside]] / estimate_noise_sigma(tot))
+                    cells.append(f"z={z} {np.median(corr[inside]):.2f} ({inside.sum()} bins, "
+                                 f"{np.sum((s >= 1.2) & (corr[inside] <= 0.5))} with s >= 1.2 and "
+                                 f"r <= 0.5)")
+            print(f"   the species' own bins, median r with the z={args.ref_z} trace by charge: "
+                  + "; ".join(cells))
+            print(f"   other bins median r {np.median(corr[~own]):.2f}")
 
 
 def cmd_evidence(tl: Tiles, args) -> None:
@@ -278,13 +310,40 @@ def cmd_envelopes(tl: Tiles, args) -> None:
         lab = (label > 0) & ~clash & active
         print(f"\ntile at {t0} min ({t_lo:.2f}-{t_hi:.2f}): {', '.join(names)}; {lab.sum()} "
               f"labelled active bins")
-        for vname, flags in (("comb", (False, False, False)), ("in-range", (True, False, False)),
+        from isotope_filter import VARIANTS, IsoCircuit
+        from pointer_attention import InRangeComb
+
+        from lcmsdeconv.core.method import Method
+        from lcmsdeconv.deconv.classical import CombPredictor
+
+        inst = Method.load("orbitrap_iprp_neg_oligo").instrument
+        comb = CombPredictor(z_max=40, instrument=inst)
+        full = {name: (pr.top1_z[pos], pr.top1_p[pos].astype(float)) for name, pr in (
+            ("version 0", comb.predict_grid(tl.grid, tot, noise)),
+            ("version 0 + in-range", InRangeComb(comb).predict_grid(tl.grid, tot, noise)),
+            ("C2b", IsoCircuit(inst, z_max=40, **VARIANTS["c2b"]).predict_grid(tl.grid, tot, noise)),
+            ("C2", IsoCircuit(inst, z_max=40, **VARIANTS["c2"]).predict_grid(tl.grid, tot, noise)))}
+        for vname, flags in (("version 0", None), ("version 0 + in-range", None), ("C2b", None),
+                             ("C2", None),
+                             ("ladder only", (False, False, False)),
+                             ("in-range", (True, False, False)),
                              ("persistence", (False, True, False)),
                              ("co-elution", (False, False, True)), ("all three", (True, True, True))):
-            z1, p1, _ = readout(_ladder(pos, s, prof, tot.size, *flags))
+            if flags is None:
+                z1, p1 = full[vname]
+            else:
+                z1, p1, _ = readout(_ladder(pos, s, prof, tot.size, *flags))
             right = z1 == label
             votes = tot[pos] * p1 * (active & (z1 >= 2))
-            print(f"  {vname:>11}: labelled bins right {np.sum(s[lab] * right[lab]) / np.sum(s[lab]):.3f}"
+            if vname == "version 0":
+                w = tot[pos][lab]
+                pairs = {}
+                for zt, zp, wi in zip(label[lab], z1[lab], w):
+                    pairs[(int(zt), int(zp))] = pairs.get((int(zt), int(zp)), 0.0) + wi
+                top = sorted(pairs.items(), key=lambda kv: -kv[1])[:4]
+                print("  version 0, labelled intensity by (true z, top charge): " + "; ".join(
+                    f"({a}, {b}) {v / w.sum():.0%}" for (a, b), v in top))
+            print(f"  {vname:>20}: labelled bins right {np.sum(s[lab] * right[lab]) / np.sum(s[lab]):.3f}"
                   f" (log-SNR) {np.sum(tot[pos][lab] * right[lab]) / np.sum(tot[pos][lab]):.3f}"
                   f" (intensity); share of the tile's z >= 2 vote weight on labelled bins "
                   f"{votes[lab].sum() / max(votes.sum(), 1e-12):.3f}")
@@ -303,19 +362,22 @@ def cmd_traces(tl: Tiles, args) -> None:
         tr = env.sum(1)
         strong = np.argsort(-env.sum(0))[:8]
         rs = _unit(env[:, strong].T) @ ref
-        jump = np.max(tr[1:] / np.maximum(tr[:-1], 1.0))
-        print(f"z={z:2d}: trace max {tr.max():.3g}; largest scan-to-scan rise x{jump:.3g}; r of its "
-              f"8 strongest bins with the z={args.ref_z} trace: " + " ".join(f"{r:.2f}" for r in rs))
+        both = (tr[1:] > 0) & (tr[:-1] > 0)
+        jump = np.max(tr[1:][both] / tr[:-1][both], initial=0.0)
+        print(f"z={z:2d}: trace max {tr.max():.3g}, {np.sum(tr == 0)} empty scans; largest rise "
+              f"between non-empty scans x{jump:.3g}; r of its 8 strongest bins with the "
+              f"z={args.ref_z} trace: " + " ".join(f"{r:.2f}" for r in rs))
 
 
-#: known species of each run (validate_oligo_runs.py truth), checked for co-eluting forms
+#: the paper's species of each run (validate_oligo_runs.py truth) except the near-isobaric DA forms,
+#: checked for co-eluting forms
 FORM_SPECIES = {
-    "IPRPLC_GalNAc": [("FLP", 6793.98, 19.21), ("n-1", 6448.71, 18.71), ("n+1", 7139.25, 20.34),
-                      ("NC", 5162.25, 20.22)],
+    "IPRPLC_GalNAc": [("FLP", 6793.98, 19.21), ("PO", 6777.92, 19.21), ("n-1", 6448.71, 18.71),
+                      ("n+1", 7139.25, 20.34), ("NC", 5162.25, 20.22)],
     "IPRPLC_NC": [("NC", 5162.25, 18.21), ("n-1", 4832.98, 17.54), ("PO-NC", 5146.21, 18.09),
-                  ("n-2", 4503.71, 16.55), ("4842", 4842.5, 17.82)],
+                  ("n-2", 4503.71, 16.55)],
     "IPHILIC_GalNAc": [("FLP", 6793.98, 16.40), ("n-1", 6448.71, 15.94), ("n+1", 7139.25, 16.98),
-                       ("PO", 6777.92, 16.98)],
+                       ("PO", 6777.92, 16.98), ("NC", 5162.25, 13.72)],
     "IPHILIC_NC": [("NC", 5162.25, 13.41), ("PO-NC", 5146.21, 14.11), ("n-1", 4832.98, 13.03),
                    ("n-2", 4503.71, 12.60)]}
 FORM_DELTAS = {"+201.4": 201.4, "+Na": 21.98194, "+K": 37.95588, "-16.06": -16.06}
@@ -400,10 +462,147 @@ def cmd_pairs(tl: Tiles, args) -> None:
               f"({len(r_lad)}) above 0.9: {np.mean(np.array(r_lad) > 0.9):.1%}")
 
 
+def _fwhm(y: np.ndarray) -> int:
+    k = int(np.argmax(y))
+    a = k
+    while a > 0 and y[a - 1] >= y[k] / 2:
+        a -= 1
+    b = k
+    while b < y.size - 1 and y[b + 1] >= y[k] / 2:
+        b += 1
+    return b - a + 1
+
+
+def cmd_wash(tl: Tiles, args) -> None:
+    """The column wash in one tile (use --scans 96): strong local maxima (summed S/N above 30),
+    split by the participation ratio PR = (sum x)^2 / sum x^2 of their traces (scans they
+    effectively span); per class, how many carry a z = 1 isotope partner (a peak 1.0034 Th higher
+    holding 5 % of their height; the same test 1.37 Th higher gives the chance rate), the FWHM of
+    the 100 strongest traces (summed over +-1 bin), the spread of their apexes, and the pairwise
+    trace correlation of the 300 strongest."""
+    for t0 in args.at:
+        tile = tl.tile(t0)
+        c = int(np.searchsorted(tl.rt, t0))
+        lo_scan = max(0, c - tl.T // 2)
+        tot = tile.sum(0)
+        noise = estimate_noise_sigma(tot)
+        act = np.nonzero(tot > 30 * noise)[0]
+        left = tot[np.clip(act - 1, 0, None)]
+        right = tot[np.clip(act + 1, None, tot.size - 1)]
+        lm = act[(tot[act] >= left) & (tot[act] >= right)]
+        P = tile[:, lm]
+        pr = P.sum(0) ** 2 / np.maximum((P ** 2).sum(0), 1e-300)
+        apex = np.argmax(P, axis=0)
+        mz = tl.grid.bin_to_mz(lm)
+        def partner(th, lm=lm, mz=mz, tot=tot):
+            n1 = np.log1p(th / np.abs(mz - tl.grid.carrier)) / STEP
+            hit = np.zeros(lm.size, bool)
+            for d in (-1, 0, 1):
+                tgt = np.clip(np.round(lm + n1).astype(int) + d, 0, tot.size - 1)
+                hit |= tot[tgt] >= 0.05 * tot[lm]
+            return hit
+
+        z1, chance = partner(1.0033548), partner(1.37)
+        tr = np.stack([tile[:, max(b - 1, 0):b + 2].sum(1) for b in lm], axis=1)
+        print(f"tile at {t0} min ({tl.T} scans): {lm.size} strong peaks")
+        for label, sel in (("PR >= 20", pr >= 20), ("PR 8-20", (pr >= 8) & (pr < 20)),
+                           ("PR < 4", pr < 4)):
+            idx = np.nonzero(sel)[0]
+            if idx.size < 5:
+                continue
+            top = idx[np.argsort(-tot[lm[idx]])[:300]]
+            Q = _unit(P[:, top].T)
+            rr = (Q @ Q.T)[np.triu_indices(top.size, 1)]
+            a25, a75 = (tl.rt[lo_scan + int(np.percentile(apex[idx], q))] for q in (25, 75))
+            fw = np.array([_fwhm(tr[:, k]) for k in top[:100]])
+            print(f"   {label:8s}: {idx.size:5d} peaks, {np.mean(z1[idx]):.0%} with a z = 1 isotope "
+                  f"partner (chance {np.mean(chance[idx]):.0%}); FWHM median {np.median(fw):.0f} "
+                  f"scans (q90 {np.percentile(fw, 90):.0f}); apexes {a25:.2f}-{a75:.2f} min (IQR); "
+                  f"pairwise r median {np.median(rr):.2f}, q90 {np.percentile(rr, 90):.2f}, above "
+                  f"0.9 {np.mean(rr > 0.9):.1%}")
+
+
+def cmd_gaps(tl: Tiles, args) -> None:
+    """How vendor thresholding meets the package's resample_profile: in the scan nearest each
+    --at, and in the sum of the scans within +-0.55 min of it as the pipeline forms region sums
+    (Run.sum_frames: every scan interpolated onto the m/z axis of the one with most points), the
+    points whose width 0.5 (u[i+1] - u[i-1]) exceeds three median spacings, and their share of
+    what resample_profile puts on the grid (intensity x width)."""
+    def widths(mz):
+        u = tl.grid.mz_to_u(mz)
+        du = np.empty_like(u)
+        du[1:-1] = 0.5 * (u[2:] - u[:-2])
+        du[0], du[-1] = u[1] - u[0], u[-1] - u[-2]
+        return du, float(np.median(np.diff(u)))
+
+    lo_mz, hi_mz = tl.grid.mz_min, tl.grid.mz_max
+    for t0 in args.at:
+        j = int(np.searchsorted(tl.rt, t0))
+        s = tl.ms1[j]
+        m = (s.mz > lo_mz) & (s.mz < hi_mz)
+        mz, y = np.asarray(s.mz, float)[m], np.asarray(s.intensity, float)[m]
+        du, med = widths(mz)
+        wide = du > 3 * med
+        print(f"scan {j} ({tl.rt[j]:.2f} min): {mz.size} points, {np.sum(y == 0)} of them zero; "
+              f"{wide.mean():.1%} wider than 3 median spacings ({med / STEP:.2f} bins), the "
+              f"widest {du.max() / STEP:.0f} bins; their share of the resampled signal "
+              f"{np.sum(y[wide] * du[wide]) / np.sum(y * du):.0%}")
+        frames = [f for f in tl.ms1 if abs(f.rt - t0) <= 0.55]
+        tot = tl.run.sum_frames(frames)
+        m = (tot.mz > lo_mz) & (tot.mz < hi_mz)
+        mz, y = np.asarray(tot.mz, float)[m], np.asarray(tot.intensity, float)[m]
+        du, med = widths(mz)
+        wide = du > 3 * med
+        print(f"   the pipeline's sum of {len(frames)} scans: {mz.size} points; {wide.mean():.1%} "
+              f"wider than 3 median spacings, carrying {np.sum(y[wide] * du[wide]) / np.sum(y * du):.0%}"
+              f" of the resampled signal")
+
+
+def cmd_reelution(tl: Tiles, args) -> None:
+    """Later elutions of a species (--species MASS@MIN): the summed raw extracted-ion
+    chromatogram of its main isotopologues (abundance >= 30 % of the largest) at z = 3-5, +-8
+    ppm, smoothed (Gaussian, sigma 1.5 scans); local maxima within +-6 scans above 0.05 % of the
+    apex and more than 1.5 min from it, with their height and area relative to the main peak."""
+    from lcmsdeconv.chem.classes import class_isotope_pattern
+
+    for spec in args.species:
+        mass, _t0 = (float(v) for v in spec.split("@"))
+        pat = class_isotope_pattern(mass, "ps_rna")
+        a = np.asarray(pat.abundances, float)
+        a = a / a.sum()
+        iso = np.asarray(pat.masses, float) - float((a * pat.masses).sum()) + mass
+        keep = iso[a >= 0.3 * a.max()]
+        tr = np.zeros(len(tl.ms1))
+        for z in (3, 4, 5):
+            for mi in keep:
+                mz0 = (mi - z * MP) / z if tl.polarity < 0 else (mi + z * MP) / z
+                for k, s in enumerate(tl.ms1):
+                    lo, hi = np.searchsorted(s.mz, [mz0 * (1 - 8e-6), mz0 * (1 + 8e-6)])
+                    tr[k] += float(np.sum(s.intensity[lo:hi]))
+        ap = int(np.argmax(tr))
+        g = np.exp(-0.5 * (np.arange(-4, 5) / 1.5) ** 2)
+        sm = np.convolve(tr, g / g.sum(), mode="same")
+        main = tr[max(0, ap - 15):ap + 16].sum()
+        print(f"M {mass}: apex {tl.rt[ap]:.2f} min, height {tr[ap]:.3g}")
+        for i in range(3, len(sm) - 3):
+            if (sm[i] == sm[max(0, i - 6):i + 7].max() and sm[i] > 5e-4 * sm[ap]
+                    and abs(tl.rt[i] - tl.rt[ap]) > 1.5):
+                left, right = i, i
+                while left > 0 and sm[left] > sm[i] / 2:
+                    left -= 1
+                while right < sm.size - 1 and sm[right] > sm[i] / 2:
+                    right += 1
+                w = right - left
+                area = tr[max(0, left - w // 2):right + w // 2 + 1].sum()
+                print(f"   later maximum at {tl.rt[i]:.2f} min: height {sm[i] / sm[ap]:.2%} of the "
+                      f"apex (smoothed), FWHM {w} scans, area {area / main:.2%} of the main peak")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("probe", choices=("scans", "widths", "profiles", "evidence", "envelopes",
-                                      "traces", "forms", "events", "pairs"))
+                                      "traces", "forms", "events", "pairs", "wash", "gaps",
+                                      "reelution"))
     ap.add_argument("raw", type=Path)
     ap.add_argument("--at", type=float, nargs="+", default=[19.25, 27.0, 12.0],
                     help="tile centres (min)")
@@ -415,7 +614,8 @@ def main():
     tl = Tiles(args.raw, args.mz[0], args.mz[1], args.scans)
     {"scans": cmd_scans, "widths": cmd_widths, "profiles": cmd_profiles,
      "evidence": cmd_evidence, "envelopes": cmd_envelopes, "traces": cmd_traces,
-     "forms": cmd_forms, "events": cmd_events, "pairs": cmd_pairs}[args.probe](tl, args)
+     "forms": cmd_forms, "events": cmd_events, "pairs": cmd_pairs,
+     "wash": cmd_wash, "gaps": cmd_gaps, "reelution": cmd_reelution}[args.probe](tl, args)
 
 
 if __name__ == "__main__":

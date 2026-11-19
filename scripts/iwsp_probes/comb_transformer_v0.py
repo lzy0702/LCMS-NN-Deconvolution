@@ -226,21 +226,29 @@ class _Both:
         self.backend, self.model_path = "comb", None
         self.variants = variants or {"v0": None}
         self.calls, self.bins, self.diff = 0, 0, {}
+        self.per_call, self.t_comb, self.t_net = [], [], []
 
     def predict_grid(self, grid, intensity, noise_sigma):
         global pointer_read
+        t0 = time.perf_counter()
         ref = self.comb.predict_grid(grid, intensity, noise_sigma)
-        W = write_weights(grid.step, self.zmax, intensity.size)
+        self.t_comb.append(time.perf_counter() - t0)
         for name, reader in self.variants.items():
             pointer_read = reader or hard_pointer
-            d = compare(ref, forward(W, grid, intensity, noise_sigma, self.zmax,
-                                     instrument=self.instrument))
+            t0 = time.perf_counter()
+            W = write_weights(grid.step, self.zmax, intensity.size)
+            out = forward(W, grid, intensity, noise_sigma, self.zmax, instrument=self.instrument)
+            if name == "v0":
+                self.t_net.append(time.perf_counter() - t0)
+            d = compare(ref, out)
             acc = self.diff.setdefault(name, dict.fromkeys(d, 0))
             for k, v in d.items():
                 acc[k] += v
         pointer_read = hard_pointer
         self.calls += 1
-        self.bins += int((intensity > 3 * max(noise_sigma, 1e-9)).sum())
+        n = int((intensity > 3 * max(noise_sigma, 1e-9)).sum())
+        self.bins += n
+        self.per_call.append(n)
         return ref
 
 
@@ -253,8 +261,11 @@ def _run(paths, variants=None) -> None:
         method = Method.load("orbitrap_iprp_neg_oligo")
         p = _Both(min(int(method.deconvolution.charge_range[1]), 60), method.instrument, variants)
         res = process_run(read_thermo_raw(path), method, predictor=p)
-        print(f"{Path(path).name}: {p.calls} predictor calls, {p.bins} active bins, "
-              f"{len(res.species)} species; differing: {p.diff}", flush=True)
+        print(f"{Path(path).name}: {p.calls} predictor calls, {p.bins} active bins "
+              f"({min(p.per_call)}-{max(p.per_call)} per call, {p.zmax} charges each), "
+              f"{len(res.species)} species; differing: {p.diff}; time per call: comb median "
+              f"{np.median(p.t_comb):.3f} s, version 0 median {np.median(p.t_net):.3f} s",
+              flush=True)
 
 
 def main():

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 SCRIPTS = Path(__file__).resolve().parents[1]
 
 
@@ -34,8 +36,9 @@ class PointerHead:
         self.beta = beta
         self.window = window
 
-    def leakage_bound(self) -> float:
-        return float(np.exp(-self.beta * (self.window ** 2 - 0.25)))
+    def leakage_exponent(self) -> float:
+        """Keys more than ``window`` bins from the target weigh below e^-(this) against the sink."""
+        return self.beta * (self.window ** 2 - 0.25)
 
     def __call__(self, key_pos: np.ndarray, values: np.ndarray, target: np.ndarray) -> np.ndarray:
         """``key_pos`` sorted ascending, ``values`` [N] or [N, C], ``target`` [Q]."""
@@ -126,13 +129,16 @@ def cmd_check(args) -> None:
     from lcmsdeconv.nn import baseline as bl
     from lcmsdeconv.synth.dataset import FrameDataset
 
-    print(f"leakage bound of a pointer head (beta 200, window 2): {PointerHead().leakage_bound():.3g}")
+    print(f"a pointer head at beta 200, window +-2 bins: keys outside the window weigh below "
+          f"e^-{PointerHead().leakage_exponent():.0f} against the sink")
     frames = FrameDataset(mixture(), args.frames, base_seed=args.seed)
     for i in range(args.frames):
         cfg, fs = frames.frame(i)
         g = bl.frame_grid(cfg, fs)
         _compare(*g, f"synthetic {i:2d} ({bl.spectrum_kind(fs.meta)}, grid {g[0].size})")
     for raw in args.raw:
+        from scan_grid import resample_scan
+
         from lcmsdeconv.chem.instrument import estimate_noise_sigma
         from lcmsdeconv.io.thermo import read_thermo_raw
         from lcmsdeconv.nn.grid import LogMzGrid
@@ -142,9 +148,7 @@ def cmd_check(args) -> None:
         grid = LogMzGrid(400.0, 2500.0, 2e-5, ms1[0].polarity)
         for t in args.at:
             c = int(np.searchsorted(rt, t))
-            tot = sum(grid.resample_profile(np.asarray(ms1[j].mz, float),
-                                            np.asarray(ms1[j].intensity, float))
-                      for j in range(c - 12, c + 12))
+            tot = sum(resample_scan(grid, ms1[j].mz, ms1[j].intensity) for j in range(c - 12, c + 12))
             _compare(grid, tot, estimate_noise_sigma(tot), f"{Path(raw).name}, 24 scans at {t} min")
 
 
