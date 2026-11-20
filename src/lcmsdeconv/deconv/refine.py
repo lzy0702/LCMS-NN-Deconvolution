@@ -611,7 +611,11 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
             for z, lab in list(cols):
                 if not lab or lab == "base" or cols[(z, lab)] <= 0:
                     continue
-                m = c.mass + shift_of.get(lab, 0.0)
+                shift = shift_of.get(lab)
+                if shift is None:  # a combined label beyond the library's limits
+                    st = library.state_of(lab)
+                    shift = st.avg_mass if st is not None else 0.0
+                m = c.mass + shift
                 if any(abs(k.mass + d - m) <= tol_da for k in kept for d in shifts):
                     del cols[(z, lab)]
             if len(cols) < len(c.columns):

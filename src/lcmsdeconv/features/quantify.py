@@ -55,7 +55,9 @@ class TemplateBank:
             for label, frac in fractions.items():
                 if frac < min_adduct_fraction:
                     continue
-                st = states.get(label)
+                # a combined label beyond the library's limits (a merged adduct form's) is
+                # still a form to fit
+                st = states.get(label) or library.state_of(label)
                 if st is None:
                     continue
                 acc: dict[int, float] = {}

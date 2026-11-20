@@ -35,11 +35,17 @@ Resampling preserves peak shape and area: each raw sample stands for its own sli
 so where the raw axis is denser than the grid a bin is the mean of its samples. Vendor software
 writes profile scans thresholded, as short segments around peaks separated by gaps of up to
 thousands of bins; a segment's edge sample stands for its own spacing, never for half of the gap
-beside it, and nothing is written into the gaps (`core.profile.sample_widths`; a gap is a spacing
-more than three times the running median of 33 spacings). A region's spectrum is the sum of its
-scans resampled one by one, because on the union of many scans' axes a gap can no longer be told
-from the spacing; its raw-point view, which the gates below read, is the scans interpolated
-within their own segments onto that union and added (`Run.sum_frames`). Centroided input takes a
+beside it, and nothing is written into the gaps (`core.profile.sample_widths`). A gap is a
+spacing more than three times the scan's own spacing there, which is the 20th percentile of the
+spacings in blocks of 65, interpolated between block centres and capped at three times the
+typical block's: where noise or weak ions leave many short segments most spacings are gaps, and
+a median would take them for the spacing. (It still does where isolated points make up more than
+four fifths of a block - point-by-point thresholding, which vendor software does not do - and
+on scans whose own spacing changes more than threefold over their range, as an FT-ICR scan over
+m/z 150-3000 does.) A region's spectrum is the sum of its scans resampled one by one, because on
+the union of many scans' axes a gap can no longer be told from the spacing; its raw-point view,
+which the gates below read, is the scans interpolated within their own segments onto that union
+and added in one sweep over all scans' segments (`Run.sum_frames`). Centroided input takes a
 different path and is placed on the grid with the instrument line shape.
 
 The noise level is estimated from the grid spectrum (median absolute deviation of first
@@ -164,22 +170,28 @@ small and weigh a lot. On the real runs that fitted the main species to a fifth 
 while impurities kept 60-80 % of theirs.
 
 On isotope-resolved data a compound class's average composition places the isotopologues of a
-particular molecule up to 0.1-0.2 Da from where they are (0.11 Da for the non-conjugated product
-of the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is
-fitted, its templates are slid together by up to 1.5 bins onto the spectrum and the shift with
-the largest normalized overlap is kept (`refine.align_template`; only where the instrument
-resolves the isotopes of the candidate's central charge). The overlap is computed in quarter-bin
-steps and the optimum placed between them by a parabola through the best step and its
-neighbours: at 140 000 (m/z 200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5 bin, and
-the main species of the IP-RPLC conjugate run is fitted 2 % low with its templates an eighth of a
-bin off its peaks, 9 % a quarter bin off and 28 % half a bin off. The shift moves
-the templates, not the reported mass, which is measured from the raw envelopes as below; when the
-mass changes afterwards (that measurement, or two copies of one species merged) the shift is
-adjusted so that the templates stay where the alignment put them, and a candidate re-centred
-from an adducted form onto its base form is aligned afresh. Before this, re-measuring the mass
-moved the templates with it, and a re-centred candidate kept the shift found for its adducted
-form; on that main species, re-centred from an adducted form, the two cost 5 % of its amount
-(with only the first corrected, 20 %).
+particular molecule up to 0.1-0.2 Da from where they are (0.11 Da for the non-conjugated product of
+the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is
+fitted, its templates are slid together by up to 1.5 bins, or 0.3 Da where that is wider, onto the
+spectrum and the shift with the largest normalized overlap is kept (`refine.align_template`; only
+where the instrument resolves the isotopes of the candidate's central charge). The offsets to
+absorb are in daltons: 1.5 bins is 0.04 Da at 1.2 kDa, and with that window half the alignments of
+the IP-HILIC NC run were pinned to its edge, a 1235 Da shortmer quantified at a four-hundredth of
+its amount. A wider search does harm: following the overlap past the window's edge, up to half an
+isotope spacing, let candidates beside the IP-RPLC main species slide onto its adduct forms' peaks,
+and the main species was lost; so offsets beyond 0.3 Da are not absorbed (a 1.9 kDa shortmer of the
+IP-RPLC NC run, its average mass read 0.34 Da light, is fitted 80 times low). The overlap is
+computed in quarter-bin steps and the optimum placed between them by a parabola through the best
+step and its neighbours, around no shift too unless a step does clearly better: at 140 000 (m/z
+200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5 bin, and the main species of the IP-RPLC
+conjugate run is fitted 2 % low with its templates an eighth of a bin off its peaks, 9 % a quarter
+bin off and 28 % half a bin off. The shift moves the templates, not the reported mass, which is
+measured from the raw envelopes as below; when the mass changes afterwards (that measurement, or
+two copies of one species merged) the shift is adjusted so that the templates stay where the
+alignment put them, and a candidate re-centred from an adducted form onto its base form is aligned
+afresh. Before this, re-measuring the mass moved the templates with it, and a re-centred candidate
+kept the shift found for its adducted form; on that main species, re-centred from an adducted form,
+the two cost 5 % of its amount (with only the first corrected, 20 %).
 
 Each candidate is fitted over every charge state the spectrum shows for it, not only over the
 charges that voted for it: starting from that band, charges are added outward while an envelope is
@@ -196,10 +208,13 @@ measured as detection measures it and compared with the candidate's average mass
 adduct's average-mass shift (K - H is 0.13 Da heavier than its monoisotopic shift, as potassium
 is 6.7 % 41K); a library of five ion-pairing adduct types otherwise gives each charge state about
 fifty columns, and neighbouring species and adduct columns trade intensity. A component
-centred on an adducted form is moved down the adduct ladder when the lighter form is present on
-most of the same charge states with at least half the height, and only if the same adduct model
-then explains more of the spectrum. Accepted components are subtracted from the residual before
-the next candidate is fitted.
+centred on an adducted form is moved down the adduct ladder (by average-mass shifts, as its mass
+is an average mass) when the lighter form is present on most of the same charge states with at
+least half the height, an envelope is centred within half an envelope width (at least 0.5 Da) of
+where the step lands (the median of the per-charge mean shifts that stay within an envelope width
+of it - on the flank of a stronger species' envelope they all run off toward its centre), and the
+same adduct model then explains more of the spectrum. Accepted components are subtracted from the
+residual before the next candidate is fitted.
 
 After all passes, a component is dropped when at least 80 % of its fitted intensity lies within two
 envelope widths of a stronger column of a stronger component (explaining away by shared evidence).
@@ -232,28 +247,39 @@ adduct's share changes across the peak, without paying for a full deconvolution 
 Components are then linked across frames by mass, giving species. A species whose trace stays
 within a third of its maximum at both ends - judged with one region width of quantified frames on
 either side, since a broad band can fill its own region - is chemical background and is dropped,
-and so is a species whose profile peaks in the outer tenth of its region (unless it is the
-region's strongest): a region is built around an elution band, so such a trace is a template
-absorbing a neighbour's tail. That last test is not made at a boundary the region shares with
-the next one: a boundary drawn at the valley between two bands is where a species eluting
-between them peaks, and the neighbouring region holds the rest of it. A species found in
-adjacent regions of one broad band is merged into one; the scan on their shared boundary is
-counted once, with the larger of its two readings. In a polarity-switching run each polarity is
-processed separately and species are matched by neutral mass afterwards.
+and so is a species whose profile peaks in the outer tenth of its region (unless it is the region's
+strongest): a region is built around an elution band, so such a trace is a template absorbing a
+neighbour's tail. That last test is not made at a boundary the region shares with the next one: a
+boundary drawn at the valley between two bands is where a species eluting between them peaks, and
+the neighbouring region holds the rest of it. A species found in adjacent regions of one broad band
+is merged into one; the scan on their shared boundary is counted once, with the larger of its two
+readings. Pieces of comparable height (each at least a tenth of the other) whose joined trace falls
+below half the lower apex between them are two bands of one mass - isomers either side of a
+boundary - and stay apart; a scan where neither piece has a reading (a gap the linking bridged, a
+frame whose fit gave the species nothing) is read across from its neighbours, not as a valley. In a
+polarity-switching run each polarity is processed separately and species are matched by neutral
+mass and apex (within 0.2 min) afterwards.
 
-A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its
-total over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct
-forms are resolved depends on the region: a region attaches an adduct type to its species only
-where it shows that adduct next to its strongest species, and doing so everywhere makes
-near-coincident forms of co-eluting species trade signal (with sodium and potassium forced into
-every region, the IP-HILIC NC run lost its PS-to-PO impurity and NC - dG). Where a region does
-not attach an adduct, the same forms come out as species of their own; they are folded into the
-species they belong to - a species whose mass is a stronger, co-eluting species' plus an adduct
-state of the method's list (average-mass shifts, within twice the linking tolerance: 1 Da or 60
-ppm with the bundled methods; apexes within 0.1 min, traces correlating at r >= 0.8) is counted
-as that species' adduct form, unless a known modification of its class explains the difference
-as well (oxidation lies 1.04 Da from an ammonium adduct): a report too many is the lesser error. Base forms are measured for
-every species alike, and the retention-time apex is read on the base trace for the same reason.
+A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its total
+over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct forms are
+resolved depends on the region: a region attaches an adduct type to its species only where it shows
+that adduct next to its strongest species, and doing so everywhere makes near-coincident forms of
+co-eluting species trade signal (with sodium and potassium forced into every region, the IP-HILIC
+NC run lost its PS-to-PO impurity and NC - dG). Where a region does not attach an adduct, the same
+forms come out as species of their own; they are folded into the species they belong to. A species
+whose mass is a stronger (base form), co-eluting species' plus an adduct state of cation adducts or
+of adduct types some region of the run evidenced (the mobile phase's amines, acids and solvents,
+whose clusters can lie within a dalton of an oligonucleotide's n+1; average-mass shifts, within 0.6
+Da or 2.5 peak widths M/R, whichever is larger; apexes within 0.1 min and traces correlating at r
+>= 0.8, both on all forms) is counted as that species' adduct form, unless a known modification of
+its class explains the difference as well (peptide oxidation lies 1.04 Da from an ammonium adduct,
+an oligonucleotide's n+1 can lie within a dalton of amine and HFIP clusters): a report too many is
+the lesser error. Forms are folded before the pieces of a species split over two regions are
+merged, so that a form is judged against its parent's piece from the same region. Base forms are
+measured for every species alike, and the retention-time apex is read on the base trace for the
+same reason, unless the base form is less than a tenth of the species (an adducted form reported
+apart).
+
 Base-form shares are exact only where co-eluting species carry the same adduct load: under ion
 pairing with acetate the main species' load falls at its own apex, and base-form shares there
 understate impurities by up to the ratio of the loads (1.05-1.2 on the IP-HILIC conjugate run,

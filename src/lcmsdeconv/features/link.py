@@ -117,14 +117,18 @@ def link_species(
     return species
 
 
-def merge_species_across_polarity(species: list[Species], tolerance_ppm: float = 50.0) -> list[Species]:
+def merge_species_across_polarity(species: list[Species], tolerance_ppm: float = 50.0,
+                                  max_apex_min: float = 0.2) -> list[Species]:
     """Merge species detected in both polarities of a polarity-switching run, keeping the reading
-    with the larger base form (the amount reported)."""
+    with the larger base form (the amount reported). The two readings must peak together
+    (apexes within ``max_apex_min``): isomers of one mass that elute apart stay two species,
+    whichever polarity shows each."""
     out: list[Species] = []
     for s in sorted(species, key=lambda x: -x.base_intensity):
         hit = None
         for k in out:
-            if k.polarity != s.polarity and abs(k.mass - s.mass) / k.mass * 1e6 < tolerance_ppm:
+            if (k.polarity != s.polarity and abs(k.mass - s.mass) / k.mass * 1e6 < tolerance_ppm
+                    and abs(k.rt_apex - s.rt_apex) <= max_apex_min):
                 hit = k
                 break
         if hit is None:
@@ -261,14 +265,22 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
 def _one_band(times: np.ndarray, y_a: np.ndarray, y_b: np.ndarray, valley: float,
               comparable: float = 0.1) -> bool:
     """Do two pieces' traces (on one time axis) join into one elution band? A piece below
-    ``comparable`` of the other's height is a fragment of it (a tail, a stray scan) and joins."""
+    ``comparable`` of the other's height is a fragment of it (a tail, a stray scan) and joins.
+
+    A scan where neither piece has a reading - a gap the linking bridged, a frame whose fit gave
+    the species nothing, three such frames that split one band into two tracks - is no evidence
+    of a valley: the band is read across it from the readings either side."""
     ia, ib = int(np.argmax(y_a)), int(np.argmax(y_b))
     ha, hb = float(y_a[ia]), float(y_b[ib])
     lo, hi = sorted((ia, ib))
     if hi - lo < 2 or min(ha, hb) < comparable * max(ha, hb):
         return True
-    joined = np.maximum(y_a, y_b)
-    return float(joined[lo:hi + 1].min()) >= valley * min(ha, hb)
+    joined = np.maximum(y_a, y_b)[lo:hi + 1]
+    have = joined > 0
+    if 2 <= int(have.sum()) < joined.size:
+        t = np.asarray(times, dtype=float)[lo:hi + 1]
+        joined = np.interp(t, t[have], joined[have])
+    return float(joined.min()) >= valley * min(ha, hb)
 
 
 def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
@@ -319,4 +331,6 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
         hit.time = times
         for z, v in s.charges.items():
             hit.charges[z] = hit.charges.get(z, 0.0) + v
+        # what the weaker piece says about itself (forms folded into it, say) holds for the whole
+        hit.flags.extend(f for f in s.flags if f not in hit.flags)
     return out

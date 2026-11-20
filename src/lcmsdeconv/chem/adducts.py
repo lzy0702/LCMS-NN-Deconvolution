@@ -184,8 +184,9 @@ class AdductLibrary:
         for n in names:
             a = ADDUCTS.get(n)
             if a is None:
-                # allow ad-hoc formulas such as "C7H17N"
-                a = Adduct(n, Formula(n), "other", 0)
+                # allow ad-hoc formulas such as "C7H17N"; registered, so that adduct states
+                # (which name their adducts) can give their masses
+                a = register_adduct(Adduct(n, Formula(n), "other", 0))
             if polarity and a.polarity and a.polarity != polarity:
                 continue
             if a.name not in [x.name for x in adducts]:
@@ -210,6 +211,15 @@ class AdductLibrary:
                     continue
                 states.add(AdductState(counts))
         return sorted(states, key=lambda s: (s.total, s.mass))
+
+    def state_of(self, label: str) -> AdductState | None:
+        """The state a column label names - a state of the library, or a combination of its
+        adduct types beyond its limits, as the columns of a component merged with its adduct
+        form carry (+3K where at most two of a type are listed) - or None for an adduct the
+        library does not hold."""
+        st = AdductState.from_label(label, self.names())
+        names = set(self.names())
+        return st if all(n in names for n, _ in st.counts) else None
 
     def deltas(self) -> dict[str, float]:
         return {a.name: a.mass for a in self.adducts}

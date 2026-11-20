@@ -64,17 +64,19 @@ logarithmic grid with its four feature channels, soft charge-share labels (top t
 bin), and an apex heatmap. Crops are centred on a component 70 % of the time and placed at random
 otherwise, so the network also learns what empty spectrum looks like.
 
-By default (`render_path = "profile"`) a frame follows the path inference takes: the scene,
-with up to 40 singly charged background ions, is rendered as profile scans on the instrument's
-own m/z axis; one to eight scans are drawn with shot noise at a random gain, electronic noise
-and a vendor-style threshold, and summed (inference deconvolves the summed spectrum of a
+By default (`render_path = "profile"`) a frame follows the path inference takes: the scene, with
+up to 40 singly charged background ions, is rendered as profile scans on the instrument's own m/z
+axis; one to eight scans are drawn with shot noise at a random gain, electronic noise and a
+vendor-style threshold (every point above it is written with two neighbours either side, as
+segments: the real Thermo scans hold no segment shorter than five points, and most hold five or
+six; never noise points one by one), and summed (inference deconvolves the summed spectrum of a
 chromatographic region); the sum is resampled onto a grid restricted to the measured range, and
-the noise level is estimated from it by `estimate_noise_sigma`, exactly as
-`deconvolve_spectrum` does. Labels are the shares `y · c_z / max(y, Σ c_z)` of the observed
-intensity `y`, with each charge's noise-free contribution `c_z` rendered and resampled the same
-way. Generation takes about 0.35 s per frame. `render_path = "grid"` renders straight onto the
-grid with the generator's own noise level, as earlier versions did, which is faster but describes
-a different input from the one inference sees.
+the noise level is estimated from it by `estimate_noise_sigma`, exactly as `deconvolve_spectrum`
+does. Labels are the shares `y · c_z / max(y, Σ c_z)` of the observed intensity `y`, with each
+charge's noise-free contribution `c_z` rendered and resampled the same way. Generation takes
+about 0.35 s per frame. `render_path = "grid"` renders straight onto the grid with the
+generator's own noise level, as earlier versions did, which is faster but describes a different
+input from the one inference sees.
 
 **Run tier** (`synth/chromatography.py`) produces a whole LC-MS run as mzML plus a `truth.json`
 listing every peak, its members, their masses and relative abundances. This is what
@@ -97,4 +99,7 @@ lcmsdeconv synth --preset mixture --out runs/mix --switch-polarity
 ```
 
 Profile frames are thresholded the way vendor software writes them, so a run is tens rather than
-hundreds of megabytes.
+hundreds of megabytes: every point above the threshold is kept with three neighbours either side,
+so no segment is shorter than seven points (training frames keep two, which gives the five-point
+minimum of the real Thermo scans; whole runs keep three because the benchmarks were measured on
+them).
