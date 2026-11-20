@@ -16,8 +16,8 @@ or weak ions leave many short segments, gaps are a large share of the spacings, 
 would take them for the spacing.
 
 A scan that repeats an m/z value (vendor files do not, converted ones can) is read with the
-mean of the repeated values there (:func:`scan_points`), as :meth:`lcmsdeconv.nn.grid.LogMzGrid.
-resample_profile` reads it.
+mean of the repeated values there (:func:`scan_points`), here and in
+:meth:`lcmsdeconv.nn.grid.LogMzGrid.resample_profile`.
 """
 
 from __future__ import annotations
@@ -100,15 +100,20 @@ def sample_widths(u: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:
     return left_f + right_f
 
 
+#: points of one scan closer than this (relative) are one point written twice: a piece that
+#: narrow has a slope the sweep cannot cancel (real scans space their points 2e-7 or more)
+REPEAT_REL = 1e-9
+
+
 def scan_points(mz, intensity) -> tuple[np.ndarray, np.ndarray]:
     """A scan's points sorted by m/z (stably), a repeated m/z kept once with the mean of its
     values: a piece of zero width between the two has an infinite slope."""
     x = np.asarray(mz, dtype=float)
     v = np.asarray(intensity, dtype=float)
-    if x.size > 1 and np.any(np.diff(x) <= 0):
+    if x.size > 1 and np.any(np.diff(x) <= REPEAT_REL * np.abs(x[1:])):
         order = np.argsort(x, kind="stable")
         x, v = x[order], v[order]
-        new = np.concatenate([[True], x[1:] != x[:-1]])
+        new = np.concatenate([[True], np.diff(x) > REPEAT_REL * np.abs(x[1:])])
         if not new.all():
             idx = np.cumsum(new) - 1
             v = np.bincount(idx, weights=v) / np.bincount(idx)

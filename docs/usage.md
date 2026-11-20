@@ -80,6 +80,11 @@ ammonium under normal reversed-phase; triethylamine, di-isopropylethylamine and
 hexafluoroisopropanol under ion pairing; trifluoroacetate, formate or acetate where those are
 in the mobile phase.
 
+`adducts.include` adds library adducts by name, or any adduct by formula ("C7H17N"). A formula
+must add mass: an exchange is written with a negative count ("MgH-2" for magnesium in place of two
+protons; "Mg-H2" reads as Mg^-1 H^2 and is refused). A formula with the mass of an adduct already
+listed is that adduct ("NH3" where NH4 is listed), since two columns of one mass trade intensity.
+
 Every reported species carries its adduct fractions, so the contribution of each adduct type is
 visible rather than folded silently into the total.
 

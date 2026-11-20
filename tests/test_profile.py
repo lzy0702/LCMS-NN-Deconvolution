@@ -208,6 +208,7 @@ def _random_scans(rng, n_scans=6):
         keep = np.convolve(keep, np.ones(5), mode="same") > 0
         keep[rng.integers(0, base.size, 5)] = True  # isolated points
         y = rng.uniform(0.0, 5e6, base.size)
+        y[rng.random(base.size) < 0.2] = 0.0  # real scans hold zero samples too
         x, v = ax[keep], y[keep]
         if k == 1:
             order = rng.permutation(x.size)
@@ -221,13 +222,16 @@ def _random_scans(rng, n_scans=6):
 def test_union_sum_equals_the_scans_read_one_by_one():
     rng = np.random.default_rng(11)
     scans = _random_scans(rng)
-    axis = np.unique(np.concatenate([x for x, _ in scans]))
+    # every scan's points, and points in between (in gaps, outside every scan)
+    axis = np.unique(np.concatenate([x for x, _ in scans] + [np.linspace(998.0, 1010.0, 6001)]))
     ref = sum(profile_on_axis(axis, x, v) for x, v in scans)
     got = profiles_on_union(scans, axis)
     # equal to rounding: the sweep's cumulative sums carry terms of order y * x / spacing
     np.testing.assert_allclose(got, ref, rtol=1e-7, atol=1e-8 * ref.max())
     # where no scan holds a piece or a point the sum is exactly nothing, and never negative
-    assert np.all(got[ref == 0.0] == 0.0) and got.min() >= 0.0
+    covered = sum(profile_on_axis(axis, x, np.ones(x.size)) for x, _ in scans) > 0
+    assert covered.any() and not covered.all()
+    assert np.all(got[~covered] == 0.0) and got.min() >= 0.0
 
 
 def test_a_repeated_mz_is_read_once_not_as_an_infinite_slope():
@@ -290,4 +294,49 @@ def test_mixed_profile_and_centroided_scans_are_gridded_scan_by_scan():
                                          instrument=inst, frames=s.meta["frames"])
     ref = grid.resample_profile(prof.mz, prof.intensity) + grid.render_centroids(cent.mz,
                                                                                 cent.intensity, inst)
+    np.testing.assert_allclose(observed, ref, rtol=1e-9, atol=1e-9)
+
+
+def test_points_a_rounding_error_apart_are_one_point():
+    """Two m/z values one ulp apart make a piece whose slope the sweep cannot cancel."""
+    x = 1000.0 + 0.002 * np.arange(40)
+    v = 1e6 * np.exp(-0.5 * ((x - x.mean()) / 0.01) ** 2)
+    x2 = np.insert(x, 21, np.nextafter(x[20], np.inf))
+    v2 = np.insert(v, 21, 0.5 * v[20])  # a second reading, a rounding error further
+    axis = np.unique(np.concatenate([x2, x + 1e-4]))
+    got = profiles_on_union([(x2, v2), (x + 1e-4, v)], axis)
+    ref = profile_on_axis(axis, x2, v2) + profile_on_axis(axis, x + 1e-4, v)
+    np.testing.assert_allclose(got, ref, rtol=1e-7, atol=1e-8 * ref.max())
+
+
+def test_a_scan_written_twice_is_resampled_as_once():
+    """resample_profile reads a repeated m/z as the other readers do: once, at the mean of its
+    values. A zero spacing used to make every spacing a gap, and the scan vanished."""
+    grid = LogMzGrid(900.0, 1100.0, 2e-5, 1)
+    mz, y = _segments([1000.0, 1002.0, 1010.0])
+    once = grid.resample_profile(mz, y)
+    twice = grid.resample_profile(np.repeat(mz, 2), np.repeat(y, 2))
+    np.testing.assert_allclose(twice, once)
+    # an isolated point written twice, with two readings
+    lone = np.array([1000.5, 1000.5])
+    got = grid.resample_profile(np.concatenate([mz, lone]), np.concatenate([y, [500.0, 700.0]]))
+    ref = grid.resample_profile(np.concatenate([mz, lone[:1]]), np.concatenate([y, [600.0]]))
+    np.testing.assert_allclose(got, ref)
+
+
+def test_centroided_scans_are_drawn_whatever_the_sum_is_labelled():
+    """Scans that are all centroided, on axes a few ppm apart, are drawn with the line shape
+    even when the caller leaves the sum labelled a profile (the signature's default)."""
+    from lcmsdeconv.chem.instrument import InstrumentModel
+
+    inst = InstrumentModel("tof", 30000.0)
+    frames = []
+    for k in range(4):
+        cmz = np.linspace(1150.0, 1250.0, 50) * (1.0 + 3e-6 * k)
+        frames.append(Spectrum(cmz, np.full(50, 100.0, np.float32), 1.0 + 0.01 * k, 1,
+                               is_profile=False))
+    s = Run(frames).sum_frames(frames)
+    grid, observed, _ = spectrum_to_grid(s.mz, s.intensity, 1, instrument=inst,
+                                         frames=s.meta["frames"])
+    ref = sum(grid.render_centroids(f.mz, f.intensity, inst) for f in frames)
     np.testing.assert_allclose(observed, ref, rtol=1e-9, atol=1e-9)

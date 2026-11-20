@@ -257,19 +257,20 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
         folded.setdefault(id(parent), []).append(f"{state.label} ({s.mass:.2f} Da)")
     for k in out:
         if id(k) in folded:
-            k.flags.append("adduct forms reported apart counted with it: "
-                           + ", ".join(folded[id(k)]))
+            k.flags.append(FOLD_FLAG + ", ".join(folded[id(k)]))
     return out
 
 
 def _one_band(times: np.ndarray, y_a: np.ndarray, y_b: np.ndarray, valley: float,
-              comparable: float = 0.1) -> bool:
+              comparable: float = 0.1, max_fill: int = 3) -> bool:
     """Do two pieces' traces (on one time axis) join into one elution band? A piece below
     ``comparable`` of the other's height is a fragment of it (a tail, a stray scan) and joins.
 
-    A scan where neither piece has a reading - a gap the linking bridged, a frame whose fit gave
-    the species nothing, three such frames that split one band into two tracks - is no evidence
-    of a valley: the band is read across it from the readings either side."""
+    A short run of scans where neither piece has a reading - a gap the linking bridged (two
+    scans at most), the three frames whose fit gave the species nothing that end a track - is
+    no evidence of a valley: the band is read across it from the readings either side. A run
+    longer than ``max_fill`` scans is a valley: two isomers seen in a scan or two each, a
+    minute apart, are two bands."""
     ia, ib = int(np.argmax(y_a)), int(np.argmax(y_b))
     ha, hb = float(y_a[ia]), float(y_b[ib])
     lo, hi = sorted((ia, ib))
@@ -279,7 +280,19 @@ def _one_band(times: np.ndarray, y_a: np.ndarray, y_b: np.ndarray, valley: float
     have = joined > 0
     if 2 <= int(have.sum()) < joined.size:
         t = np.asarray(times, dtype=float)[lo:hi + 1]
-        joined = np.interp(t, t[have], joined[have])
+        filled = np.interp(t, t[have], joined[have])
+        short = np.zeros(joined.size, dtype=bool)
+        i = 0
+        while i < joined.size:
+            if have[i]:
+                i += 1
+                continue
+            j = i
+            while j < joined.size and not have[j]:
+                j += 1
+            short[i:j] = j - i <= max_fill
+            i = j
+        joined = np.where(short, filled, joined)
     return float(joined.min()) >= valley * min(ha, hb)
 
 
@@ -331,6 +344,25 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
         hit.time = times
         for z, v in s.charges.items():
             hit.charges[z] = hit.charges.get(z, 0.0) + v
-        # what the weaker piece says about itself (forms folded into it, say) holds for the whole
-        hit.flags.extend(f for f in s.flags if f not in hit.flags)
+        _merge_flags(hit, s)
     return out
+
+
+FOLD_FLAG = "adduct forms reported apart counted with it: "
+
+
+def _merge_flags(hit: Species, s: Species) -> None:
+    """The flags of two merged pieces: the adduct forms folded into either, each form once in
+    one line; a one-charge-state flag only while the merged species still has one charge
+    state; the stronger piece's other flags."""
+    keep = [f for f in hit.flags if not f.startswith(FOLD_FLAG)]
+    if sum(1 for v in hit.charges.values() if v > 0) > 1:
+        keep = [f for f in keep if not f.startswith("one charge state")]
+    forms: dict[str, str] = {}
+    for f in hit.flags + s.flags:
+        if f.startswith(FOLD_FLAG):
+            for item in f[len(FOLD_FLAG):].split(", "):
+                forms.setdefault(item.split(" (")[0], item)
+    if forms:
+        keep.append(FOLD_FLAG + ", ".join(forms.values()))
+    hit.flags = keep

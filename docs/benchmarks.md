@@ -344,7 +344,7 @@ strongest charge states share their m/z windows with other signal can fail it.
 | before the fix, LadderNet stage 2, corrected mixture | 12 / 20 | 4 / 29 | 61 | 4 | 2 | 12 | 27 |
 | after the resampling fix, comb | 15 / 20 | 15 / 29 | 198 | 21 | 4 | 100 | 43 |
 | after the resampling fix, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
-| **now, comb** | **18 / 20** | **23 / 29** | **226** | **13** | **5** | **113** | **54** |
+| **now, comb** | **18 / 20** | **23 / 29** | **227** | **13** | **5** | **114** | **54** |
 
 (Every row but the first two uses the extracted-ion check described above; those two were scored
 with its first version. The resampling fix and the recalibration it needed are `lessons.md`,
@@ -356,26 +356,27 @@ Before the fix no report of any variant was a charge harmonic (half, a third, do
 found species' mass at its time), which the scoring checks for before the extracted-ion test;
 now none of the default's is, and one with `single_charge: true`.
 
-What "now" changed, one step at a time (paper's species / SI-listed / reported / unconfirmed): after
-the resampling fix 15/20, 15/29, 200, 44; templates kept where they were aligned when a mass is
-re-measured 16/20, 15/29, 205, 46; re-centred candidates aligned afresh, alignment between its
+What "now" changed, one step at a time (paper's species / SI-listed / reported / unconfirmed):
+after the resampling fix 15/20, 15/29, 200, 44; templates kept where they were aligned when a mass
+is re-measured 16/20, 15/29, 205, 46; re-centred candidates aligned afresh, alignment between its
 steps, adduct evidence at average-mass shifts and adduct forms folded into their species 16/20,
-15/29, 183, 46; the edge rule kept off shared region boundaries, a shared scan counted once and
-the apex read on the base form 18/20, 15/29, 200, 52; adduct evidence measured as detection
-measures it, and re-centring only onto an envelope centred there 18/20, 16/29, 182, 45; regions
-down to three times the TIC's noise 18/20, 19/29, 204, 53; adduct forms folded within twice the
-linking tolerance (it was 0.3 Da), unless a known modification explains the mass difference as
-well, 18/20, 19/29, 192, 48; and the fixes of a review of all this (`lessons.md`, section 15:
-templates aligned over 0.3 Da rather than 1.5 bins, re-centring by average-mass shifts onto
-envelopes of its own, adduct forms folded before region pieces are merged and only for cation
-adducts and evidenced mobile-phase adducts, isomers either side of a region boundary kept apart)
-18/20, 23/29, 227, 54; and a second review's (a valley between region pieces judged on the scans
-that have readings, which joins a 1900.08 Da piece split off by empty frames) 18/20, 23/29, 226,
-54. The lower region threshold finds the non-conjugated product in the
-IP-HILIC conjugate run and three SI-listed impurities; its eight further unconfirmed reports are
-all below 0.02 % of the main species. The alignment window finds four more SI-listed impurities
-and quantifies small shortmers whose templates 1.5 bins could not reach (the 1235 Da one from
-0.01 % to 4.2 %); 23 of its 35 further reports are EIC-confirmed.
+15/29, 183, 46; the edge rule kept off shared region boundaries, a shared scan counted once and the
+apex read on the base form 18/20, 15/29, 200, 52; adduct evidence measured as detection measures
+it, and re-centring only onto an envelope centred there 18/20, 16/29, 182, 45; regions down to
+three times the TIC's noise 18/20, 19/29, 204, 53; adduct forms folded within twice the linking
+tolerance (it was 0.3 Da), unless a known modification explains the mass difference as well, 18/20,
+19/29, 192, 48; and the fixes of a review of all this (`lessons.md`, section 15: templates aligned
+over 0.3 Da rather than 1.5 bins, re-centring by average-mass shifts onto envelopes of its own,
+adduct forms folded before region pieces are merged and only for cation adducts and evidenced
+mobile-phase adducts, isomers either side of a region boundary kept apart) 18/20, 23/29, 227, 54.
+Two further reviews' fixes leave these numbers as they are: a valley test that read across empty
+scans however many joined a 1900.08 Da sliver (0.000 %) to its species, but also two isomers seen
+in a scan or two each; read across three empty scans at most, it does neither. The lower region
+threshold finds the non-conjugated product in the IP-HILIC conjugate run and three SI-listed
+impurities; its eight further unconfirmed reports are all below 0.02 % of the main species. The
+alignment window finds four more SI-listed impurities and quantifies small shortmers whose
+templates 1.5 bins could not reach (the 1235 Da one from 0.01 % to 4.2 %); 23 of its 35 further
+reports are EIC-confirmed.
 
 With the resampling fixed and nothing else changed the comb found 15/20 and 10/29 among 400
 reports, 222 of them unconfirmed: the decoder's tests had been tuned on a noise estimate 40-180

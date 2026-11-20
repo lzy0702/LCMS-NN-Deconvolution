@@ -74,6 +74,18 @@ for _a in [
     register_adduct(_a)
 
 
+def _formula_adduct(text: str) -> Adduct:
+    """An adduct given as a formula ("C7H17N"), registered so that adduct states, which name
+    their adducts, can give their masses. One that adds no mass or takes mass away is refused:
+    "Mg-H2" reads as Mg^-1 H^2; an exchange is written with a negative count ("MgH-2")."""
+    f = Formula(text)
+    mass = float(f.mono_mass)
+    if not mass > 0.5:
+        raise ValueError(f"adduct {text!r} adds {mass:.4f} Da: an adduct adds mass (write an "
+                         "exchange with a negative count, e.g. 'MgH-2' for Mg - 2H)")
+    return register_adduct(Adduct(text, f, "other", 0))
+
+
 #: Default adduct sets per chromatography mode.
 MODE_DEFAULTS: dict[str, list[str]] = {
     "rplc": ["Na", "K", "NH4"],
@@ -184,13 +196,14 @@ class AdductLibrary:
         for n in names:
             a = ADDUCTS.get(n)
             if a is None:
-                # allow ad-hoc formulas such as "C7H17N"; registered, so that adduct states
-                # (which name their adducts) can give their masses
-                a = register_adduct(Adduct(n, Formula(n), "other", 0))
+                a = _formula_adduct(n)
             if polarity and a.polarity and a.polarity != polarity:
                 continue
-            if a.name not in [x.name for x in adducts]:
-                adducts.append(a)
+            # one with the mass of an adduct already listed is that adduct (a formula "NH3" is
+            # NH4, "C6H15N" is TEA): two columns of one mass would trade intensity
+            if any(x.name == a.name or abs(x.mass - a.mass) < 1e-3 for x in adducts):
+                continue
+            adducts.append(a)
         return cls(adducts, max_per_type, max_total)
 
     def names(self) -> list[str]:
