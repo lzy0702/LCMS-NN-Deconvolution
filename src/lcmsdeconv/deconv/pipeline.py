@@ -185,6 +185,8 @@ def deconvolve_spectrum(
     components: list[Component] = []
     residual = observed.astype(np.float64).copy()
     residual_fraction = 1.0
+    # masses the adduct walk moved candidates from: adduct forms of the species they joined
+    walked: list[float] = []
     for iteration in range(max(1, params.refine_iterations)):
         if iteration > 0:
             found_masses = [e.mass for e in components]
@@ -204,7 +206,7 @@ def deconvolve_spectrum(
             residual=residual, start_id=len(components),
             strongest_explained=max((c.intensity for c in components), default=0.0),
             trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
-            known_masses=[c.mass for c in components],
+            known_masses=[c.mass for c in components], walked=walked,
         )
         if not new:
             break
@@ -240,7 +242,26 @@ def _dedupe_by_mass(candidates, tol_ppm: float = 100.0, tol_da: float = 0.3):
         else:
             hit.charges |= c.charges
             hit.intensity += c.intensity
+            _merge_gate_verdicts(hit, c)
     return kept
+
+
+def _merge_gate_verdicts(kept, dup) -> None:
+    """Give ``kept`` the gate's verdicts on the charge states ``dup`` brings: within the
+    by-mass tolerance the duplicate's gate measured the same windows, so a state it passed is
+    this mass's own envelope and one it rejected holds another species' signal. Where the two
+    disagree, ``kept``'s own verdict stands. Without this a rejected state merged in was read
+    again by the overlap search and the adduct walk (an isotope comb of the wrong charge under
+    one state pulled a 6752 Da species' templates to the far edge of their window)."""
+    if dup.gate_charges is None and dup.gate_failed is None:
+        return
+    own_pass = set(kept.gate_charges or ())
+    own_fail = set(kept.gate_failed or ())
+    passed = own_pass | (set(dup.gate_charges or ()) - own_fail)
+    failed = own_fail | (set(dup.gate_failed or ()) - own_pass)
+    if kept.gate_charges is not None:
+        kept.gate_charges = passed
+    kept.gate_failed = failed - passed
 
 
 def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, class_candidates) -> str:

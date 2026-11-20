@@ -128,19 +128,18 @@ Four real Orbitrap runs of a GalNAc-conjugated phosphorothioate oligonucleotide 
 published with known compositions (Tutiš et al., Anal. Chem. 2025, 97, 15717,
 https://doi.org/10.1021/acs.analchem.5c01407), are scored against the paper's species: of 20 known
 species the original code found 2 among 87 reports; the current code, since vendor-thresholded
-profiles are resampled correctly, the decoder was recalibrated for it and every species' amount is
-made the same way, finds all 20, and 23 of the 29 impurity elutions its Supporting Information
-lists, among 229 reports, with masses within about 0.1 Da of theory for the main species and
-base-form impurity shares within 0.88-1.17 of extracted-ion references for 16 of the 23 impurities
-found
-(`docs/benchmarks.md`, `scripts/validate_oligo_runs.py`). Public spectra are used only for
-validation, never for training. Bovine serum albumin and the alcohol dehydrogenase tetramer are
-recovered within 1 % of their literature masses from public native mass spectra. On synthetic data
-with known truth, a 17 kDa protein carrying a 10 % sodium adduct is recovered to 0.2 ppm with the
-adduct fraction measured at 12 %, and the integrator reproduces analytic Gaussian areas exactly for
-isolated peaks and conserves the total area of a valley-split cluster. Run `python
-scripts/fetch_public_data.py` to enable the public-data tests and `python
-scripts/benchmark_synth.py` for the synthetic benchmark.
+profiles are resampled correctly, the decoder was recalibrated for it, every species' amount is
+made the same way and weak species' templates are placed by their own isotope comb, finds all 20,
+and 23 of the 29 impurity elutions its Supporting Information lists, among 229 reports, with masses
+within about 0.1 Da of theory for the main species and base-form impurity shares within 0.88-1.17
+of extracted-ion references for 16 of the 23 impurities found (`docs/benchmarks.md`,
+`scripts/validate_oligo_runs.py`). Public spectra are used only for validation, never for training.
+Bovine serum albumin and the alcohol dehydrogenase tetramer are recovered within 1 % of their
+literature masses from public native mass spectra. On synthetic data with known truth, a 17 kDa
+protein carrying a 10 % sodium adduct is recovered to 0.2 ppm with the adduct fraction measured at
+12 %, and the integrator reproduces analytic Gaussian areas exactly for isolated peaks and
+conserves the total area of a valley-split cluster. Run `python scripts/fetch_public_data.py` to
+enable the public-data tests and `python scripts/benchmark_synth.py` for the synthetic benchmark.
 
 Known limitations are listed in `docs/validation.md`; the most important is that an adduct whose
 mass is within about 1 Da of a modification cannot be separated from it at modest resolving

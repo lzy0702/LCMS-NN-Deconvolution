@@ -97,6 +97,20 @@ def _fit_candidate(
     return coeffs, used, explained
 
 
+def own_charges(cand: Candidate) -> set[int] | None:
+    """The charge states measured as the candidate's own envelopes at its mass: those its gate
+    passed (with those the gate passed for a duplicate merged into it) and those
+    :func:`observed_charges` added, less any the gate rejected. A voted state the gate rejected
+    holds another species' signal, and one it could not measure (no envelope above the noise
+    there) may hold anything; neither is the candidate's. None for a candidate with no gate
+    record (renamed by the adduct dedupe, or never gated)."""
+    gate = getattr(cand, "gate_charges", None)
+    if gate is None:
+        return None
+    own = set(gate) | set(getattr(cand, "observed_extra", None) or ())
+    return own - set(getattr(cand, "gate_failed", None) or ())
+
+
 def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
                    compound_class: str, max_bins: float = 1.5, step_bins: float = 0.25,
                    max_charges: int = 8, max_da: float = 0.3) -> float:
@@ -115,9 +129,11 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     the isotopes of the candidate's central charge state; elsewhere a bin is a small part of an
     envelope and the shift is 0.
     """
-    # the candidate's own envelopes: a charge state that failed the gate holds another
-    # species' comb, which the overlap would follow
-    own = set(cand.charges) - (getattr(cand, "gate_failed", None) or set())
+    # the candidate's own envelopes (:func:`own_charges`): a charge state that failed the gate
+    # holds another species' comb, which the overlap would follow
+    own = own_charges(cand)
+    if own is None:
+        own = set(cand.charges) - set(getattr(cand, "gate_failed", None) or ())
     zs = _align_charges(cand.mass, own or cand.charges, grid, instrument, max_charges)
     if zs is None:
         return 0.0
@@ -200,9 +216,10 @@ def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray
     on them, modulo one spacing (taken within half a spacing of the candidate's mass). The
     states are added as unit phasors weighted by their coherent intensity. ``coherence`` is the
     length of that sum over the windows' total intensity: the share of it that lines up on one
-    comb. It is 0 where the states cannot be cross-checked (fewer than two) or do not agree: a
-    state carrying ``min_share`` of the weight whose own phase lies more than
-    ``max_disagree_da`` from the combined one (a foreign peak in one window).
+    comb. It is 0 unless at least two states agree, each within ``max_disagree_da`` of the
+    combined phase, and every state carrying ``min_share`` of the weight agrees (a foreign
+    peak in one window). A weaker state cannot veto - its phase is the less certain - but it
+    counts towards the two only where it agrees.
     """
     from ..chem.classes import class_isotope_pattern
 
@@ -244,13 +261,14 @@ def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray
     shift = float(np.angle(total)) / (2.0 * np.pi) * ISOTOPE_DA
     coherence = abs(total) / window_total
     wsum = float(np.sum(weights))
+    agreeing = 0
     for u, w in zip(units, weights):
-        if w < min_share * wsum:
-            continue
         own = float(np.angle(u * np.conj(total))) / (2.0 * np.pi) * ISOTOPE_DA
-        if abs(own) > max_disagree_da:
+        if abs(own) <= max_disagree_da:
+            agreeing += 1
+        elif w >= min_share * wsum:
             coherence = 0.0
-    if len(units) < 2:
+    if agreeing < 2:
         coherence = 0.0
     return shift, float(coherence), len(units)
 
@@ -276,9 +294,12 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     nearest tooth on the wrong side, and the edge between them fits neither. A candidate whose
     gate measured another mass's envelopes (renamed by the adduct dedupe) has no gate charges and
     is not touched, and neither is one within ``form_tol_da`` of an adduct form of an accepted
-    species (masses ``forms_of``, adduct shifts ``form_shifts``): an adduct form's mass is read
-    off by its neighbouring forms, by up to three quarters of a dalton, and its two teeth fit
-    alike (NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, to 0.6 %).
+    species (masses ``forms_of``: accepted species, and masses the adduct walk moved candidates
+    from; adduct shifts ``form_shifts``): an adduct form's mass is read off by its neighbouring
+    forms, by up to three quarters of a dalton, and its two teeth fit alike (NC + 3Na of the
+    IP-HILIC NC run, read 0.73 Da light, to 1 %). The comb is read over the gate-passed states,
+    the teeth compared over the middle ones of them; the overlap search reads the candidate's own
+    states (:func:`own_charges`), which also hold those added for the fit.
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
     gate = getattr(cand, "gate_charges", None)
@@ -329,6 +350,7 @@ def refine_frame(
     frames=None,
     coelution_r: float = 0.5,
     known_masses: list[float] | None = None,
+    walked: list[float] | None = None,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -337,7 +359,8 @@ def refine_frame(
     still unexplained, and the updated residual so the caller can re-detect on what is left.
     ``frames`` and ``coelution_r`` decide which charge states beyond the voting band are the
     species' own (:func:`observed_charges`). ``known_masses`` are the species accepted by
-    earlier passes over the same spectrum.
+    earlier passes over the same spectrum, and ``walked`` the masses the adduct walk moved
+    candidates from in them; the masses walked from in this pass are appended to it.
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = fit_weights(observed, noise_sigma, grid.step,
@@ -370,20 +393,27 @@ def refine_frame(
     form_shifts = sorted({s.avg_mass for s in states_full if s.counts}
                          | {n * d for d in avg.values() for n in (1, 2, 3)})
     grid_mz = grid.bin_to_mz(np.arange(grid.size))
+    # a mass the walk moved a candidate from is an adduct form of the species it joined: forms
+    # one adduct state above it belong to the same species (NC + 3Na of the IP-HILIC NC run
+    # walked onto NC; without it as an anchor NC's +5Na and +3Na+K forms were comb-placed and
+    # reported as a 3.3 % impurity)
+    walked_from: list[float] = walked if walked is not None else []
     for cand in remaining:
         cand_mass0 = cand.mass
         if raw_mz is not None and raw_mz.size and cand.charges and cand.charges != {1}:
             # fit the species' whole observed envelope, not only the charges that voted for it:
             # charge states the charge map got wrong are otherwise left in the residual, where
             # they are later explained as separate, false species
+            voted = set(cand.charges)
             cand.charges = observed_charges(cand.mass, cand.charges, raw_mz, raw_int,
                                             3.0 * noise_sigma, grid.polarity, compound_class,
                                             resolution, mz_range, frames=frames,
                                             coelution_r=coelution_r, instrument=instrument)
+            cand.observed_extra = set(cand.charges) - voted
+        forms = list(known_masses or ()) + [c.mass for c in components] + walked_from
         cand.template_shift = align_candidate(
             cand, residual, grid, instrument, compound_class,
-            forms_of=list(known_masses or ()) + [c.mass for c in components],
-            form_shifts=form_shifts, grid_mz=grid_mz)
+            forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -428,9 +458,10 @@ def refine_frame(
             moved, full2 = _recenter_base(
                 cand, full, residual, weights, grid, instrument, compound_class, states_full,
                 library, mz_range, raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
-                resolution=resolution, grid_mz=grid_mz,
+                resolution=resolution, grid_mz=grid_mz, forms_of=forms, form_shifts=form_shifts,
             )
             if moved is not cand:
+                walked_from.append(float(cand.mass))
                 cand, full = moved, full2
                 # re-centred: measure the mass again from the raw envelopes at the new centre,
                 # with the templates where the lighter form's own alignment put them
@@ -479,7 +510,8 @@ def refine_frame(
 def _recenter_base(cand, full, residual, weights, grid, instrument, compound_class,
                    states_full, library, mz_range, raw_mz=None, raw_int=None,
                    noise_sigma: float = 0.0, resolution: float = 30000.0, max_steps: int = 3,
-                   min_ratio: float = 0.5, min_gain: float = 0.01, grid_mz=None):
+                   min_ratio: float = 0.5, min_gain: float = 0.01, grid_mz=None,
+                   forms_of=None, form_shifts=()):
     """Walk the candidate centre down the adduct ladder while the spectrum supports it.
 
     Returns ``(candidate, full_fit)``: the original pair when nothing better is found.
@@ -503,10 +535,12 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     from .decode import envelope_geometry
 
     carrier = carrier_mass(grid.polarity)
-    # the walk reads the candidate's own envelopes: a charge state whose window failed the gate
-    # holds some other species' signal (an unrelated peak 30 times taller under n-2's z9 window
-    # walked it down to a phantom 22 Da lighter)
-    charges = sorted(set(cand.charges) - (cand.gate_failed or set()))[:12]
+    # the walk reads the candidate's own envelopes (:func:`own_charges`): a charge state whose
+    # window failed the gate, or that it could not measure, may hold some other species' signal
+    # (an unrelated peak 30 times taller under n-2's z9 window walked it down to a phantom
+    # 22 Da lighter)
+    own = own_charges(cand)
+    charges = sorted(own if own is not None else set(cand.charges))[:12]
     thr = 3.0 * noise_sigma
 
     def heights(mass: float) -> tuple[int, float]:
@@ -558,11 +592,15 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
         return cand, full
     trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
                       intensity=cand.intensity, gate_charges=cand.gate_charges,
-                      gate_failed=cand.gate_failed)
+                      gate_failed=cand.gate_failed, observed_extra=cand.observed_extra)
     # the lighter form's isotopologues are its own: the heavier centre's alignment is not theirs.
-    # It is placed by the rule that placed the candidate it is compared with: a candidate placed
-    # by its comb against a trial pinned at the window's edge would always win
+    # It is placed by the rule that placed the candidate it is compared with, the adduct-form
+    # guard included: a candidate placed by its comb against a trial pinned at the window's edge
+    # would always win. A trial at an accepted species' own mass is not a form of it: placed on
+    # that species' comb it fits what the species left, and the walk joins the candidate to it
+    # (NC + 3Na of the IP-HILIC NC run, guarded at its edge, joined NC this way)
     trial.template_shift = align_candidate(trial, residual, grid, instrument, compound_class,
+                                           forms_of=forms_of, form_shifts=form_shifts,
                                            grid_mz=grid_mz)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)

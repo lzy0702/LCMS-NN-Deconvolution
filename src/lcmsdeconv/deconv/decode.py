@@ -51,6 +51,9 @@ class Candidate:
     # the charge by its isotopes, was discontinuous, belonged to another mass or did not
     # co-elute): another species' signal lies under them. None before the gate
     gate_failed: set[int] | None = None
+    # the states refine.observed_charges added beyond the voted ones at this mass, each above
+    # the noise, with its isotope comb and co-eluting with the voted band. None before the fit
+    observed_extra: set[int] | None = None
 
 
 def accumulate_mass_histogram(
@@ -333,15 +336,24 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     # be off by a fraction of a dalton (a neighbouring adduct or impurity pulls the envelope's
     # centre), which at low charge is a large fraction of the spacing, while background read at
     # the wrong charge cannot fill a comb at any placement.
+    # A placement whose filled positions all lie on one sub-comb - every f-th isotopologue, f
+    # dividing z - while the pattern has major isotopologues off it is an ion of charge z/f read
+    # at its harmonic, not this charge, and does not count. Below about 2 kDa the pattern has
+    # three major isotopologues, and a comb at half the charge fills two of them: the singly and
+    # doubly charged ions of a 915 Da species were read as charges 2 and 4 of an 1831 Da one.
+    k_major = np.rint((pat.masses[major] - pat.masses[major].min()) / ISOTOPE_SPACING).astype(int)
+    subs = [f for f in range(2, z + 1) if z % f == 0 and len(set((k_major % f).tolist())) > 1]
     best = 0
     for shift in np.linspace(-0.5, 0.5, 11) * spacing:
-        populated = 0
-        for x, level in zip(iso_mz + shift, need):
+        hit = []
+        for j, (x, level) in enumerate(zip(iso_mz + shift, need)):
             lo = int(np.searchsorted(raw_mz, x - tol))
             hi = int(np.searchsorted(raw_mz, x + tol))
             if hi > lo and raw_int[lo:hi].max() > level:
-                populated += 1
-        best = max(best, populated)
+                hit.append(j)
+        if len(hit) >= 2 and any(len(set((k_major[hit] % f).tolist())) == 1 for f in subs):
+            continue
+        best = max(best, len(hit))
     return best < min_populated * major.sum()
 
 
