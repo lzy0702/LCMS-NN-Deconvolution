@@ -256,9 +256,10 @@ is merged into one; the scan on their shared boundary is counted once, with the 
 readings. Pieces of comparable height (each at least a tenth of the other) whose joined trace falls
 below half the lower apex between them are two bands of one mass - isomers either side of a
 boundary - and stay apart; a scan where neither piece has a reading (a gap the linking bridged, a
-frame whose fit gave the species nothing) is read across from its neighbours, not as a valley. In a
-polarity-switching run each polarity is processed separately and species are matched by neutral
-mass and apex (within 0.2 min) afterwards.
+frame whose fit gave the species nothing; three scans at most) is read across from its neighbours,
+not as a valley, while a longer stretch without a reading is a valley. In a polarity-switching run
+each polarity is processed separately and species are matched by neutral mass and apex (within 0.2
+min) afterwards.
 
 A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its total
 over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct forms are

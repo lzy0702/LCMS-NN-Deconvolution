@@ -96,20 +96,22 @@ class LogMzGrid:
         segment's edge sample covers its own spacing, never half of the gap beside it
         (:func:`lcmsdeconv.core.profile.sample_widths`).
         """
+        from ..core.profile import scan_points
+
         mz = np.asarray(mz, dtype=float)
         intensity = np.asarray(intensity, dtype=float)
         out = np.zeros(self.size, dtype=np.float64)
         m = (mz > self.mz_min) & (mz < self.mz_max)
         if not np.any(m):
             return out
-        mz, intensity = mz[m], intensity[m]
+        # sorted, a repeated m/z read once at the mean of its values (as profile_on_axis and
+        # the region sum read it): a zero spacing would make every spacing look like a gap
+        mz, intensity = scan_points(mz[m], intensity[m])
         if mz.size == 1:
             b = int(np.clip(self.mz_to_bin(mz), 0, self.size - 1))
             out[b] = intensity[0]
             return out
 
-        order = np.argsort(mz, kind="stable")
-        mz, intensity = mz[order], intensity[order]
         u = self.mz_to_u(mz)
         # width in u represented by each sample: the midpoint rule within a segment; toward a
         # gap left by vendor thresholding a sample covers its own spacing, not the gap
@@ -174,10 +176,10 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     network's input statistics cannot drift apart between training and use.
 
     ``frames``, the scans a summed spectrum was made of (``Run.sum_frames`` keeps them), are
-    placed one by one and added when their axes differ and any of them is a profile scan: each
-    profile scan is resampled on its own axis, which shows where its gaps are (the union of
-    many axes does not), and each centroided scan is drawn with the line shape - whichever kind
-    of scan the sum was labelled after.
+    placed one by one and added when their axes differ: each profile scan is resampled on its
+    own axis, which shows where its gaps are (the union of many axes does not), and each
+    centroided scan is drawn with the line shape - whichever kind of scan the sum was labelled
+    after.
     """
     from ..chem.instrument import InstrumentModel, estimate_noise_sigma
 
@@ -196,8 +198,8 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     if hi <= lo * 1.01:
         lo, hi = 50.0, mz_max
     grid = LogMzGrid(lo, hi, step, polarity)
-    by_scan = (bool(frames) and any(f.is_profile is not False for f in frames)
-               and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames))
+    by_scan = bool(frames) and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz)
+                                       for f in frames)
     if by_scan:
         # scan by scan: profile scans resampled on their own points, centroided ones drawn
         observed = np.zeros(grid.size, dtype=np.float64)

@@ -388,33 +388,41 @@ def test_scans_without_a_reading_do_not_split_one_band():
 
 def test_combined_adduct_labels_beyond_the_library_are_fitted_and_judged_at_their_mass():
     """A component merged with its +2K form carries a +3K column where the library lists two
-    of a type at most: that column is judged at PO + 3K, and fitted frame by frame."""
+    of a type at most: that column is judged at PO + 3K, and fitted frame by frame there."""
+    from lcmsdeconv.chem.adducts import carrier_mass
     from lcmsdeconv.deconv.refine import _merge_adduct_components, drop_coincident_adducts
     from lcmsdeconv.features.quantify import TemplateBank
 
     lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"), max_per_type=2,
                                   max_total=3)
-    k = ADDUCTS["K"].avg_mass
-    flp = Component(6793.98, 100.0, charges={4: 100.0}, adducts={"base": 100.0},
-                    columns={(4, ""): 100.0})
+    k, na = ADDUCTS["K"].avg_mass, ADDUCTS["Na"].avg_mass
+    assert "+3K" not in {s.label for s in lib.states()}
+    assert abs(lib.state_of("+3K").avg_mass - 3 * k) < 1e-9
+    # a stronger species whose ladder meets PO + 3K (at its +2Na) but not PO + K or PO + 2K
+    x = Component(6777.92 + 3 * k - 2 * na, 50.0, charges={4: 50.0}, adducts={"base": 50.0},
+                  columns={(4, ""): 50.0})
     po = Component(6777.92, 10.0, charges={4: 10.0}, adducts={"base": 10.0},
                    columns={(4, ""): 10.0})
     po2k = Component(6777.92 + 2 * k, 3.0, charges={4: 3.0}, adducts={"base": 2.0, "+K": 1.0},
                      columns={(4, ""): 2.0, (4, "+K"): 1.0})
-    comps = [flp, po, po2k]
+    comps = [x, po, po2k]
     _merge_adduct_components(comps, lib)
     po_m = next(c for c in comps if abs(c.mass - 6777.92) < 0.1)
-    assert (4, "+3K") in po_m.columns and "+3K" not in {s.label for s in lib.states()}
-    # PO + 3K is FLP + Na + 2K to 0.05 Da: it goes, as PO + 2K (FLP + Na + K) does
+    assert (4, "+3K") in po_m.columns and (4, "+2K") in po_m.columns
     out = drop_coincident_adducts(comps, lib)
     po_out = next(c for c in out if abs(c.mass - 6777.92) < 0.1)
-    assert set(po_out.adducts) == {"base"}
+    assert "+3K" not in po_out.adducts and "+2K" in po_out.adducts
+    # the bank's +3K column sits 3 (K - H) above the base column
     grid = LogMzGrid(1000.0, 2500.0, 2e-5, -1)
     comp = Component(6777.92, 11.0, charges={4: 11.0}, adducts={"base": 10.0, "+3K": 1.0},
                      columns={(4, ""): 10.0, (4, "+3K"): 1.0}, compound_class="ps_rna")
     bank = TemplateBank([comp], grid, ORBI, lib, compound_class="ps_rna")
-    assert (0, "+3K") in bank.keys
-
+    centre = {}
+    for j, key in enumerate(bank.keys):
+        w = bank.A[:, j]
+        mz = float(np.sum(grid.bin_to_mz(bank.support) * w) / w.sum())
+        centre[key[1]] = 4 * (mz - carrier_mass(-1))
+    assert abs(centre["+3K"] - centre["base"] - 3 * ADDUCTS["K"].mass) < 0.05
 
 def test_a_fold_on_the_weaker_region_piece_is_still_reported():
     """The fold flag of the piece that took a form apart survives the merge of the pieces."""
@@ -451,3 +459,46 @@ def test_an_adduct_given_as_a_formula_has_states():
     st = lib.state_of("+2C7H17N")
     assert st is not None and abs(st.mass - 2 * 115.1361) < 0.01
     assert "+2C7H17N" in {s.label for s in lib.states()}
+
+
+def test_isomers_seen_in_a_scan_or_two_a_minute_apart_stay_apart():
+    """Empty scans are read across only in short runs: a long stretch without a reading is a
+    valley, however high the few readings either side."""
+    t = np.round(np.arange(12.0, 14.0, 0.04), 6)
+    ya, yb = np.zeros(t.size), np.zeros(t.size)
+    ia, ib = int(np.searchsorted(t, 12.52)), int(np.searchsorted(t, 13.04))
+    ya[ia:ia + 2] = [40803.0, 41210.0]
+    yb[ib:ib + 2] = [40704.0, 40357.0]
+    a = _species(0, 4841.90, t, ya)
+    b = _species(1, 4841.90, t, yb)
+    assert len(merge_adjacent_species([a, b])) == 2
+
+
+def test_merged_pieces_keep_only_flags_that_still_hold():
+    from lcmsdeconv.features.link import FOLD_FLAG
+
+    ta, tb = np.linspace(10.0, 10.4, 11), np.linspace(10.4, 10.8, 11)
+    prof = lambda t: np.exp(-0.5 * ((t - 10.30) / 0.1) ** 2)  # noqa: E731
+    a = _species(0, 5162.25, ta, 100 * prof(ta))
+    a.charges = {3: 10.0, 4: 60.0, 5: 5.0}
+    a.flags = [FOLD_FLAG + "+Na (5184.21 Da)"]
+    b = _species(1, 5162.27, tb, 40 * prof(tb))
+    b.charges = {4: 20.0}
+    b.flags = ["one charge state: charge read from isotope spacing",
+               FOLD_FLAG + "+Na (5184.27 Da), +K (5200.33 Da)"]
+    out = merge_adjacent_species([a, b])
+    assert len(out) == 1
+    flags = out[0].flags
+    assert not any(f.startswith("one charge state") for f in flags)
+    fold = [f for f in flags if f.startswith(FOLD_FLAG)]
+    assert fold == [FOLD_FLAG + "+Na (5184.21 Da), +K (5200.33 Da)"]
+
+
+def test_an_adduct_formula_must_add_mass_and_not_repeat_one_listed():
+    import pytest
+
+    with pytest.raises(ValueError):
+        AdductLibrary.from_mode("hilic", 1, include=("Mg-H2",))
+    assert AdductLibrary.from_mode("hilic", 1, include=("NH3",)).names() == \
+        AdductLibrary.from_mode("hilic", 1).names()
+    assert "C6H15N" not in AdductLibrary.from_mode("iprp", -1, include=("C6H15N",)).names()

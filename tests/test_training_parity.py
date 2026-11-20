@@ -72,3 +72,13 @@ def test_training_scans_are_thresholded_into_segments_of_five_points_or_more():
         short += int(np.sum(inner < 5))
         total += inner.size
     assert total > 100 and short == 0
+
+
+def test_the_resume_fingerprint_covers_the_training_threshold():
+    """A run paused under one thresholding must not resume on frames thresholded another way."""
+    from lcmsdeconv.nn.train import synth_fingerprint
+
+    a = SynthConfig(classes=[ClassConfig("ps_rna", (4000.0, 12000.0))], mode="iprp", polarity=-1)
+    b = SynthConfig(classes=[ClassConfig("ps_rna", (4000.0, 12000.0))], mode="iprp", polarity=-1,
+                    vendor_pad=3)
+    assert synth_fingerprint(a) != synth_fingerprint(b)

@@ -42,6 +42,14 @@ class SynthConfig:
     gain_range: tuple[float, float] = (1.0, 50.0)
     electronic_sigma_range: tuple[float, float] = (0.5, 5.0)
     threshold_sigmas_range: tuple[float, float] = (0.0, 3.0)
+    #: points written on either side of every point above the vendor threshold. The real Thermo
+    #: runs hold no segment shorter than five points, and most are five or six: the instrument
+    #: writes a point either side of each run above its threshold, but its noise is correlated
+    #: over the line shape, so such runs are rarely shorter than three points. For the white
+    #: noise drawn here two points either side give that five-point minimum, three gave seven.
+    #: (Whole synthetic runs, ``synth.chromatography._threshold_profile``, keep three: the
+    #: benchmarks were measured on them.) A setting, so that the resume fingerprint covers it.
+    vendor_pad: int = 2
     background_ions_range: tuple[int, int] = (0, 40)
     #: singly charged ions (chemical background, small molecules): "keep"; "drop" - generate
     #: none, so the network never sees one; "ignore" - generate them, and give their bins no

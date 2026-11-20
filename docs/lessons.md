@@ -522,9 +522,15 @@ took that apart:
    library's limits (+3K where two of a type are listed), which were neither fitted frame by
    frame nor judged at their own mass; a fold's flag lost when region pieces merge; species of
    one mass merged across polarities whatever their retention times; and adduct types given as
-   formulas, which the documentation offers, failing outright. Fixed, these change one real-run
-   report (a 1900.08 Da piece joins its species) and no synthetic one but a legacy-generator
-   duplicate.
+   formulas, which the documentation offers, failing outright. A third review found the fixes
+   too broad in turn: empty scans read across however many (two isomers seen in two scans each,
+   half a minute apart, joined; read across three at most, they stay apart, and a 0.000 %
+   1900.08 Da sliver the wider rule had joined is reported again), every flag of a merged
+   piece copied (a one-charge-state flag on a species of three charge states), formula adducts
+   accepted that add no mass or repeat a listed one, the training padding left out of the resume
+   fingerprint, and resample_profile still dropping a repeated m/z. Each review narrowed the
+   last one's fixes; each fix now has a test that fails without it. The real-run reports are
+   those of the first review's fixes, and the synthetic ones but for a legacy-generator duplicate.
 6. **What did not work.** Sliding templates over half an isotope spacing instead of 1.5 bins
    (the IP-RPLC main species fell to 69 % of another report), adducts forced into every region
    (above), one template bank over abutting regions (the deaminated NC, 0.98 Da above NC,

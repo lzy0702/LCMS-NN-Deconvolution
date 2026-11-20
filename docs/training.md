@@ -122,7 +122,9 @@ grid views differ, and models trained before the fix - the CPU `proof` LadderNet
 run started before it - must be retrained. So must models trained before training scans were
 thresholded as vendor software writes them (segments of at least five points around every point
 above the threshold; earlier, noise points were kept one by one, half the segments of a training
-scan were single points, and its noise level differed from a real scan's by up to threefold).
+scan were single points, and its noise level differed from a real scan's by up to threefold). The
+padding is a setting (`SynthConfig.vendor_pad`), so a run paused before the change is refused on
+resume rather than continued on other frames.
 
 ## Checks before a long run
 
