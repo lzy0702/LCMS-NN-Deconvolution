@@ -204,6 +204,7 @@ def deconvolve_spectrum(
             residual=residual, start_id=len(components),
             strongest_explained=max((c.intensity for c in components), default=0.0),
             trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
+            known_masses=[c.mass for c in components],
         )
         if not new:
             break

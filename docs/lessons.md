@@ -543,3 +543,46 @@ took that apart:
 
 The lesson extends section 5: an amount is only comparable when every species' amount is made
 the same way, and a comparison against a reference is only as good as the reference.
+
+## 16. Read a weak species' position off its own isotopes
+
+n-2 of the NC product (about 0.1 % of NC) was missed in both chromatographies and the 1.9 kDa
+shortmer 1883.3 of the IP-RPLC NC run was quantified at 0.00 %. Four parallel traces, each
+replayed stage by stage on the real runs, found three different failures behind two symptoms:
+
+1. **A charge state that failed the gate still steered the candidate.** The gate measures every
+   voted charge state but kept them all in the candidate's set, failed ones included. Under
+   IP-HILIC n-2's z = 9 window held an unrelated peak 30 times taller than n-2; the adduct walk
+   summed it in, stepped n-2 down a sodium onto a phantom at 4482 Da, and that phantom's trace was
+   later dropped as flat. The walk now reads only the charge states whose envelopes passed the
+   gate. Raising the 200-candidate cap, the first suspect, was neither needed (n-2 enters the second
+   pass) nor sufficient (with 400 it meets the same walk), and added 13 small reports.
+2. **A mass read half a spacing off misplaces the templates.** Under IP-RPLC a 4497 Da species six
+   isotope spacings below n-2 pulled its mean-shift mass 0.55 Da light; 1883.3 is read 0.34 Da
+   light, from an envelope 2 Da lighter on the same comb (-0.15 Da), the union axis's point density
+   (-0.12) and its own isotopologue heights (-0.07). Their templates needed +0.49 and +0.36 Da, the
+   0.3 Da window stopped at its edge, and the fits took other ions: n-2's z = 11 (a failed state)
+   carried two thirds of its fit and put its apex 0.9 min off, 1883.3 was fitted 300 times low.
+   The phase of the candidate's own resolved isotopologues, folded onto one spacing, gives the
+   shift directly (within 0.01 Da on synthetic envelopes, and n-2's z = 3 and 4 agree to 0.003 Da);
+   it is now taken where the overlap search ends on its edge.
+3. **A wider search slides onto neighbours, and the comb needs guards too.** The comb phase reads
+   whatever comb dominates the windows. The adduct dedupe had renamed FLP's candidate to a weak
+   partner 43.5 Da lighter (two sodium to 0.46 Da); aligned to its own comb that partner took FLP's
+   peaks as its +2Na form and FLP was lost - exactly as the overlap walk had lost it. A renamed
+   candidate has no gate charges of its own, so the comb leaves it alone. Adduct forms of accepted
+   species are left alone as well: their masses are pulled by neighbouring forms by up to three
+   quarters of a dalton, and the comb then takes the tooth one spacing off - NC + 3Na of the
+   IP-HILIC NC run jumped from 0.56 % to 10.5 %, its two teeth fitting the envelope equally to
+   0.6 %. Above 4 kDa neighbouring teeth fit within 1-6 % of each other, too close for a margin
+   rule: n-2's correct tooth wins by 3 %.
+
+Now n-2 is reported in both runs (0.08 % under IP-RPLC against 0.15 %, 0.14 % under IP-HILIC
+against 0.11 %), 1883.3 at 0.08 % (0.09-0.10 % by extracted ions), all 20 paper species are found,
+and nothing else on the four runs moves by more than a few tenths of a percent but species that
+were edge-pinned (a 1831.6 Da shortmer from 0.004 % to 1.1 %, 1.6 % by extracted ions). The cost
+is one false species more or less per synthetic preset.
+
+The lesson: a template must be placed by evidence the species owns. A slide over everything nearby
+finds the best fit to whatever is there; the gate's per-charge measurements already say which
+envelopes are the candidate's, and each later step should read only those.

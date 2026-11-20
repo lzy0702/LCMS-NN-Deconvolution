@@ -44,6 +44,9 @@ class Candidate:
     # where the class's isotope pattern puts this species' resolved isotopologues against where
     # the data show them, in ln(mass) units: templates are built at mass * exp(template_shift)
     template_shift: float = 0.0
+    # the charge states whose own envelopes passed the gate (refine_candidate_masses), as
+    # opposed to every state the charge map voted for: None before the gate
+    gate_charges: set[int] | None = None
 
 
 def accumulate_mass_histogram(
@@ -220,8 +223,11 @@ def dedupe_adduct_candidates(
                     base.charges |= c.charges
                     if dm < 0:
                         # the lighter form is the base species: the stronger candidate we kept
-                        # is its adduct, so the base identity moves down to this mass
+                        # is its adduct, so the base identity moves down to this mass. Its
+                        # gate measured the heavier form's envelopes, not this mass's: they no
+                        # longer say where this mass's isotopologues sit
                         base.mass = c.mass
+                        base.gate_charges = None
                     merged = True
                     break
                 if merged:
@@ -508,6 +514,7 @@ def refine_candidate_masses(
             return False
         c.mass = float(masses[i])
         c.charges = {int(matched_z[i])}
+        c.gate_charges = set(c.charges)
         c.single_charge = True
         out.append(c)
         return True
@@ -591,7 +598,8 @@ def refine_candidate_masses(
         if drop_unsupported and spread > max_spread_ppm:
             continue
         c.mass = med
-        c.charges = set(zs[best].tolist()) | c.charges
+        c.gate_charges = set(zs[best].tolist())
+        c.charges = c.gate_charges | c.charges
         out.append(c)
     return out
 

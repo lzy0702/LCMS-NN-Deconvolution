@@ -129,9 +129,10 @@ published with known compositions (Tutiš et al., Anal. Chem. 2025, 97, 15717,
 https://doi.org/10.1021/acs.analchem.5c01407), are scored against the paper's species: of 20 known
 species the original code found 2 among 87 reports; the current code, since vendor-thresholded
 profiles are resampled correctly, the decoder was recalibrated for it and every species' amount is
-made the same way, finds 18, and 23 of the 29 impurity elutions its Supporting Information lists,
-among 227 reports, with masses within about 0.1 Da of theory for the main species and base-form
-impurity shares within 0.88-1.17 of extracted-ion references for 16 of the 20 impurities found
+made the same way, finds all 20, and 23 of the 29 impurity elutions its Supporting Information
+lists, among 228 reports, with masses within about 0.1 Da of theory for the main species and
+base-form impurity shares within 0.88-1.17 of extracted-ion references for 16 of the 23 impurities
+found
 (`docs/benchmarks.md`, `scripts/validate_oligo_runs.py`). Public spectra are used only for
 validation, never for training. Bovine serum albumin and the alcohol dehydrogenase tetramer are
 recovered within 1 % of their literature masses from public native mass spectra. On synthetic data

@@ -177,21 +177,35 @@ spectrum and the shift with the largest normalized overlap is kept (`refine.alig
 where the instrument resolves the isotopes of the candidate's central charge). The offsets to
 absorb are in daltons: 1.5 bins is 0.04 Da at 1.2 kDa, and with that window half the alignments of
 the IP-HILIC NC run were pinned to its edge, a 1235 Da shortmer quantified at a four-hundredth of
-its amount. A wider search does harm: following the overlap past the window's edge, up to half an
-isotope spacing, let candidates beside the IP-RPLC main species slide onto its adduct forms' peaks,
-and the main species was lost; so offsets beyond 0.3 Da are not absorbed (a 1.9 kDa shortmer of the
-IP-RPLC NC run, its average mass read 0.34 Da light, is fitted 80 times low). The overlap is
-computed in quarter-bin steps and the optimum placed between them by a parabola through the best
-step and its neighbours, around no shift too unless a step does clearly better: at 140 000 (m/z
-200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5 bin, and the main species of the IP-RPLC
-conjugate run is fitted 2 % low with its templates an eighth of a bin off its peaks, 9 % a quarter
-bin off and 28 % half a bin off. The shift moves the templates, not the reported mass, which is
-measured from the raw envelopes as below; when the mass changes afterwards (that measurement, or
-two copies of one species merged) the shift is adjusted so that the templates stay where the
-alignment put them, and a candidate re-centred from an adducted form onto its base form is aligned
-afresh. Before this, re-measuring the mass moved the templates with it, and a re-centred candidate
-kept the shift found for its adducted form; on that main species, re-centred from an adducted form,
-the two cost 5 % of its amount (with only the first corrected, 20 %).
+its amount. Where the overlap's best is still the window's edge, the candidate's own isotope comb
+decides (`refine.align_candidate`, `refine.comb_phase_shift`): the raw points of each charge state
+that passed the gate, folded onto one isotope spacing, give the shift that puts the template's
+isotopologues on them, modulo a spacing and taken within half a spacing of the measured mass. A
+weak species' average mass can be read several tenths of a dalton off - a co-eluting envelope 2 Da
+lighter on the same comb, or a neighbour 6 Da away, pulls the mean shift - and its templates then
+need more than the window allows: the 1.9 kDa shortmer 1883.3 of the IP-RPLC NC run, read 0.34 Da
+light, needs +0.36 Da and at the edge was fitted 300 times low; n-2 of the NC product needs +0.49
+Da under IP-RPLC and -0.37 Da under IP-HILIC. The comb is taken only where the gate-passed charge
+states agree on it, where the same comb one spacing the other way does not fit the envelope better,
+for a candidate whose gate measured its own envelopes (one the adduct dedupe renamed to a lighter
+partner measured the stronger form's), and not for an adduct form of an accepted species (within 1
+Da of its mass plus an adduct state, up to three of a type), whose mass its neighbouring forms pull
+by up to three quarters of a dalton: NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, fits the
+teeth either side to 0.6 % and would take the wrong one. Searching the overlap itself past the edge
+instead lets a candidate slide onto whatever lies there: one the adduct dedupe had renamed to a
+weak partner 43.5 Da (two sodium) lighter took the IP-RPLC main species' peaks as its +2Na form,
+and the main species was lost. The overlap is computed in quarter-bin steps and the optimum placed
+between them by a parabola through the best step and its neighbours, around no shift too unless a
+step does clearly better: at 140 000 (m/z 200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5
+bin, and the main species of the IP-RPLC conjugate run is fitted 2 % low with its templates an
+eighth of a bin off its peaks, 9 % a quarter bin off and 28 % half a bin off. The shift moves the
+templates, not the reported mass, which is measured from the raw envelopes as below; when the mass
+changes afterwards (that measurement, or two copies of one species merged) the shift is adjusted so
+that the templates stay where the alignment put them, and a candidate re-centred from an adducted
+form onto its base form is aligned afresh. Before this, re-measuring the mass moved the templates
+with it, and a re-centred candidate kept the shift found for its adducted form; on that main
+species, re-centred from an adducted form, the two cost 5 % of its amount (with only the first
+corrected, 20 %).
 
 Each candidate is fitted over every charge state the spectrum shows for it, not only over the
 charges that voted for it: starting from that band, charges are added outward while an envelope is
@@ -202,19 +216,21 @@ they are later explained as separate, false species.
 
 Detection uses only the base state — an adducted envelope still shows its base envelope — and the
 full adduct combination set is fitted only for components that pass the gates. Only adduct types
-the spectrum evidences are in that set: a type is kept when an envelope at M + delta of one of
-the strongest candidates passes the same gate as a species would (`require_evidence`), its mass
-measured as detection measures it and compared with the candidate's average mass plus the
-adduct's average-mass shift (K - H is 0.13 Da heavier than its monoisotopic shift, as potassium
-is 6.7 % 41K); a library of five ion-pairing adduct types otherwise gives each charge state about
-fifty columns, and neighbouring species and adduct columns trade intensity. A component
-centred on an adducted form is moved down the adduct ladder (by average-mass shifts, as its mass
-is an average mass) when the lighter form is present on most of the same charge states with at
-least half the height, an envelope is centred within half an envelope width (at least 0.5 Da) of
-where the step lands (the median of the per-charge mean shifts that stay within an envelope width
-of it - on the flank of a stronger species' envelope they all run off toward its centre), and the
-same adduct model then explains more of the spectrum. Accepted components are subtracted from the
-residual before the next candidate is fitted.
+the spectrum evidences are in that set: a type is kept when an envelope at M + delta of one of the
+strongest candidates passes the same gate as a species would (`require_evidence`), its mass
+measured as detection measures it and compared with the candidate's average mass plus the adduct's
+average-mass shift (K - H is 0.13 Da heavier than its monoisotopic shift, as potassium is 6.7 %
+41K); a library of five ion-pairing adduct types otherwise gives each charge state about fifty
+columns, and neighbouring species and adduct columns trade intensity. A component centred on an
+adducted form is moved down the adduct ladder (by average-mass shifts, as its mass is an average
+mass) when the lighter form is present on most of the same charge states - those whose envelopes
+passed the gate: a state that failed it holds another species' signal, and an unrelated peak 30
+times taller under n-2's z = 9 window walked n-2 down a sodium onto a phantom - with at least half
+the height, an envelope is centred within half an envelope width (at least 0.5 Da) of where the
+step lands (the median of the per-charge mean shifts that stay within an envelope width of it - on
+the flank of a stronger species' envelope they all run off toward its centre), and the same adduct
+model then explains more of the spectrum. Accepted components are subtracted from the residual
+before the next candidate is fitted.
 
 After all passes, a component is dropped when at least 80 % of its fitted intensity lies within two
 envelope widths of a stronger column of a stronger component (explaining away by shared evidence).
