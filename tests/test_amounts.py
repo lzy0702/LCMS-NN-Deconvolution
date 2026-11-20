@@ -632,18 +632,35 @@ def test_the_comb_needs_its_charge_states_to_agree():
     one = Candidate(mass, 1.0, {2, 3}, gate_charges={2})
     assert align_candidate(one, spectrum, grid, ORBI, "ps_rna") == align_template(
         one, spectrum, grid, ORBI, "ps_rna")
-    # another species' comb under z = 5, a state that failed the gate (too weak to move the
-    # overlap off its edge, strong enough to break the agreement if it were read): the comb
-    # follows 2 and 3
+    # a second state under a tenth of the weight cannot veto, but counts towards the two only
+    # where it agrees: contradicting z = 2 by 0.7 Da it leaves the edge, agreeing it is a check
+    for z3_shift, placed in ((-0.35, False), (0.356, True)):
+        spectrum = np.zeros(grid.size)
+        for z, shift, h in ((2, 0.356, 1e6), (3, z3_shift, 1e5)):
+            t = build_template(mass + shift, z, grid, ORBI, "ps_rna")
+            spectrum[t.bins] += h * t.values
+        two = Candidate(mass, 1.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+        s = align_candidate(two, spectrum, grid, ORBI, "ps_rna")
+        assert (s != align_template(two, spectrum, grid, ORBI, "ps_rna")) == placed
+        if placed:
+            assert abs(mass * np.expm1(s) - 0.356) < 0.02
+    # another species' comb under z = 5, a state that failed the gate: read by the overlap
+    # search it would pull the template onto that comb, 0.2 Da light; read by the comb it would
+    # break the agreement. The template follows 2 and 3
     grid, spectrum = _edge_case(mass, (2, 3), 0.356, foreign=(mass, (5,), -0.2, 3e5))
     c5 = Candidate(mass, 1.0, {2, 3, 5}, gate_charges={2, 3}, gate_failed={5})
     s = align_candidate(c5, spectrum, grid, ORBI, "ps_rna")
     assert abs(mass * np.expm1(s) - 0.356) < 0.01
 
+
 def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
-    """n-2 of the NC product, gated on z = 3 and 4, with z = 9 left in its set: an unrelated peak
-    30 times taller under z = 9 one sodium lower must not walk it down to a phantom."""
+    """n-2 of the NC product voted on z = 3, 4 and 9, with no envelope of its own at z = 9: the
+    gate passes 3 and 4 and cannot measure 9, which stays in the candidate's set. An unrelated
+    peak 30 times taller under z = 9 one sodium lower must not walk it down to a phantom - read
+    with the verdicts the gate gives, or with a duplicate merged in that brought z = 9 along."""
+    from lcmsdeconv.deconv.decode import refine_candidate_masses
     from lcmsdeconv.deconv.nnls_solve import fit_weights
+    from lcmsdeconv.deconv.pipeline import _dedupe_by_mass
     from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base
 
     mass = 4503.71
@@ -661,18 +678,28 @@ def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
     observed = grid.resample_profile(x, y)
     weights = fit_weights(observed, 50.0, grid.step, 70000.0)
     states = lib.states()
-    results = {}
-    for gate in ({3, 4}, None):
-        cand = Candidate(mass, 1.0, {3, 4, 9}, gate_charges=gate,
-                         gate_failed=None if gate is None else {9})
+
+    def walk(cand):
         full = _fit_candidate(cand, observed.copy(), weights, grid, ORBI, "ps_rna", states,
                               mz_range=(400.0, 2000.0))
         moved, _ = _recenter_base(cand, full, observed.copy(), weights, grid, ORBI, "ps_rna",
                                   states, lib, (400.0, 2000.0), raw_mz=x, raw_int=y,
                                   noise_sigma=50.0, resolution=70000.0)
-        results[gate is None] = moved.mass
-    assert results[False] == mass  # gate charges: stays
-    assert abs(results[True] - (mass - ADDUCTS["Na"].avg_mass)) < 0.5  # all charges: walked
+        return moved.mass
+
+    (gated,) = refine_candidate_masses([Candidate(mass, 1.0, {3, 4, 9})], x, y, -1,
+                                       noise_sigma=50.0, compound_class="ps_rna",
+                                       resolution=70000.0, instrument=ORBI, profile=True)
+    assert gated.gate_charges == {3, 4} and 9 in gated.charges and 9 not in gated.gate_failed
+    assert abs(walk(gated) - mass) < 0.5  # stays
+    # a weaker pick of the same mass that voted for z = 9 too, merged in by mass
+    strong = Candidate(mass, 2.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+    (merged,) = _dedupe_by_mass([strong, Candidate(mass + 0.05, 1.0, {3, 4, 9},
+                                                    gate_charges={3, 4}, gate_failed=set())])
+    assert 9 in merged.charges and abs(walk(merged) - mass) < 0.5
+    # without a gate record every voted state is read, and the walk takes the phantom
+    lost = walk(Candidate(mass, 1.0, {3, 4, 9}))
+    assert abs(lost - (mass - ADDUCTS["Na"].avg_mass)) < 0.5
 
 
 def test_a_comb_placed_candidate_on_an_adduct_form_still_walks_to_its_base():
@@ -698,9 +725,10 @@ def test_a_comb_placed_candidate_on_an_adduct_form_still_walks_to_its_base():
 
 
 def test_a_single_charge_candidate_walks_on_its_other_observed_states():
-    """A candidate gated on one charge state reads the states that did not fail the gate."""
+    """A candidate gated on one charge state also reads the states observed_charges finds beside
+    it (each with its isotope comb, at its mass), not only that one."""
     from lcmsdeconv.deconv.nnls_solve import fit_weights
-    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base
+    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base, observed_charges
 
     base = 5162.25
     na = ADDUCTS["Na"].avg_mass
@@ -715,11 +743,76 @@ def test_a_single_charge_candidate_walks_on_its_other_observed_states():
     observed = grid.resample_profile(x, y)
     weights = fit_weights(observed, 50.0, grid.step, 70000.0)
     states = lib.states()
-    cand = Candidate(base + na, 1.0, {3, 4, 5}, gate_charges={4}, gate_failed=set(),
+    cand = Candidate(base + na, 1.0, {4}, gate_charges={4}, gate_failed=set(),
                      single_charge=True)
+    # what refine_frame does before the walk
+    cand.charges = observed_charges(cand.mass, cand.charges, x, y, 150.0, -1, "ps_rna", 70000.0,
+                                    (400.0, 2500.0), instrument=ORBI)
+    cand.observed_extra = cand.charges - {4}
+    assert cand.charges == {3, 4, 5}
     full = _fit_candidate(cand, observed.copy(), weights, grid, ORBI, "ps_rna", states,
                           mz_range=(400.0, 2500.0))
     moved, _ = _recenter_base(cand, full, observed.copy(), weights, grid, ORBI, "ps_rna", states,
                               lib, (400.0, 2500.0), raw_mz=x, raw_int=y, noise_sigma=50.0,
                               resolution=70000.0)
     assert abs(moved.mass - base) < 0.5
+
+
+def test_a_duplicate_merged_by_mass_brings_its_gate_verdicts():
+    """Within the by-mass tolerance a duplicate's gate measured the same windows: the states it
+    passed are the kept candidate's own and those it rejected are not; where the two disagree
+    the kept candidate's verdict stands."""
+    from lcmsdeconv.deconv.pipeline import _dedupe_by_mass
+    from lcmsdeconv.deconv.refine import own_charges
+
+    weak = Candidate(6752.50, 1.0, {3, 4, 15}, gate_charges={3, 4}, gate_failed={15})
+    strong = Candidate(6752.35, 2.0, {4, 5}, gate_charges={4, 5}, gate_failed=set())
+    (kept,) = _dedupe_by_mass([strong, weak])
+    assert kept.charges == {3, 4, 5, 15}
+    assert kept.gate_charges == {3, 4, 5} and kept.gate_failed == {15}
+    assert own_charges(kept) == {3, 4, 5}
+    strong = Candidate(6752.35, 2.0, {4, 5, 15}, gate_charges={4, 5, 15}, gate_failed=set())
+    (kept,) = _dedupe_by_mass([strong, weak])
+    assert kept.gate_charges == {3, 4, 5, 15} and not kept.gate_failed
+
+
+def test_a_lower_charge_comb_read_at_twice_its_charge_contradicts_it():
+    """The singly and doubly charged ions of a 915 Da species sit where charges 2 and 4 of an
+    1831 Da one would, and fill two of its three major isotopologue positions - every other
+    one. They are not that species' envelopes; its own are."""
+    from lcmsdeconv.deconv.decode import isotopes_contradict_charge
+
+    half, mass = 915.84, 1831.68
+    x, y_half = _comb_profile(half, (1, 2), 0.0, lo=400.0, hi=1000.0)
+    _x, y_own = _comb_profile(mass, (2, 4), 0.0, lo=400.0, hi=1000.0)
+    for z in (2, 4):
+        centre = (mass - z * MP) / z
+        fwhm = centre / float(ORBI.resolving_power(centre))
+        lo, hi = np.searchsorted(x, [centre - 1.5, centre + 1.5])
+        for y, contradicts in ((y_half, True), (y_own, False)):
+            assert isotopes_contradict_charge(mass, z, centre, x, y, 1e3, -1, "ps_rna", fwhm,
+                                              height=float(y[lo:hi].max())) == contradicts
+
+
+def test_a_mass_walked_from_anchors_the_adduct_forms_above_it():
+    """NC + 3Na walked onto NC in an earlier pass: NC's +5Na form, read 0.5 Da light and beyond
+    the three sodium a fit allows, keeps its window's edge as a form of the walked mass instead
+    of taking its comb - placed on it, it is fitted whole, and NC's adduct forms were reported
+    as a 3.3 % impurity."""
+    from lcmsdeconv.deconv.refine import refine_frame
+
+    na = ADDUCTS["Na"].avg_mass
+    nc = 5162.25
+    read = nc + 5 * na - 0.5
+    grid, spectrum = _edge_case(read, (4, 5), 0.5)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+
+    def placed(walked):
+        cand = Candidate(read, 1.0, {4, 5}, gate_charges={4, 5}, gate_failed=set())
+        comps, _frac, _res = refine_frame([cand], grid, spectrum, 100.0, ORBI, "ps_rna", lib,
+                                          known_masses=[nc], walked=walked)
+        return read * np.expm1(comps[0].template_shift)
+
+    assert abs(placed([]) - 0.5) < 0.05  # its comb
+    assert abs(placed([nc + 3 * na - 0.6]) - 0.29) < 0.03  # the window's edge
