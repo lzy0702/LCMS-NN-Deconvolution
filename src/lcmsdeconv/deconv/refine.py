@@ -115,7 +115,10 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     the isotopes of the candidate's central charge state; elsewhere a bin is a small part of an
     envelope and the shift is 0.
     """
-    zs = _align_charges(cand.mass, cand.charges, grid, instrument, max_charges)
+    # the candidate's own envelopes: a charge state that failed the gate holds another
+    # species' comb, which the overlap would follow
+    own = set(cand.charges) - (getattr(cand, "gate_failed", None) or set())
+    zs = _align_charges(cand.mass, own or cand.charges, grid, instrument, max_charges)
     if zs is None:
         return 0.0
     reach = _align_reach(cand.mass, grid, max_bins, step_bins, max_da)
@@ -183,25 +186,29 @@ def _overlap(mass: float, zs, spectrum: np.ndarray, grid, instrument: Instrument
     return total
 
 
-def comb_phase_shift(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray,
+def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray,
                      polarity: int, instrument: InstrumentModel, compound_class: str,
-                     width_sigmas: float = 2.5) -> tuple[float, float, int]:
-    """Where a candidate's own resolved isotopologues sit against the class template, read off
-    the raw spectrum: ``(shift in Da, coherence, charge states used)``.
+                     width_sigmas: float = 2.5, min_share: float = 0.1,
+                     max_disagree_da: float = 0.1) -> tuple[float, float, int]:
+    """Where a candidate's own resolved isotopologues sit against the class template:
+    ``(shift in Da, coherence, charge states used)``, read off the points ``mz``/``intensity``
+    (a spectrum, or a grid's bins and values).
 
-    Each resolved charge state's raw points within ``width_sigmas`` envelope widths of the
+    Each resolved charge state's points within ``width_sigmas`` envelope widths of the
     candidate's position are folded onto one isotope spacing: the phase of their intensity-
     weighted sum against the template's own isotopologues is the shift that puts the template
-    on them, modulo one spacing (taken within half a spacing of the candidate's mass). Charge
-    states are added as unit phasors weighted by their coherent intensity; ``coherence`` is the
-    length of that sum over its total weight (1 when every state agrees), times the share of
-    the windows' intensity that lines up on one comb.
+    on them, modulo one spacing (taken within half a spacing of the candidate's mass). The
+    states are added as unit phasors weighted by their coherent intensity. ``coherence`` is the
+    length of that sum over the windows' total intensity: the share of it that lines up on one
+    comb. It is 0 where the states cannot be cross-checked (fewer than two) or do not agree: a
+    state carrying ``min_share`` of the weight whose own phase lies more than
+    ``max_disagree_da`` from the combined one (a foreign peak in one window).
     """
     from ..chem.classes import class_isotope_pattern
 
-    raw_mz = np.asarray(raw_mz, dtype=float)
-    raw_int = np.asarray(raw_int, dtype=float)
-    if raw_mz.size == 0 or mass <= 0 or instrument is None:
+    mz = np.asarray(mz, dtype=float)
+    intensity = np.asarray(intensity, dtype=float)
+    if mz.size == 0 or mass <= 0 or instrument is None:
         return 0.0, 0.0, 0
     carrier = carrier_mass(polarity)
     pat = class_isotope_pattern(mass, compound_class)
@@ -211,62 +218,71 @@ def comb_phase_shift(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarr
     if abs(p_t) <= 0:
         return 0.0, 0.0, 0
     env_sigma = float(np.sqrt(np.sum(a * (pat.masses - pat.average_mass) ** 2)))
-    total, weight, coherent, used = 0j, 0.0, 0.0, 0
+    units, weights, window_total = [], [], 0.0
     for z in sorted(int(z) for z in charges if int(z) >= 1):
         mz_c = (mass + z * carrier) / z
         fwhm = mz_c / max(float(instrument.resolving_power(mz_c)), 1.0)
         if ISOTOPE_DA / z < 2.0 * fwhm:
             continue  # isotopes not resolved at this charge
         hw = width_sigmas * env_sigma / z + 2.0 * fwhm
-        lo, hi = np.searchsorted(raw_mz, [mz_c - hw, mz_c + hw])
+        lo, hi = np.searchsorted(mz, [mz_c - hw, mz_c + hw])
         if hi - lo < 3:
             continue
-        w = np.clip(raw_int[lo:hi], 0.0, None)
+        w = np.clip(intensity[lo:hi], 0.0, None)
         if w.sum() <= 0:
             continue
-        p_o = complex(np.sum(w * np.exp(2j * np.pi * z * (raw_mz[lo:hi] - carrier) / ISOTOPE_DA)))
+        p_o = complex(np.sum(w * np.exp(2j * np.pi * z * (mz[lo:hi] - carrier) / ISOTOPE_DA)))
         d = p_o * np.conj(p_t)
         if abs(d) <= 0:
             continue
-        total += abs(p_o) * d / abs(d)
-        weight += abs(p_o)
-        coherent += float(w.sum())
-        used += 1
-    if used == 0 or weight <= 0:
+        units.append(d / abs(d))
+        weights.append(abs(p_o))
+        window_total += float(w.sum())
+    if not units:
         return 0.0, 0.0, 0
+    total = complex(np.sum(np.array(weights) * np.array(units)))
     shift = float(np.angle(total)) / (2.0 * np.pi) * ISOTOPE_DA
-    coherence = abs(total) / weight * (weight / coherent)
-    return shift, float(coherence), used
+    coherence = abs(total) / window_total
+    wsum = float(np.sum(weights))
+    for u, w in zip(units, weights):
+        if w < min_share * wsum:
+            continue
+        own = float(np.angle(u * np.conj(total))) / (2.0 * np.pi) * ISOTOPE_DA
+        if abs(own) > max_disagree_da:
+            coherence = 0.0
+    if len(units) < 2:
+        coherence = 0.0
+    return shift, float(coherence), len(units)
 
 
 def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
-                    compound_class: str, raw_mz: np.ndarray | None = None,
-                    raw_int: np.ndarray | None = None, min_coherence: float = 0.5,
+                    compound_class: str, min_coherence: float = 0.5,
                     forms_of: list[float] | None = None, form_shifts=(),
-                    form_tol_da: float = 1.0) -> float:
+                    form_tol_da: float = 1.0, grid_mz: np.ndarray | None = None) -> float:
     """:func:`align_template`, and where its best shift is the window's edge, the candidate's own
-    isotope comb (:func:`comb_phase_shift` over the charge states that passed the gate).
+    isotope comb (:func:`comb_phase_shift` over the charge states that passed the gate, read on
+    ``spectrum`` - the residual, so that species already fitted do not count).
 
-    A weak species' average mass can be read several tenths of a dalton off - a neighbour 6 Da
-    away pulls the mean shift - and its templates then need more than the window allows: n-2 of
-    the NC product 0.37-0.49 Da, a 1.9 kDa shortmer 0.36 Da. Pinned at the edge they fit
-    another species' peaks or nothing (80 times low). Searching the overlap past the edge finds
-    those shifts too, but lets a candidate beside a strong species slide onto that species' peaks.
-    The comb phase is read off the candidate's own envelopes instead, and is taken when (a) the
-    overlap ran into the window's edge, (b) the comb lies beyond the window, within half an
-    isotope spacing, (c) the gate-passed charge states agree on it (``min_coherence``) and (d)
-    the same comb one isotope spacing the other way does not fit the envelope better (a mass
-    read half a spacing off picks the wrong branch). A candidate whose gate measured another
-    mass's envelopes (moved by the adduct dedupe) has no gate charges and is not touched, and
-    neither is one within ``form_tol_da`` of an adduct form of an accepted species (masses
-    ``forms_of``, adduct shifts ``form_shifts``): an adduct form's mass is read off by its
-    neighbouring forms, by up to three quarters of a dalton, and the comb then takes the tooth
-    one spacing off (NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, fits the teeth either
-    side to 0.6 %).
+    A weak species' average mass can be read several tenths of a dalton off - a neighbour on the
+    same isotope comb pulls the mean shift - and its templates then need more than the window
+    allows: n-2 of the NC product 0.37-0.49 Da, a 1.9 kDa shortmer 0.36 Da. Pinned at the edge,
+    between two isotopologues, they fit another species' peaks or nothing (300 times low).
+    Searching the overlap past the edge finds those shifts too, but lets a candidate beside a
+    strong species slide onto that species' peaks. The comb is read off the candidate's own
+    envelopes instead, and taken when (a) the overlap ran into the window's edge, (b) the comb
+    lies beyond the window and (c) at least two gate-passed charge states agree on it
+    (``min_coherence``). Of the comb's two teeth either side of the measured mass, the one whose
+    template fits the envelope better is taken: a mass read more than half a spacing off has its
+    nearest tooth on the wrong side, and the edge between them fits neither. A candidate whose
+    gate measured another mass's envelopes (renamed by the adduct dedupe) has no gate charges and
+    is not touched, and neither is one within ``form_tol_da`` of an adduct form of an accepted
+    species (masses ``forms_of``, adduct shifts ``form_shifts``): an adduct form's mass is read
+    off by its neighbouring forms, by up to three quarters of a dalton, and its two teeth fit
+    alike (NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, to 0.6 %).
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
     gate = getattr(cand, "gate_charges", None)
-    if raw_mz is None or raw_int is None or not gate:
+    if not gate:
         return shift
     if forms_of and any(abs(cand.mass - m - d) <= form_tol_da for m in forms_of
                         for d in form_shifts):
@@ -277,15 +293,16 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     reach = _align_reach(cand.mass, grid)
     if abs(shift / grid.step) < reach - 1e-6:
         return shift  # an optimum inside the window
-    per_bin = cand.mass * grid.step
-    comb, coherence, n = comb_phase_shift(cand.mass, gate, raw_mz, raw_int, grid.polarity,
+    if grid_mz is None:
+        grid_mz = grid.bin_to_mz(np.arange(grid.size))
+    comb, coherence, n = comb_phase_shift(cand.mass, gate, grid_mz, spectrum, grid.polarity,
                                           instrument, compound_class)
-    if n == 0 or coherence < min_coherence or abs(comb) <= reach * per_bin:
+    if n == 0 or coherence < min_coherence or abs(comb) <= reach * cand.mass * grid.step:
         return shift
     other = comb - np.sign(comb) * ISOTOPE_DA
     if (_overlap(cand.mass + other, zs, spectrum, grid, instrument, compound_class)
             > _overlap(cand.mass + comb, zs, spectrum, grid, instrument, compound_class)):
-        return shift
+        comb = other
     return float(np.log1p(comb / cand.mass))
 
 
@@ -352,6 +369,7 @@ def refine_frame(
     avg = library.avg_deltas()
     form_shifts = sorted({s.avg_mass for s in states_full if s.counts}
                          | {n * d for d in avg.values() for n in (1, 2, 3)})
+    grid_mz = grid.bin_to_mz(np.arange(grid.size))
     for cand in remaining:
         cand_mass0 = cand.mass
         if raw_mz is not None and raw_mz.size and cand.charges and cand.charges != {1}:
@@ -363,9 +381,9 @@ def refine_frame(
                                             resolution, mz_range, frames=frames,
                                             coelution_r=coelution_r, instrument=instrument)
         cand.template_shift = align_candidate(
-            cand, residual, grid, instrument, compound_class, raw_mz=raw_mz, raw_int=raw_int,
+            cand, residual, grid, instrument, compound_class,
             forms_of=list(known_masses or ()) + [c.mass for c in components],
-            form_shifts=form_shifts)
+            form_shifts=form_shifts, grid_mz=grid_mz)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -410,7 +428,7 @@ def refine_frame(
             moved, full2 = _recenter_base(
                 cand, full, residual, weights, grid, instrument, compound_class, states_full,
                 library, mz_range, raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
-                resolution=resolution,
+                resolution=resolution, grid_mz=grid_mz,
             )
             if moved is not cand:
                 cand, full = moved, full2
@@ -461,7 +479,7 @@ def refine_frame(
 def _recenter_base(cand, full, residual, weights, grid, instrument, compound_class,
                    states_full, library, mz_range, raw_mz=None, raw_int=None,
                    noise_sigma: float = 0.0, resolution: float = 30000.0, max_steps: int = 3,
-                   min_ratio: float = 0.5, min_gain: float = 0.01):
+                   min_ratio: float = 0.5, min_gain: float = 0.01, grid_mz=None):
     """Walk the candidate centre down the adduct ladder while the spectrum supports it.
 
     Returns ``(candidate, full_fit)``: the original pair when nothing better is found.
@@ -488,7 +506,7 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     # the walk reads the candidate's own envelopes: a charge state whose window failed the gate
     # holds some other species' signal (an unrelated peak 30 times taller under n-2's z9 window
     # walked it down to a phantom 22 Da lighter)
-    charges = sorted(cand.gate_charges or cand.charges)[:12]
+    charges = sorted(set(cand.charges) - (cand.gate_failed or set()))[:12]
     thr = 3.0 * noise_sigma
 
     def heights(mass: float) -> tuple[int, float]:
@@ -539,9 +557,13 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     if centre is None or abs(centre - mass) > max(0.5 * env_sigma, 0.5):
         return cand, full
     trial = Candidate(mass=mass, score=cand.score, charges=set(cand.charges),
-                      intensity=cand.intensity)
-    # the lighter form's isotopologues are its own: the heavier centre's alignment is not theirs
-    trial.template_shift = align_template(trial, residual, grid, instrument, compound_class)
+                      intensity=cand.intensity, gate_charges=cand.gate_charges,
+                      gate_failed=cand.gate_failed)
+    # the lighter form's isotopologues are its own: the heavier centre's alignment is not theirs.
+    # It is placed by the rule that placed the candidate it is compared with: a candidate placed
+    # by its comb against a trial pinned at the window's edge would always win
+    trial.template_shift = align_candidate(trial, residual, grid, instrument, compound_class,
+                                           grid_mz=grid_mz)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)
     if full2[2] >= full[2] * (1.0 + min_gain):

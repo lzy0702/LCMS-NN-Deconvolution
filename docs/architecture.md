@@ -178,20 +178,25 @@ where the instrument resolves the isotopes of the candidate's central charge). T
 absorb are in daltons: 1.5 bins is 0.04 Da at 1.2 kDa, and with that window half the alignments of
 the IP-HILIC NC run were pinned to its edge, a 1235 Da shortmer quantified at a four-hundredth of
 its amount. Where the overlap's best is still the window's edge, the candidate's own isotope comb
-decides (`refine.align_candidate`, `refine.comb_phase_shift`): the raw points of each charge state
-that passed the gate, folded onto one isotope spacing, give the shift that puts the template's
-isotopologues on them, modulo a spacing and taken within half a spacing of the measured mass. A
-weak species' average mass can be read several tenths of a dalton off - a co-eluting envelope 2 Da
-lighter on the same comb, or a neighbour 6 Da away, pulls the mean shift - and its templates then
-need more than the window allows: the 1.9 kDa shortmer 1883.3 of the IP-RPLC NC run, read 0.34 Da
-light, needs +0.36 Da and at the edge was fitted 300 times low; n-2 of the NC product needs +0.49
-Da under IP-RPLC and -0.37 Da under IP-HILIC. The comb is taken only where the gate-passed charge
-states agree on it, where the same comb one spacing the other way does not fit the envelope better,
-for a candidate whose gate measured its own envelopes (one the adduct dedupe renamed to a lighter
-partner measured the stronger form's), and not for an adduct form of an accepted species (within 1
-Da of its mass plus an adduct state, up to three of a type), whose mass its neighbouring forms pull
-by up to three quarters of a dalton: NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, fits the
-teeth either side to 0.6 % and would take the wrong one. Searching the overlap itself past the edge
+decides (`refine.align_candidate`, `refine.comb_phase_shift`): the residual's bins in each window
+of a charge state that passed the gate, folded onto one isotope spacing, give the shift that puts
+the template's isotopologues on them, modulo a spacing. A weak species' average mass can be read
+several tenths of a dalton off - a co-eluting envelope 2 Da lighter on the same comb, or a
+neighbour 6 Da away, pulls the mean shift - and its templates then need more than the window
+allows: the 1.9 kDa shortmer 1883.3 of the IP-RPLC NC run, read 0.34 Da light, needs +0.36 Da and
+at the edge, between two isotopologues, was fitted 300 times low; n-2 of the NC product needs +0.49
+Da under IP-RPLC and -0.37 Da under IP-HILIC. The comb is taken only where at least two gate-passed
+charge states agree on it (every state that carries a tenth of the weight within 0.1 Da of the
+combined phase), and of its two teeth either side of the measured mass the one whose template fits
+the envelope better is taken: a mass read more than half a spacing off has its nearest tooth on the
+wrong side, and the edge fits neither. A candidate whose gate measured another mass's envelopes
+(one the adduct dedupe renamed to a lighter partner measured the stronger form's) is left at the
+edge, and so is an adduct form of an accepted species (within 1 Da of its mass plus an adduct
+state, up to three of a type), whose mass its neighbouring forms pull by up to three quarters of a
+dalton and whose two teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 0.6 %). Charge states the
+gate measured and rejected - an envelope that moved off, contradicted its charge by its isotopes,
+belonged to another mass or did not co-elute - hold another species' signal, and neither the
+overlap search, the comb nor the adduct walk reads them. Searching the overlap itself past the edge
 instead lets a candidate slide onto whatever lies there: one the adduct dedupe had renamed to a
 weak partner 43.5 Da (two sodium) lighter took the IP-RPLC main species' peaks as its +2Na form,
 and the main species was lost. The overlap is computed in quarter-bin steps and the optimum placed
@@ -229,8 +234,10 @@ times taller under n-2's z = 9 window walked n-2 down a sodium onto a phantom - 
 the height, an envelope is centred within half an envelope width (at least 0.5 Da) of where the
 step lands (the median of the per-charge mean shifts that stay within an envelope width of it - on
 the flank of a stronger species' envelope they all run off toward its centre), and the same adduct
-model then explains more of the spectrum. Accepted components are subtracted from the residual
-before the next candidate is fitted.
+model then explains more of the spectrum. The lighter trial is placed by the same rule as the
+candidate it is compared with: a candidate placed by its comb against a trial pinned at the
+window's edge always wins. Accepted components are subtracted from the residual before the next
+candidate is fitted.
 
 After all passes, a component is dropped when at least 80 % of its fitted intensity lies within two
 envelope widths of a stronger column of a stronger component (explaining away by shared evidence).

@@ -17,8 +17,8 @@ below that, two charge states cannot be confirmed above shot noise by any method
 
 | Charge assignment | Preset | Precision | Main (>=10 %) | 1-10 % | 0.1-1 % | Median ppm |
 | --- | --- | --- | --- | --- | --- | --- |
-| comb estimator | protein_tof | 65 % (11/17) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 7.2 |
-| comb estimator | oligo_iprp | 47 % (15/32) | 88 % (7/8) | 71 % (5/7) | 33 % (2/6) | 1.5 |
+| comb estimator | protein_tof | 61 % (11/18) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 7.2 |
+| comb estimator | oligo_iprp | 48 % (15/31) | 88 % (7/8) | 71 % (5/7) | 33 % (2/6) | 1.4 |
 | comb estimator | polymer | 74 % (14/19) | 100 % (8/8) | 100 % (5/5) | 33 % (1/3) | 0.6 |
 | oracle (perfect) | protein_tof | 92 % (12/13) | 100 % (8/8) | 75 % (3/4) | 0 % (0/2) | 9.2 |
 | oracle (perfect) | oligo_iprp | 71 % (15/21) | 88 % (7/8) | 71 % (5/7) | 33 % (2/6) | 1.4 |
@@ -77,8 +77,8 @@ the rule stays. In another run a candidate made of an adduct form, measured 1.5 
 longer walked down onto its parent: the average-mass ladder lands it 1.47 Da from the parent's
 envelope centre, 0.02 Da beyond the half envelope width that now separates a parent from the
 flank of a neighbour. Placing edge-pinned templates by the candidate's own isotope comb (section
-16) then adds one false species to the oligonucleotide preset under each charge assignment and
-takes one from the Orbitrap preset and the legacy generator's; recall is unchanged.
+16) then moves the time-of-flight presets by one to three false species either way and takes
+three from the Orbitrap preset, the regime of the real runs; recall is unchanged.
 
 The same runs with the decoder this package had before the changes in `lessons.md` (with the
 generator's elution-profile fix and one-to-one scoring applied to it):
@@ -108,8 +108,8 @@ generator's elution-profile fix and one-to-one scoring applied to it):
 | amounts made comparable | protein_tof | 10 % (6/58) | 50 % (4/8) | 33 % (2/6) | 9.4 |
 | amounts made comparable | oligo_iprp | 26 % (9/34) | 75 % (6/8) | 40 % (2/5) | 2.7 |
 | amounts made comparable | polymer | 61 % (14/23) | 100 % (8/8) | 100 % (5/5) | 1.0 |
-| now | protein_tof | 10 % (6/60) | 50 % (4/8) | 33 % (2/6) | 9.4 |
-| now | oligo_iprp | 25 % (10/40) | 88 % (7/8) | 40 % (2/5) | 2.3 |
+| now | protein_tof | 10 % (6/59) | 50 % (4/8) | 33 % (2/6) | 9.4 |
+| now | oligo_iprp | 23 % (10/43) | 88 % (7/8) | 40 % (2/5) | 2.3 |
 | now | polymer | 61 % (14/23) | 100 % (8/8) | 100 % (5/5) | 1.0 |
 
 ### Orbitrap regime
@@ -128,14 +128,15 @@ are also read from resolved isotope spacing. Until that was measured the preset 
 | resampling fixed | 120 000-160 000 | 38 % (17/45) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 100 % (2/2) | 2.4 |
 | amounts made comparable | 120 000-160 000 | 68 % (17/25) | 100 % (8/8) | 86 % (6/7) | 17 % (1/6) | 100 % (2/2) | 2.5 |
 | three reviews | 120 000-160 000 | 68 % (19/28) | 100 % (8/8) | 100 % (7/7) | 33 % (2/6) | 100 % (2/2) | 2.5 |
-| now | 120 000-160 000 | 70 % (19/27) | 100 % (8/8) | 100 % (7/7) | 33 % (2/6) | 100 % (2/2) | 2.5 |
+| now | 120 000-160 000 | 76 % (19/25) | 100 % (8/8) | 100 % (7/7) | 33 % (2/6) | 100 % (2/2) | 2.5 |
 
 At the real resolving power precision is in line with the time-of-flight presets and the mass error
 a third of what it was: of 33 false species, 5 were adduct-shifted copies, 2 mass errors and 26
 unexplained (before the resampling fix; 5, 0 and 23 of 28 after it; with comparable amounts none,
 none and 8; after the reviews 2, none and 7, and two more species found, whose templates the 0.3 Da
-alignment window reaches; now 3, none and 5). `single_charge: true` changes nothing here: the
-generator gives every species several charge states, unlike ion-pairing HILIC on the real runs.
+alignment window reaches; now, with edge-pinned templates placed by their comb, 2, none and 4).
+`single_charge: true` changes nothing here: the generator gives every species several charge
+states, unlike ion-pairing HILIC on the real runs.
 
 #### Isotope-spacing charges
 
@@ -348,7 +349,7 @@ strongest charge states share their m/z windows with other signal can fail it.
 | after the resampling fix, comb | 15 / 20 | 15 / 29 | 198 | 21 | 4 | 100 | 43 |
 | after the resampling fix, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
 | amounts made comparable, comb | 18 / 20 | 23 / 29 | 227 | 13 | 5 | 114 | 54 |
-| **now, comb** | **20 / 20** | **23 / 29** | **228** | **14** | **5** | **113** | **53** |
+| **now, comb** | **20 / 20** | **23 / 29** | **229** | **14** | **5** | **117** | **50** |
 
 (Every row but the first two uses the extracted-ion check described above; those two were scored
 with its first version. The resampling fix and the recalibration it needed are `lessons.md`,
@@ -377,12 +378,13 @@ Two further reviews' fixes leave these numbers as they are: a valley test that r
 scans however many joined a 1900.08 Da sliver (0.000 %) to its species, but also two isomers seen
 in a scan or two each; read across three empty scans at most, it does neither. Templates of
 edge-pinned candidates placed by their own isotope comb, and the adduct walk read on gate-passed
-charge states (`lessons.md`, section 16), 20/20, 23/29, 228, 53: n-2 is found in both
-chromatographies and the 1.9 kDa shortmer 1883.3 quantified. The lower region threshold finds the
-non-conjugated product in the IP-HILIC conjugate run and three SI-listed impurities; its eight
-further unconfirmed reports are all below 0.02 % of the main species. The alignment window finds
-four more SI-listed impurities and quantifies small shortmers whose templates 1.5 bins could not
-reach (the 1235 Da one from 0.01 % to 4.2 %); 23 of its 35 further reports are EIC-confirmed.
+charge states (`lessons.md`, section 16), with a review's corrections, 20/20, 23/29, 229, 50: n-2
+is found in both chromatographies and the 1.9 kDa shortmer 1883.3 quantified. The lower region
+threshold finds the non-conjugated product in the IP-HILIC conjugate run and three SI-listed
+impurities; its eight further unconfirmed reports are all below 0.02 % of the main species. The
+alignment window finds four more SI-listed impurities and quantifies small shortmers whose
+templates 1.5 bins could not reach (the 1235 Da one from 0.01 % to 4.2 %); 23 of its 35 further
+reports are EIC-confirmed.
 
 With the resampling fixed and nothing else changed the comb found 15/20 and 10/29 among 400
 reports, 222 of them unconfirmed: the decoder's tests had been tuned on a noise estimate 40-180
@@ -478,7 +480,7 @@ and threshold variants.
 | IP-HILIC, conjugate | n-1 | 3.03 +- 0.12 % | 3.23 +- 0.18 % | 6.2 % | 2.8 % |
 | IP-HILIC, conjugate | DA | 2.49 +- 0.25 % | 2.93 +- 0.31 % | not found | 2.4 % |
 | IP-HILIC, conjugate | PO | 2.93 +- 0.16 % (1.90 skimmed, 4.19 the whole PO band) | 3.24 +- 0.32 % | 2.7 % | 2.9 % |
-| IP-HILIC, conjugate | n+1 | 5.77 +- 0.13 % | 6.07 +- 0.26 % | 5.6 % | 5.9 % |
+| IP-HILIC, conjugate | n+1 | 5.77 +- 0.13 % | 6.07 +- 0.26 % | 5.6 % | 5.8 % |
 | IP-HILIC, conjugate | NC | 1.78 +- 0.04 % | 1.73 +- 0.07 % | not found | 1.8 % |
 | IP-HILIC, NC | DA-NC | 5.78 +- 0.35 % | 9.84 +- 0.67 % | 7.1 % | 5.5 % |
 | IP-HILIC, NC | PO-NC | 2.15 +- 0.12 % (0.93 skimmed, 3.17 the whole PO band) | 3.95 +- 0.33 % | 0.8 % | 3.5 % |
@@ -551,10 +553,12 @@ What is still wrong on these runs:
   gets the wrong tooth or keeps the window's edge: in the IP-RPLC NC run 1908.3, 2228.3, 2558.3 and
   2887.4 are read 0.53-0.76 Da light (an envelope 2 Da lighter on the same comb elutes with them).
   Scoring the teeth by the template's overlap picks the right one for those shortmers, but above
-  4 kDa the overlaps of neighbouring teeth differ by 1-6 %, too little to decide. Adduct forms of
-  accepted species keep the edge: NC + 3Na under IP-HILIC stays at 0.56 % although a comb tooth
-  fits it at 10.5 %. 1883.3 under IP-HILIC is dropped by the co-elution test, a foreign ion lying
-  in its z = 3 window.
+  4 kDa the overlaps of neighbouring teeth differ by 1-6 %, a weak basis for the choice. Adduct
+  forms of accepted species keep the edge (NC + 3Na under IP-HILIC, whose two teeth fit alike to
+  0.6 %); clusters of NC beyond the adduct library are not recognized as forms and, placed on their
+  comb, carry their full amounts: NC + 108 Da under IP-HILIC is reported at 3.3 %, unconfirmed
+  (about 5 % in a crude extracted-ion window). 1883.3 under IP-HILIC is dropped by the co-elution
+  test, a foreign ion lying in its z = 3 window.
 - The adduct dedupe renames a stronger candidate to a lighter partner one adduct ladder below it
   whatever the partner's strength: under IP-RPLC FLP's candidate becomes a 6750.58 Da envelope
   with 9 % of its score (43.50 Da, two sodium to 0.46 Da), and FLP survives because its +DIPEA
