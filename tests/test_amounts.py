@@ -697,9 +697,11 @@ def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
     (merged,) = _dedupe_by_mass([strong, Candidate(mass + 0.05, 1.0, {3, 4, 9},
                                                     gate_charges={3, 4}, gate_failed=set())])
     assert 9 in merged.charges and abs(walk(merged) - mass) < 0.5
-    # without a gate record every voted state is read, and the walk takes the phantom
+    # without a gate record every voted state is read, and the walk takes the phantom - but not
+    # one a duplicate's gate rejected, merged into a candidate the gate kept without a record
     lost = walk(Candidate(mass, 1.0, {3, 4, 9}))
     assert abs(lost - (mass - ADDUCTS["Na"].avg_mass)) < 0.5
+    assert abs(walk(Candidate(mass, 1.0, {3, 4, 9}, gate_failed={9})) - mass) < 0.5
 
 
 def test_a_comb_placed_candidate_on_an_adduct_form_still_walks_to_its_base():
@@ -728,7 +730,12 @@ def test_a_single_charge_candidate_walks_on_its_other_observed_states():
     """A candidate gated on one charge state also reads the states observed_charges finds beside
     it (each with its isotope comb, at its mass), not only that one."""
     from lcmsdeconv.deconv.nnls_solve import fit_weights
-    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base, observed_charges
+    from lcmsdeconv.deconv.refine import (
+        _fit_candidate,
+        _recenter_base,
+        observed_charges,
+        refine_frame,
+    )
 
     base = 5162.25
     na = ADDUCTS["Na"].avg_mass
@@ -756,6 +763,12 @@ def test_a_single_charge_candidate_walks_on_its_other_observed_states():
                               lib, (400.0, 2500.0), raw_mz=x, raw_int=y, noise_sigma=50.0,
                               resolution=70000.0)
     assert abs(moved.mass - base) < 0.5
+    # and refine_frame records those states itself
+    cand = Candidate(base + na, 1.0, {4}, gate_charges={4}, gate_failed=set(), single_charge=True)
+    comps, _frac, _res = refine_frame([cand], grid, observed, 50.0, ORBI, "ps_rna", lib,
+                                      raw_mz=x, raw_int=y)
+    assert cand.observed_extra == {3, 5}
+    assert comps and abs(comps[0].mass - base) < 0.5
 
 
 def test_a_duplicate_merged_by_mass_brings_its_gate_verdicts():
@@ -816,3 +829,77 @@ def test_a_mass_walked_from_anchors_the_adduct_forms_above_it():
 
     assert abs(placed([]) - 0.5) < 0.05  # its comb
     assert abs(placed([nc + 3 * na - 0.6]) - 0.29) < 0.03  # the window's edge
+
+
+
+def test_the_overlap_search_reads_only_the_candidates_own_states():
+    """A voted state the gate could not measure, holding another species' comb, is not read when
+    the template is placed: read, it would pull the template 0.2 Da light onto that comb."""
+    mass = 1884.27
+    grid, spectrum = _edge_case(mass, (2, 3), 0.356, foreign=(mass, (5,), -0.2, 3e5))
+    unmeasured = Candidate(mass, 1.0, {2, 3, 5}, gate_charges={2, 3}, gate_failed=set())
+    own = Candidate(mass, 1.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+    assert align_template(unmeasured, spectrum, grid, ORBI, "ps_rna") == align_template(
+        own, spectrum, grid, ORBI, "ps_rna")
+
+
+def _on_ladder_mass(parent, n_na, compound_class="ps_rna"):
+    """The average mass near parent + n Na at which the class template's comb is the parent's
+    comb moved by n sodium's monoisotopic shift."""
+    from lcmsdeconv.deconv.refine import _template_phase, _wrap_spacing
+
+    na = ADDUCTS["Na"]
+    want = _template_phase(parent, compound_class) + n_na * na.mass
+    grid = parent + n_na * na.avg_mass + np.arange(-0.5, 0.5, 0.0005)
+    miss = [abs(_wrap_spacing(_template_phase(m, compound_class) - want)) for m in grid]
+    return float(grid[int(np.argmin(miss))])
+
+
+def test_a_deep_sodium_form_keeps_its_window_edge():
+    """DA-NC + 4Na of the IP-HILIC NC run, read 0.45 Da light, sits on DA-NC's comb moved by four
+    sodium: placed on its comb it was fitted whole as a false species. It keeps the window's
+    edge; a species of another composition at the same mass, 0.3 Da off that comb, is placed by
+    its own comb."""
+    from lcmsdeconv.deconv.refine import align_candidate
+
+    parent = 5163.23
+    form = _on_ladder_mass(parent, 4)
+    for true, guarded in ((form, True), (form + 0.3, False)):
+        read = true - 0.45
+        grid, spectrum = _edge_case(read, (3, 4), 0.45)
+        cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+        edge = align_template(cand, spectrum, grid, ORBI, "ps_rna")
+        free = align_candidate(cand, spectrum, grid, ORBI, "ps_rna")
+        assert abs(read * np.expm1(free) - 0.45) < 0.02  # its comb, without the ladder
+        s = align_candidate(cand, spectrum, grid, ORBI, "ps_rna", ladder_of=[(parent, 0.0)])
+        assert (s == edge) == guarded
+
+
+def test_a_walk_anchors_the_adduct_forms_above_where_it_started():
+    """In one refine_frame call a candidate on the +Na form walks to its base; a later candidate
+    three sodium above where the walk started (four above the base but off its comb, so not the
+    cation-ladder rule's, read 0.45 Da light) keeps its window's edge as a form of the walked
+    mass, and the walked mass is handed back to the caller for the next pass."""
+    from lcmsdeconv.deconv.refine import refine_frame
+
+    base, na = 2549.80, ADDUCTS["Na"].avg_mass
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    x = np.arange(400.0, 2500.0, 0.002)
+    y = np.zeros_like(x)
+    deep = base + 4 * na + 0.1
+    for m, h in ((base, 1e6), (base + na, 6e5), (deep, 3e5)):
+        _x, yy = _comb_profile(m, (2, 3), 0.0, height=h, lo=400.0, hi=2500.0)
+        y += yy
+    observed = grid.resample_profile(x, y)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    start = base + na - 0.36
+    walked = []
+    first = Candidate(start, 10.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+    second = Candidate(deep - 0.45, 5.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+    comps, _frac, _res = refine_frame([first, second], grid, observed, 100.0, ORBI, "ps_rna", lib,
+                                      raw_mz=x, raw_int=y, walked=walked)
+    assert walked == [start]
+    assert any(abs(c.mass - base) < 0.6 for c in comps)
+    # the window's edge, not its comb (+0.45; at the edge it is too weak to be kept)
+    assert abs((deep - 0.45) * np.expm1(second.template_shift) - 0.29) < 0.03

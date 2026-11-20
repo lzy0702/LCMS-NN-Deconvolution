@@ -276,7 +276,8 @@ def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray
 def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
                     compound_class: str, min_coherence: float = 0.5,
                     forms_of: list[float] | None = None, form_shifts=(),
-                    form_tol_da: float = 1.0, grid_mz: np.ndarray | None = None) -> float:
+                    form_tol_da: float = 1.0, grid_mz: np.ndarray | None = None,
+                    ladder_of=None, ladder_tol_da: float = 0.03) -> float:
     """:func:`align_template`, and where its best shift is the window's edge, the candidate's own
     isotope comb (:func:`comb_phase_shift` over the charge states that passed the gate, read on
     ``spectrum`` - the residual, so that species already fitted do not count).
@@ -297,9 +298,12 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     species (masses ``forms_of``: accepted species, and masses the adduct walk moved candidates
     from; adduct shifts ``form_shifts``): an adduct form's mass is read off by its neighbouring
     forms, by up to three quarters of a dalton, and its two teeth fit alike (NC + 3Na of the
-    IP-HILIC NC run, read 0.73 Da light, to 1 %). The comb is read over the gate-passed states,
-    the teeth compared over the middle ones of them; the overlap search reads the candidate's own
-    states (:func:`own_charges`), which also hold those added for the fit.
+    IP-HILIC NC run, read 0.73 Da light, to 1 %). Nor is a sodium/potassium form deeper than
+    that (four to eight of them, :func:`_on_cation_ladder` over ``ladder_of``, the accepted
+    species and where their templates sit) whose comb lies on its parent's comb moved by the
+    ladder's monoisotopic shift. The comb is read over the gate-passed states, the teeth compared
+    over the middle ones of them; the overlap search reads the candidate's own states
+    (:func:`own_charges`), which also hold those added for the fit.
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
     gate = getattr(cand, "gate_charges", None)
@@ -324,7 +328,62 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     if (_overlap(cand.mass + other, zs, spectrum, grid, instrument, compound_class)
             > _overlap(cand.mass + comb, zs, spectrum, grid, instrument, compound_class)):
         comb = other
+    # a sodium/potassium form deeper than the exemption's three of a type (DA-NC + 4Na and
+    # NC + 6Na + K of the IP-HILIC NC run) sits exactly on its parent's comb moved by the
+    # ladder's monoisotopic shift; placed there it is fitted whole as a false species, so it
+    # keeps the edge like the exempt forms. A species of another composition near such a mass
+    # lies on that comb only by chance
+    if ladder_of and _on_cation_ladder(cand.mass, comb, ladder_of, compound_class, form_tol_da,
+                                       ladder_tol_da):
+        return shift
     return float(np.log1p(comb / cand.mass))
+
+
+def _template_phase(mass: float, compound_class: str) -> float:
+    """Where the class template's isotopologues sit for a species of average mass ``mass``,
+    modulo one isotope spacing (Da)."""
+    from ..chem.classes import class_isotope_pattern
+
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(float(pat.abundances.sum()), 1e-300)
+    iso = pat.masses + (mass - pat.average_mass)
+    phasor = np.sum(a * np.exp(2j * np.pi * iso / ISOTOPE_DA))
+    return float(np.angle(phasor)) / (2.0 * np.pi) * ISOTOPE_DA
+
+
+def _wrap_spacing(x: float) -> float:
+    """``x`` (Da) modulo one isotope spacing, between minus and plus half a spacing."""
+    return (x / ISOTOPE_DA - round(x / ISOTOPE_DA)) * ISOTOPE_DA
+
+
+def _on_cation_ladder(mass: float, comb_da: float, ladder_of, compound_class: str,
+                      tol_da: float, phase_tol_da: float, min_total: int = 4,
+                      max_total: int = 8, max_k: int = 2) -> bool:
+    """Whether a candidate read at ``mass``, whose comb puts its template at ``mass + comb_da``,
+    is an ``a`` Na + ``b`` K form (``min_total`` <= a + b <= ``max_total``, b <= ``max_k``) of a
+    species in ``ladder_of`` - pairs (average mass, template position less that mass, Da): within
+    ``tol_da`` of its mass plus the ladder's average-mass shift, and its comb within
+    ``phase_tol_da`` of the species' comb plus the ladder's monoisotopic shift. The forms share
+    their parent's isotope comb exactly (sodium has one isotope), whatever their measured masses;
+    a species of another composition near such a mass has its comb anywhere within the spacing,
+    and within ``phase_tol_da`` of that one about one time in sixteen."""
+    from ..chem.adducts import ADDUCTS
+
+    na, k = ADDUCTS["Na"], ADDUCTS["K"]
+    phase_c = _template_phase(mass + comb_da, compound_class)
+    for mp, sp in ladder_of:
+        if mass <= mp:
+            continue
+        phase_p = None
+        for b in range(0, max_k + 1):
+            for a in range(max(0, min_total - b), max_total - b + 1):
+                if abs(mass - mp - a * na.avg_mass - b * k.avg_mass) > tol_da:
+                    continue
+                if phase_p is None:
+                    phase_p = _template_phase(mp + sp, compound_class)
+                if abs(_wrap_spacing(phase_c - phase_p - a * na.mass - b * k.mass)) <= phase_tol_da:
+                    return True
+    return False
 
 
 def refine_frame(
@@ -351,6 +410,7 @@ def refine_frame(
     coelution_r: float = 0.5,
     known_masses: list[float] | None = None,
     walked: list[float] | None = None,
+    known_shifts: list[float] | None = None,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -359,8 +419,9 @@ def refine_frame(
     still unexplained, and the updated residual so the caller can re-detect on what is left.
     ``frames`` and ``coelution_r`` decide which charge states beyond the voting band are the
     species' own (:func:`observed_charges`). ``known_masses`` are the species accepted by
-    earlier passes over the same spectrum, and ``walked`` the masses the adduct walk moved
-    candidates from in them; the masses walked from in this pass are appended to it.
+    earlier passes over the same spectrum, ``known_shifts`` where their templates sit (Da from
+    each mass), and ``walked`` the masses the adduct walk moved candidates from in them; the
+    masses walked from in this pass are appended to it.
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = fit_weights(observed, noise_sigma, grid.step,
@@ -411,9 +472,11 @@ def refine_frame(
                                             coelution_r=coelution_r, instrument=instrument)
             cand.observed_extra = set(cand.charges) - voted
         forms = list(known_masses or ()) + [c.mass for c in components] + walked_from
+        ladder = (list(zip(known_masses or (), known_shifts or ()))
+                  + [(c.mass, c.mass * float(np.expm1(c.template_shift))) for c in components])
         cand.template_shift = align_candidate(
             cand, residual, grid, instrument, compound_class,
-            forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz)
+            forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz, ladder_of=ladder)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -459,6 +522,7 @@ def refine_frame(
                 cand, full, residual, weights, grid, instrument, compound_class, states_full,
                 library, mz_range, raw_mz=raw_mz, raw_int=raw_int, noise_sigma=noise_sigma,
                 resolution=resolution, grid_mz=grid_mz, forms_of=forms, form_shifts=form_shifts,
+                ladder_of=ladder,
             )
             if moved is not cand:
                 walked_from.append(float(cand.mass))
@@ -511,7 +575,7 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
                    states_full, library, mz_range, raw_mz=None, raw_int=None,
                    noise_sigma: float = 0.0, resolution: float = 30000.0, max_steps: int = 3,
                    min_ratio: float = 0.5, min_gain: float = 0.01, grid_mz=None,
-                   forms_of=None, form_shifts=()):
+                   forms_of=None, form_shifts=(), ladder_of=None):
     """Walk the candidate centre down the adduct ladder while the spectrum supports it.
 
     Returns ``(candidate, full_fit)``: the original pair when nothing better is found.
@@ -540,7 +604,9 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     # (an unrelated peak 30 times taller under n-2's z9 window walked it down to a phantom
     # 22 Da lighter)
     own = own_charges(cand)
-    charges = sorted(own if own is not None else set(cand.charges))[:12]
+    if own is None:
+        own = set(cand.charges) - set(cand.gate_failed or ())
+    charges = sorted(own)[:12]
     thr = 3.0 * noise_sigma
 
     def heights(mass: float) -> tuple[int, float]:
@@ -601,7 +667,7 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     # (NC + 3Na of the IP-HILIC NC run, guarded at its edge, joined NC this way)
     trial.template_shift = align_candidate(trial, residual, grid, instrument, compound_class,
                                            forms_of=forms_of, form_shifts=form_shifts,
-                                           grid_mz=grid_mz)
+                                           grid_mz=grid_mz, ladder_of=ladder_of)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)
     if full2[2] >= full[2] * (1.0 + min_gain):

@@ -94,8 +94,8 @@ Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run 
 checks every other report with extracted-ion chromatograms. Of 20 known species the original code
 found 2 among 87 reports; before the resampling fix the code found 13 among 39 (15 of 20 with
 `deconvolution.single_charge`), after it 15, and 15 of 29 SI-listed impurities, among 198 reports,
-and the current code finds all 20, and 23 of 29 SI-listed impurities, among 229 reports, with
-base-form amounts within 0.88-1.17 of extracted-ion references for 16 of the 23 impurities found.
+and the current code finds all 20, and 23 of 29 SI-listed impurities, among 228 reports, with
+base-form amounts within 0.88-1.19 of extracted-ion references for 16 of the 23 impurities found.
 Details, mass errors and what is still wrong are in `benchmarks.md`; the defects these runs
 exposed, and what the truth table changed, are in `lessons.md`, sections 11, 14, 15 and 16.
 

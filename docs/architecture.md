@@ -122,14 +122,17 @@ Two physical checks decide whether a charge state can count as support at all. W
 resolves the isotope spacing 1.00336/z at that m/z, the positions of the species' major
 isotopologues must hold observed peaks (the comb may slide by up to half a spacing to absorb a
 small mass offset); singly charged background read at z = 30 populates one or two of thirty
-positions per dalton, and a z = 3 envelope read as its own dimer at z = 6 populates half of them.
-Below about 2 kDa a species has three major isotopologues, and an ion of half the charge fills two
-of them, every other position: a placement whose filled positions all lie on one such sub-comb does
-not count while the pattern has major isotopologues off it (the singly and doubly charged ions of a
-915 Da species, below the method's mass range, were otherwise read as charges 2 and 4 of an 1831 Da
-one, 1.2 % of the main species under IP-HILIC). Where the spacing is not resolved, an envelope much
-wider than one peak must appear as a continuous hump in profile data rather than as a few narrow
-peaks of a low-charge species.
+positions per dalton, and a z = 3 envelope read as its own dimer at z = 6 populates half of them. A
+species has three major isotopologues at 1.2-1.9 kDa and five at 2.5-3.4 kDa, and an ion of half
+the charge fills two or three of them, every other position - enough to pass: a placement whose
+filled positions all lie on one such sub-comb does not count while the pattern has major
+isotopologues off it (the singly and doubly charged ions of a 915 Da species, below the method's
+mass range, were otherwise read as charges 2 and 4 of an 1831 Da one, 1.2 % of the main species
+under IP-HILIC; at 3.2 kDa the rule takes the charge-2 state, the 1580 Da shortmer's ions, from a
+candidate built on that shortmer's non-covalent dimer, which it had kept out, and the dimer is
+reported at 0.008 %). Where the spacing is not resolved, an envelope much wider than one peak must
+appear as a continuous hump in profile data rather than as a few narrow peaks of a low-charge
+species.
 
 On vendor-thresholded data some ion stands above the noise near almost every position, so a
 comb position counts as populated only by a peak of at least a third of the height the isotope
@@ -198,16 +201,25 @@ phase being the less certain, but counts towards the two only where it agrees (1
 z = 2's, 97 % of the weight, z = 3 agreeing to 0.02 Da) - and half the windows' intensity lines up
 on it. Of its two teeth either side of the measured mass the one whose template fits the envelope
 better is taken: a mass read more than half a spacing off has its nearest tooth on the wrong side,
-and the edge between them fits neither. A mass read 0.7-1.0 Da off has its wrong tooth inside the
-window, where the overlap search stops and the comb is not consulted (`benchmarks.md`). A candidate
-whose gate measured another mass's envelopes (one the adduct dedupe renamed to a lighter partner
-measured the stronger form's) is left at the edge, and so is an adduct form of an accepted
-species - within 1 Da of its mass, or of a mass the adduct walk moved a candidate from (itself a
-form of the species it joined), plus an adduct state, up to three of a type - whose mass its
-neighbouring forms pull by up to three quarters of a dalton and whose two teeth fit alike (NC + 3Na
-of the IP-HILIC NC run, to 1.0 %). Placed on its comb such a form is fitted whole: NC's +5Na and
-+3Na+K forms, beyond the library's three sodium, were reported as a 3.3 % impurity until the mass
-NC + 3Na was walked from anchored them. Searching the overlap itself past the edge instead lets a
+and the edge between them fits neither. The comb is not consulted where the overlap peaks inside
+the window: on the wrong tooth for a mass read 0.7-1.3 Da off, or between the teeth on a weak
+species' noise (1908.3 and 2887.4 of the IP-RPLC NC run, read 0.53 Da light, are missed that way;
+`benchmarks.md`). A candidate whose gate measured another mass's envelopes (one the adduct dedupe
+renamed to a lighter partner measured the stronger form's) is left at the edge, and so is an adduct
+form of an accepted species - within 1 Da of its mass, or of a mass the adduct walk moved a
+candidate from (itself a form of the species it joined), plus an adduct state, up to three of a
+type - whose mass its neighbouring forms pull by up to three quarters of a dalton and whose two
+teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb such a form is
+fitted whole: NC's +5Na and +3Na+K forms, beyond the two of a type the fit allows and the three the
+exemption covers, were reported as a 3.3 % impurity until the mass NC + 3Na was walked from
+anchored them. Sodium and potassium forms deeper still, four to eight in all, are recognised by
+their comb instead (`refine._on_cation_ladder`): such a form shares its parent's isotope comb
+exactly, moved by the ladder's monoisotopic shift, so a candidate whose comb falls within 0.03 Da
+of an accepted species' comb so moved, its mass within 1 Da of that species plus the ladder, keeps
+the edge as well. Placed on their combs DA-NC + 4Na and NC + 6Na + K of the IP-HILIC NC run were
+fitted whole (1.15 % and 0.44 % of NC, 0.79 % and 0.14 % at the edge), the first taking part of
+DA-NC's own sodium ladder with it. A species of another composition near such a mass lies on that
+comb by chance about one time in sixteen. Searching the overlap itself past the edge instead lets a
 candidate slide onto whatever lies there: one the adduct dedupe had renamed to a weak partner 43.5
 Da (two sodium) lighter took the IP-RPLC main species' peaks as its +2Na form, and the main species
 was lost. The overlap is computed in quarter-bin steps and the optimum placed between them by a
@@ -230,9 +242,11 @@ its charge by its isotopes, was discontinuous, belonged to another mass or did n
 another species' signal, and one it could not measure (no envelope above the noise there) may hold
 anything. Read by the overlap search, an isotope comb of the wrong charge under one rejected state
 pulled a 6752 Da species' templates to the far edge of the window, and the species was dropped;
-read by the walk, a peak under one walked n-2 onto a phantom (below). The fit itself still covers
-every state the candidate carries: restricted to the gate-passed ones it loses EIC-confirmed
-species.
+read by the walk, a peak under one walked n-2 onto a phantom (below) before its templates were
+placed by its comb. A candidate without a gate record - renamed by the adduct dedupe, or kept
+without one - reads every state it carries but those a merged duplicate's gate rejected. The fit
+itself still covers every state the candidate carries: restricted to the gate-passed ones it loses
+EIC-confirmed species.
 
 Each candidate is fitted over every charge state the spectrum shows for it, not only over the
 charges that voted for it: starting from that band, charges are added outward while an envelope is
