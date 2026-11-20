@@ -115,34 +115,13 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
     the isotopes of the candidate's central charge state; elsewhere a bin is a small part of an
     envelope and the shift is 0.
     """
-    from ..chem.adducts import carrier_mass
-
-    zs = sorted(int(z) for z in cand.charges if z >= 1)
-    if not zs or instrument is None:
+    zs = _align_charges(cand.mass, cand.charges, grid, instrument, max_charges)
+    if zs is None:
         return 0.0
-    zc = zs[len(zs) // 2]
-    mz_c = (cand.mass + zc * carrier_mass(grid.polarity)) / zc
-    if 1.0033548 / zc < 2.0 * mz_c / max(float(instrument.resolving_power(mz_c)), 1.0):
-        return 0.0
-    if len(zs) > max_charges:
-        mid = len(zs) // 2
-        zs = zs[max(0, mid - max_charges // 2): mid + max_charges // 2]
-    # +-max_bins, or +-max_da where that is wider: the offsets to absorb are in daltons, and
-    # 1.5 bins is 0.04 Da at 1.2 kDa (where half the alignments of the IP-HILIC NC run were
-    # pinned to the edge of the window, and a 1235 Da shortmer was quantified 400 times low)
-    reach = max(max_bins, max_da / max(cand.mass, 1.0) / grid.step)
-    reach = np.floor(reach / step_bins) * step_bins
+    reach = _align_reach(cand.mass, grid, max_bins, step_bins, max_da)
     shifts = np.arange(-reach, reach + 1e-9, step_bins)
-    scores = np.zeros(shifts.size)
-    for k, s in enumerate(shifts):
-        m = cand.mass * float(np.exp(s * grid.step))
-        for z in zs:
-            t = build_template(m, z, grid, instrument, compound_class)
-            if t is None:
-                continue
-            norm = float(np.sqrt(t.values @ t.values))
-            if norm > 0:
-                scores[k] += float(spectrum[t.bins] @ t.values) / norm
+    scores = np.array([_overlap(cand.mass * float(np.exp(s * grid.step)), zs, spectrum, grid,
+                                instrument, compound_class) for s in shifts])
     k = int(np.argmax(scores))
     if scores[k] <= 0:
         return 0.0
@@ -157,6 +136,157 @@ def align_template(cand: Candidate, spectrum: np.ndarray, grid, instrument: Inst
         if den < 0:
             best += float(np.clip(0.5 * (a - c) / den, -0.5, 0.5)) * step_bins
     return best * grid.step
+
+
+#: the spacing of an isotope comb (13C - 12C), Da
+ISOTOPE_DA = 1.0033548
+
+
+def _align_charges(mass: float, charges, grid, instrument: InstrumentModel | None,
+                   max_charges: int = 8) -> list[int] | None:
+    """The charge states a template alignment reads (at most ``max_charges`` about the middle),
+    or None where the instrument does not resolve the isotopes of the central one."""
+    zs = sorted(int(z) for z in charges if z >= 1)
+    if not zs or instrument is None:
+        return None
+    zc = zs[len(zs) // 2]
+    mz_c = (mass + zc * carrier_mass(grid.polarity)) / zc
+    if ISOTOPE_DA / zc < 2.0 * mz_c / max(float(instrument.resolving_power(mz_c)), 1.0):
+        return None
+    if len(zs) > max_charges:
+        mid = len(zs) // 2
+        zs = zs[max(0, mid - max_charges // 2): mid + max_charges // 2]
+    return zs
+
+
+def _align_reach(mass: float, grid, max_bins: float = 1.5, step_bins: float = 0.25,
+                 max_da: float = 0.3) -> float:
+    """Half-width of the alignment window in bins: +-max_bins, or +-max_da where that is wider.
+    The offsets to absorb are in daltons, and 1.5 bins is 0.04 Da at 1.2 kDa (where half the
+    alignments of the IP-HILIC NC run were pinned to the edge of the window, and a 1235 Da
+    shortmer was quantified 400 times low)."""
+    reach = max(max_bins, max_da / max(mass, 1.0) / grid.step)
+    return float(np.floor(reach / step_bins) * step_bins)
+
+
+def _overlap(mass: float, zs, spectrum: np.ndarray, grid, instrument: InstrumentModel,
+             compound_class: str) -> float:
+    """Normalized overlap of the class's base templates at ``mass`` with ``spectrum``."""
+    total = 0.0
+    for z in zs:
+        t = build_template(mass, z, grid, instrument, compound_class)
+        if t is None:
+            continue
+        norm = float(np.sqrt(t.values @ t.values))
+        if norm > 0:
+            total += float(spectrum[t.bins] @ t.values) / norm
+    return total
+
+
+def comb_phase_shift(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray,
+                     polarity: int, instrument: InstrumentModel, compound_class: str,
+                     width_sigmas: float = 2.5) -> tuple[float, float, int]:
+    """Where a candidate's own resolved isotopologues sit against the class template, read off
+    the raw spectrum: ``(shift in Da, coherence, charge states used)``.
+
+    Each resolved charge state's raw points within ``width_sigmas`` envelope widths of the
+    candidate's position are folded onto one isotope spacing: the phase of their intensity-
+    weighted sum against the template's own isotopologues is the shift that puts the template
+    on them, modulo one spacing (taken within half a spacing of the candidate's mass). Charge
+    states are added as unit phasors weighted by their coherent intensity; ``coherence`` is the
+    length of that sum over its total weight (1 when every state agrees), times the share of
+    the windows' intensity that lines up on one comb.
+    """
+    from ..chem.classes import class_isotope_pattern
+
+    raw_mz = np.asarray(raw_mz, dtype=float)
+    raw_int = np.asarray(raw_int, dtype=float)
+    if raw_mz.size == 0 or mass <= 0 or instrument is None:
+        return 0.0, 0.0, 0
+    carrier = carrier_mass(polarity)
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(float(pat.abundances.sum()), 1e-300)
+    iso_mass = pat.masses + (mass - pat.average_mass)
+    p_t = complex(np.sum(a * np.exp(2j * np.pi * iso_mass / ISOTOPE_DA)))
+    if abs(p_t) <= 0:
+        return 0.0, 0.0, 0
+    env_sigma = float(np.sqrt(np.sum(a * (pat.masses - pat.average_mass) ** 2)))
+    total, weight, coherent, used = 0j, 0.0, 0.0, 0
+    for z in sorted(int(z) for z in charges if int(z) >= 1):
+        mz_c = (mass + z * carrier) / z
+        fwhm = mz_c / max(float(instrument.resolving_power(mz_c)), 1.0)
+        if ISOTOPE_DA / z < 2.0 * fwhm:
+            continue  # isotopes not resolved at this charge
+        hw = width_sigmas * env_sigma / z + 2.0 * fwhm
+        lo, hi = np.searchsorted(raw_mz, [mz_c - hw, mz_c + hw])
+        if hi - lo < 3:
+            continue
+        w = np.clip(raw_int[lo:hi], 0.0, None)
+        if w.sum() <= 0:
+            continue
+        p_o = complex(np.sum(w * np.exp(2j * np.pi * z * (raw_mz[lo:hi] - carrier) / ISOTOPE_DA)))
+        d = p_o * np.conj(p_t)
+        if abs(d) <= 0:
+            continue
+        total += abs(p_o) * d / abs(d)
+        weight += abs(p_o)
+        coherent += float(w.sum())
+        used += 1
+    if used == 0 or weight <= 0:
+        return 0.0, 0.0, 0
+    shift = float(np.angle(total)) / (2.0 * np.pi) * ISOTOPE_DA
+    coherence = abs(total) / weight * (weight / coherent)
+    return shift, float(coherence), used
+
+
+def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
+                    compound_class: str, raw_mz: np.ndarray | None = None,
+                    raw_int: np.ndarray | None = None, min_coherence: float = 0.5,
+                    forms_of: list[float] | None = None, form_shifts=(),
+                    form_tol_da: float = 1.0) -> float:
+    """:func:`align_template`, and where its best shift is the window's edge, the candidate's own
+    isotope comb (:func:`comb_phase_shift` over the charge states that passed the gate).
+
+    A weak species' average mass can be read several tenths of a dalton off - a neighbour 6 Da
+    away pulls the mean shift - and its templates then need more than the window allows: n-2 of
+    the NC product 0.37-0.49 Da, a 1.9 kDa shortmer 0.36 Da. Pinned at the edge they fit
+    another species' peaks or nothing (80 times low). Searching the overlap past the edge finds
+    those shifts too, but lets a candidate beside a strong species slide onto that species' peaks.
+    The comb phase is read off the candidate's own envelopes instead, and is taken when (a) the
+    overlap ran into the window's edge, (b) the comb lies beyond the window, within half an
+    isotope spacing, (c) the gate-passed charge states agree on it (``min_coherence``) and (d)
+    the same comb one isotope spacing the other way does not fit the envelope better (a mass
+    read half a spacing off picks the wrong branch). A candidate whose gate measured another
+    mass's envelopes (moved by the adduct dedupe) has no gate charges and is not touched, and
+    neither is one within ``form_tol_da`` of an adduct form of an accepted species (masses
+    ``forms_of``, adduct shifts ``form_shifts``): an adduct form's mass is read off by its
+    neighbouring forms, by up to three quarters of a dalton, and the comb then takes the tooth
+    one spacing off (NC + 3Na of the IP-HILIC NC run, read 0.73 Da light, fits the teeth either
+    side to 0.6 %).
+    """
+    shift = align_template(cand, spectrum, grid, instrument, compound_class)
+    gate = getattr(cand, "gate_charges", None)
+    if raw_mz is None or raw_int is None or not gate:
+        return shift
+    if forms_of and any(abs(cand.mass - m - d) <= form_tol_da for m in forms_of
+                        for d in form_shifts):
+        return shift
+    zs = _align_charges(cand.mass, gate, grid, instrument)
+    if zs is None:
+        return shift
+    reach = _align_reach(cand.mass, grid)
+    if abs(shift / grid.step) < reach - 1e-6:
+        return shift  # an optimum inside the window
+    per_bin = cand.mass * grid.step
+    comb, coherence, n = comb_phase_shift(cand.mass, gate, raw_mz, raw_int, grid.polarity,
+                                          instrument, compound_class)
+    if n == 0 or coherence < min_coherence or abs(comb) <= reach * per_bin:
+        return shift
+    other = comb - np.sign(comb) * ISOTOPE_DA
+    if (_overlap(cand.mass + other, zs, spectrum, grid, instrument, compound_class)
+            > _overlap(cand.mass + comb, zs, spectrum, grid, instrument, compound_class)):
+        return shift
+    return float(np.log1p(comb / cand.mass))
 
 
 def refine_frame(
@@ -181,6 +311,7 @@ def refine_frame(
     trace_pass: int = 0,
     frames=None,
     coelution_r: float = 0.5,
+    known_masses: list[float] | None = None,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -188,7 +319,8 @@ def refine_frame(
     measurement, and returns the accepted components, the fraction of signal-bearing intensity
     still unexplained, and the updated residual so the caller can re-detect on what is left.
     ``frames`` and ``coelution_r`` decide which charge states beyond the voting band are the
-    species' own (:func:`observed_charges`).
+    species' own (:func:`observed_charges`). ``known_masses`` are the species accepted by
+    earlier passes over the same spectrum.
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = fit_weights(observed, noise_sigma, grid.step,
@@ -215,6 +347,11 @@ def refine_frame(
                           "outcome": outcome, "mass": None if mass is None else float(mass)})
 
     resolution = float(instrument.resolving_power(1000.0)) if instrument is not None else 30000.0
+    # where adduct forms of accepted species sit: the library's states, and up to three of one
+    # type (sodium ladders run past the two a fit allows per type)
+    avg = library.avg_deltas()
+    form_shifts = sorted({s.avg_mass for s in states_full if s.counts}
+                         | {n * d for d in avg.values() for n in (1, 2, 3)})
     for cand in remaining:
         cand_mass0 = cand.mass
         if raw_mz is not None and raw_mz.size and cand.charges and cand.charges != {1}:
@@ -225,7 +362,10 @@ def refine_frame(
                                             3.0 * noise_sigma, grid.polarity, compound_class,
                                             resolution, mz_range, frames=frames,
                                             coelution_r=coelution_r, instrument=instrument)
-        cand.template_shift = align_template(cand, residual, grid, instrument, compound_class)
+        cand.template_shift = align_candidate(
+            cand, residual, grid, instrument, compound_class, raw_mz=raw_mz, raw_int=raw_int,
+            forms_of=list(known_masses or ()) + [c.mass for c in components],
+            form_shifts=form_shifts)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -345,7 +485,10 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     from .decode import envelope_geometry
 
     carrier = carrier_mass(grid.polarity)
-    charges = sorted(cand.charges)[:12]
+    # the walk reads the candidate's own envelopes: a charge state whose window failed the gate
+    # holds some other species' signal (an unrelated peak 30 times taller under n-2's z9 window
+    # walked it down to a phantom 22 Da lighter)
+    charges = sorted(cand.gate_charges or cand.charges)[:12]
     thr = 3.0 * noise_sigma
 
     def heights(mass: float) -> tuple[int, float]:
