@@ -352,16 +352,16 @@ strongest charge states share their m/z windows with other signal can fail it.
 | after the resampling fix, comb | 15 / 20 | 15 / 29 | 198 | 21 | 4 | 100 | 43 |
 | after the resampling fix, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
 | amounts made comparable, comb | 18 / 20 | 23 / 29 | 227 | 13 | 5 | 114 | 54 |
-| **now, comb** | **20 / 20** | **23 / 29** | **229** | **13** | **5** | **116** | **51** |
+| **now, comb** | **20 / 20** | **23 / 29** | **228** | **13** | **5** | **115** | **51** |
 
 (Every row but the first two uses the extracted-ion check described above; those two were scored
 with its first version. The resampling fix and the recalibration it needed are `lessons.md`,
 section 14; "amounts made comparable" adds consistent amounts, region boundaries that no longer cut
 species and a region threshold of three times the TIC's noise (section 15), and "now" templates
 placed by the candidate's own isotope comb, template placement and the adduct walk read on its own
-charge states, and a comb of half the charge no longer counted as support (section 16); its one
-charge harmonic is counted in no column. The LadderNets were trained before the resampling fix and
-are not re-measured.)
+charge states, a comb of half the charge no longer counted as support and deep sodium and potassium
+forms recognised by their comb (section 16); its one charge harmonic is counted in no column. The
+LadderNets were trained before the resampling fix and are not re-measured.)
 
 Before the fix no report of any variant was a charge harmonic (half, a third, double or triple a
 found species' mass at its time), which the scoring checks for before the extracted-ion test; now
@@ -387,14 +387,14 @@ scans however many joined a 1900.08 Da sliver (0.000 %; a 0.13 % species whose t
 alignment window's edge, quantified at 0.11 % since section 16) to its species, but also two
 isomers seen in a scan or two each; read across three empty scans at most, it does neither.
 Templates of edge-pinned candidates placed by their own isotope comb, template placement and the
-adduct walk read on the candidate's own charge states, and a comb of half the charge no longer
-counted as support (`lessons.md`, section 16), with two reviews' corrections, 20/20, 23/29, 229,
-51: n-2 is found in both chromatographies and the 1.9 kDa shortmer 1883.3 quantified. The lower
-region threshold finds the non-conjugated product in the IP-HILIC conjugate run and three SI-listed
-impurities; its eight further unconfirmed reports are all below 0.02 % of the main species. The
-alignment window finds four more SI-listed impurities and quantifies small shortmers whose
-templates 1.5 bins could not reach (the 1235 Da one from 0.01 % to 4.2 %); 23 of its 35 further
-reports are EIC-confirmed.
+adduct walk read on the candidate's own charge states, a comb of half the charge no longer counted
+as support, and deep sodium and potassium forms recognised by their comb (`lessons.md`, section
+16), with three reviews' corrections, 20/20, 23/29, 228, 51: n-2 is found in both chromatographies
+and the 1.9 kDa shortmer 1883.3 quantified. The lower region threshold finds the non-conjugated
+product in the IP-HILIC conjugate run and three SI-listed impurities; its eight further unconfirmed
+reports are all below 0.02 % of the main species. The alignment window finds four more SI-listed
+impurities and quantifies small shortmers whose templates 1.5 bins could not reach (the 1235 Da one
+from 0.01 % to 4.2 %); 23 of its 35 further reports are EIC-confirmed.
 
 With the resampling fixed and nothing else changed the comb found 15/20 and 10/29 among 400
 reports, 222 of them unconfirmed: the decoder's tests had been tuned on a noise estimate 40-180
@@ -503,19 +503,18 @@ and threshold variants.
 | IP-HILIC, NC | 4842 (12.80 min) and 4841.8 (13.30 min) | 1.24 +- 0.09 and 1.64 +- 0.08 % | 1.88 and 2.05 % | 4841.8 only, 1.8 % | 1.37 and 1.75 % |
 | IP-HILIC, NC | n-2 | 0.11 +- 0.04 % | 0.21 +- 0.07 % | not found | 0.14 % |
 
-("Before" is the code after the resampling fix, which added each species' resolved adduct forms
-to its amount; "now" compares base forms.) Against the base-form reference the amounts of 16 of
-the 23 impurities found are within 0.88-1.17 of it. The exceptions: n-1 of the IP-HILIC NC run
-(0.76, its mass 0.88 Da off), 4512.6 (1.7), PO-NC in both chromatographies (1.23 under
-IP-RPLC), n-2 (0.53 under IP-RPLC, 1.27 under IP-HILIC) and 1883.3 (0.84). A band
-of PO-mass material (other positions of the phosphorothioate-to-phosphate change) elutes just
-before each spiked PO isomer; the pipeline counts it with PO-NC, which shares its region (3.5 %
-against 2.15 % for the spiked isomer alone and 3.17 % for the whole band), and not with the
-conjugate's PO, whose band lies in the neighbouring region. An
-earlier version of this table used a crude reference (charge states 3-8, +-1.2/z Th, within 0.4
-min of the apex): such a window holds two or three isotopologues depending on where the average
-mass falls between them, and caught 43 % of n+1's envelope against 31 % of FLP's, which made n+1
-look 1.4 times stronger than it is (and the 2887.4 Da impurity 1.9 times).
+("Before" is the code after the resampling fix, which added each species' resolved adduct forms to
+its amount; "now" compares base forms.) Against the base-form reference the amounts of 16 of the 23
+impurities found are within 0.88-1.19 of it. The exceptions: n-1 of the IP-HILIC NC run (0.76, its
+mass 0.88 Da off), 4512.6 (1.7), PO-NC in both chromatographies (1.23 under IP-RPLC), n-2 (0.53
+under IP-RPLC, 1.27 under IP-HILIC) and 1883.3 (0.84). A band of PO-mass material (other positions
+of the phosphorothioate-to-phosphate change) elutes just before each spiked PO isomer; the pipeline
+counts it with PO-NC, which shares its region (3.5 % against 2.15 % for the spiked isomer alone and
+3.17 % for the whole band), and not with the conjugate's PO, whose band lies in the neighbouring
+region. An earlier version of this table used a crude reference (charge states 3-8, +-1.2/z Th,
+within 0.4 min of the apex): such a window holds two or three isotopologues depending on where the
+average mass falls between them, and caught 43 % of n+1's envelope against 31 % of FLP's, which
+made n+1 look 1.4 times stronger than it is (and the 2887.4 Da impurity 1.9 times).
 
 Base forms are what every species has measured the same way, but they are not the whole
 amount: under IP-HILIC 48-72 % of every species' signal is in adduct forms (sodium, potassium,
@@ -563,31 +562,49 @@ What is still wrong on these runs:
 - The comb is consulted only where the overlap search ends on the window's edge. In the IP-RPLC NC
   run 1908.3, 2558.3 and 2887.4 are read 0.53-0.78 Da light (an envelope 2 Da lighter on the same
   comb elutes with them), and the overlap's optimum lies inside the 0.3 Da window: one tooth light
-  for 2558.3, between teeth for 1908.3 and 2887.4. The tooth of the truth fits 4-25 % better but is
-  never tried: 1908.3 and 2887.4 are missed and 2558.3 is reported 0.64 Da light. A 2602.07 Da
-  species of the IP-RPLC conjugate run (0.02 % of FLP at 13.02 min) gets a template between its
-  teeth the same way and is reported at 0.0003 % at 11.94 min, where its windows are empty. 1883.3
-  under IP-HILIC is dropped by the co-elution test, a foreign ion lying in its z = 3 window.
+  for 2558.3, between teeth for 1908.3 and 2887.4. The tooth of the truth fits 4-25 % better than
+  the wrong one, and a hundred to two thousand times better than the optimum kept between teeth for
+  1908.3 and 2887.4, but is never tried: 1908.3 and 2887.4 are missed and 2558.3 is reported 0.64
+  Da light. A 2980.4 Da species of 0.008 % is lost the same way since its gate-failed z = 4, which
+  held its earlier 0.0013 % report, is no longer read. A 2602.07 Da species of the IP-RPLC
+  conjugate run (0.02 % of FLP at 13.02 min) gets a template between its teeth the same way and is
+  reported at 0.0003 % at 11.94 min, where its windows are empty. 1883.3 under IP-HILIC is dropped
+  by the co-elution test, a foreign ion lying in its z = 3 window.
 - Where the comb is taken, the overlaps of its two teeth differ by 0.03-26 % above 4 kDa (by less
   than 1 % for two of 32 candidates on the four runs; and below 4 kDa by as little as 1.3 %, for a
-  2291 Da species), a weak basis for the choice: 4949.38 Da of the IP-RPLC NC run is placed on the
-  tooth of a species one spacing lighter (by 2.4 %; its amount matches its own envelope's), and FLP
-  + K of the IP-RPLC conjugate run one spacing light (by 0.8 %; the adduct-form exemption knows
-  only the adducts a region evidences, sodium and DIPEA there), which moves a 6660.16 Da report's
-  apex from 19.17 to 19.32 min (19.21 by extracted ions) and lowers the conjugate's all-forms
-  shares by 2-4 % of their values.
+  2291 Da species), a weak basis for the choice: FLP + K of the IP-RPLC conjugate run is placed one
+  spacing light (by 0.75 %; the adduct-form exemption knows only the adducts a region evidences,
+  sodium and DIPEA there), which moves a 6660.16 Da report's apex from 19.17 to 19.32 min (19.21 by
+  extracted ions) and lowers the conjugate's all-forms shares by 2-4 % of their values. A 4949.4 Da
+  report of the IP-RPLC NC run (0.03 % of NC by its own envelope) keeps the window's edge and
+  0.001 %, as before section 16: the tooth its overlap picks, by 2.3 %, one spacing light, lies on
+  the comb of NC - dG moved by six sodium.
 - Adduct forms beyond the library (more than two of a type, three in all) are fitted with no
-  species. Under IP-HILIC NC's +5Na and +3Na+K forms, which co-elute with it and follow its sodium
-  load, are reported as a 5270.85 Da species at 0.21 %, unconfirmed (about 4 % of NC by a fit of
-  NC's sodium ladder and by extracted ions), held at the window's edge only by the adduct-form
-  exemption through the mass NC + 3Na was walked from, with 0.22 Da to spare; placed on its comb it
-  was fitted whole, at 3.3 %. PO-NC's sodium ladder is read 0.6-1.5 Da light, pulled by NC's sodium
-  forms 6 Da below it: its +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of the ladder), misses
-  the fold by 0.02 Da, and its +4Na form, 5232.61 Da at 0.45 %, unconfirmed, has no folded parent
-  within reach.
+  species, and are reported apart at what their templates, kept at the window's edge, explain.
+  Under IP-HILIC NC's +5Na and +3Na+K forms, which co-elute with it and follow its sodium load, are
+  a 5270.85 Da report at 0.21 %, unconfirmed (about 4 % of NC by a fit of NC's sodium ladder and by
+  extracted ions): its mass, a blend of the two, lies 1.4 Da from either, beyond the cation-ladder
+  rule's 1 Da, and the adduct-form exemption holds it at the edge only through the mass NC + 3Na
+  was walked from, with 0.22 Da to spare (placed on its comb it was fitted whole, at 3.3 %). DA-NC
+  + 4Na (5250.45 Da, 0.79 %) and NC + 6Na + K (5331.67 Da, 0.14 %, unconfirmed) are held by the
+  cation-ladder rule. 4842's +2Na and +3Na forms are two reports (0.20 and 0.25 %, against one of
+  0.28 % before section 16): without its rejected z = 5 the +2Na form's template explains less than
+  the +3Na form's, and the fold takes no stronger form into a weaker one. Sodium forms of a 5279.76
+  Da species seen only under IP-HILIC (NC + 117.5 Da) are reported apart too (5324.21 Da, 0.17 %).
+  PO-NC's sodium ladder is read 0.6-1.5 Da light, pulled by NC's sodium forms 6 Da below it: its
+  +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of the ladder), misses the fold by 0.02 Da, and
+  its +4Na form, 5232.61 Da at 0.45 %, unconfirmed, has no folded parent within reach.
 - A 915 Da species (0.4-0.5 % of NC under IP-RPLC, 1.1-1.6 % under IP-HILIC) lies below the
   method's 1 kDa mass range and is not reported; read at twice its charge it was reported as an
-  1831 Da species until section 16's parity rule.
+  1831 Da species until section 16's parity rule. That rule also lets a non-covalent dimer of the
+  1580.18 Da shortmer ([2M-3H]3-) through at 0.008 %, labelled a harmonic: its charge-2 state, the
+  shortmer's own ions, had kept it out.
+- 6752.33 Da of the IP-RPLC conjugate run (0.08 %) is the leading edge of a species of about 0.6 %
+  whose apex (19.02 min) lies in the next region, where it is not reported; its templates sit at
+  the window's near edge, held by the adduct-form exemption as a form of a candidate the dedupe
+  renamed.
+- The comb's second state counts when its phase agrees within 0.1 Da, which a window of noise does
+  about one time in five: a comb read off one window can still pass.
 - The adduct dedupe renames a stronger candidate to a lighter partner one adduct ladder below it
   whatever the partner's strength: under IP-RPLC FLP's candidate becomes a 6750.58 Da envelope
   with 9 % of its score (43.50 Da, two sodium to 0.46 Da), and FLP survives because its +DIPEA

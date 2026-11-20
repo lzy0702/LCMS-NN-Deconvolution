@@ -207,6 +207,7 @@ def deconvolve_spectrum(
             strongest_explained=max((c.intensity for c in components), default=0.0),
             trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
             known_masses=[c.mass for c in components], walked=walked,
+            known_shifts=[c.mass * float(np.expm1(c.template_shift)) for c in components],
         )
         if not new:
             break

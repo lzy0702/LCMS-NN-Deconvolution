@@ -561,12 +561,13 @@ replayed stage by stage on the real runs, found three different failures behind 
 2. **A mass read half a spacing off misplaces the templates.** Under IP-RPLC a 4497 Da species six
    isotope spacings below n-2 pulled its mean-shift mass 0.55 Da light; 1883.3 is read 0.34 Da
    light, from an envelope 2 Da lighter on the same comb (-0.15 Da), the union axis's point density
-   (-0.12) and its own isotopologue heights (-0.07). Their templates needed +0.49 and +0.36 Da, the
-   0.3 Da window stopped at its edge, and the fits took other ions: n-2's z = 11 (a failed state)
-   carried two thirds of its fit and put its apex 0.9 min off, 1883.3 was fitted 300 times low.
-   The phase of the candidate's own resolved isotopologues, folded onto one spacing, gives the
-   shift directly (within 0.01 Da on synthetic envelopes, and n-2's z = 3 and 4 agree to 0.003 Da);
-   it is now taken where the overlap search ends on its edge.
+   (-0.12) and its own isotopologue heights (-0.07). Their templates needed +0.49 and +0.36 Da.
+   1883.3's stopped at the 0.3 Da window's edge, 0.07 Da short of its isotopologues, and was fitted
+   300 times low; n-2's overlap search, led by its failed z = 11, went to the far edge (-0.29 Da,
+   0.22 Da beside a wrong isotopologue), where z = 11 carried two thirds of its fit and put its
+   apex 0.9 min off. The phase of the candidate's own resolved isotopologues, folded onto one
+   spacing, gives the shift directly (within 0.01 Da on synthetic envelopes, and n-2's z = 3 and 4
+   agree to 0.003 Da); it is now taken where the overlap search ends on its edge.
 3. **A wider search slides onto neighbours, and the comb needs guards too.** The comb phase reads
    whatever comb dominates the windows. The adduct dedupe had renamed FLP's candidate to a weak
    partner 43.5 Da lighter (two sodium to 0.46 Da); aligned to its own comb that partner took FLP's
@@ -575,8 +576,9 @@ replayed stage by stage on the real runs, found three different failures behind 
    species are left alone as well: their masses are pulled by neighbouring forms by up to three
    quarters of a dalton, and the comb then takes the tooth one spacing off - NC + 3Na of the
    IP-HILIC NC run jumped from 0.56 % to 10.5 %, its two teeth fitting the envelope equally to
-   0.6 %. Above 4 kDa neighbouring teeth fit within 0.03-26 % of each other on the four runs, too
-   close for a margin rule: n-2's correct tooth wins by 3 %.
+   0.6 %. Above 4 kDa the two teeth's overlaps differ by 0.03-26 % on the four runs, and right and
+   wrong picks share that range - n-2's correct tooth wins by 2.5 and 2.9 %, FLP + K's wrong one by
+   0.75 % - so no margin rule separates them.
 
 Now n-2 is reported in both runs (0.08 % under IP-RPLC against 0.15 %, 0.14 % under IP-HILIC
 against 0.11 %), 1883.3 at 0.08 % (0.09-0.10 % by extracted ions), all 20 paper species are found,
@@ -601,46 +603,68 @@ its extracted-ion apex, 1.3 times its extracted-ion reference, and a 1900.64 Da 
 as two 0.000 % slivers (section 15) to 0.11 %, 0.84 times its reference.
 
 A second review found that version still reading what it should not, and the better tooth taking
-false species along with the real ones; each finding is fixed and has a test that fails without the
-fix:
+false species along with the real ones; each finding is fixed, and each fix but three small ones
+(the walked masses kept across passes, the walk trial's exemption and its added states) has a test
+that fails without it:
 
 - The walk read every state the gate had not rejected. A voted state the gate could not measure, or
   one a duplicate merged in by mass brought along (nearly all of those had failed the duplicate's
-  own gate), put item 1's phantom walk back. The overlap search and the walk now read only the
-  candidate's own states - those the gate passed, for it or for a duplicate, and those found beside
-  them for the fit - and merged duplicates bring their gate's verdicts. A 6752.33 Da species, whose
-  templates an isotope comb of the wrong charge under a rejected state had pulled to the far edge
-  of the window, is now reported (0.08 %, EIC-confirmed).
-- "At least two states agree" counted a state too weak to be checked: a second state with 9 % of
-  the weight, contradicting the first by 0.7 Da, let a comb read off one window through. A weak
-  state now counts only where it agrees (1883.3's z = 3 does, to 0.02 Da).
+  own gate), would put item 1's phantom walk back: so a test that models it shows (on the IP-HILIC
+  run n-2's z = 9 fails its own gate, and the walk kept n-2). The overlap search and the walk now
+  read only the candidate's own states - those the gate passed, for it or for a duplicate, and
+  those found beside them for the fit - and merged duplicates bring their gate's verdicts. A
+  6752.33 Da species, whose templates an isotope comb of the wrong charge under a rejected state
+  had pulled to the far edge of the window, is now reported (0.08 %, EIC-confirmed; its templates
+  sit at the near edge, held there by the adduct-form exemption), and n-1's +Na+K form, 0.004 %
+  before, is a 6507.42 Da report of 0.023 %, unconfirmed, placed on a comb it no longer reads
+  against a rejected state.
+- "At least two states agree" counted a state too weak to be checked: a second state with 4-7 % of
+  the weight, 0.12-0.22 Da off the combined phase, let a comb read off one window through (2213.17
+  Da of the IP-RPLC NC run, whose z = 3 holds 5.6 %, went from 0.028 % to 0.039 %). A weak state
+  now counts only where it agrees (1883.3's z = 3 does, to 0.02 Da).
 - The walk's trial was placed without the adduct-form exemption its candidate had; it has it now.
   NC + 3Na, kept at its edge as a form of NC, still joins NC: its trial lies on NC's own mass,
   which is no form of NC.
-- That walk removed the mass through which NC's +5Na and +3Na+K forms, beyond the library's three
-  sodium, had been recognised as adduct forms; the better tooth, by 0.16 %, placed them on their
-  comb and they were fitted whole - a 3.3 % impurity under IP-HILIC made of NC's own sodium ladder.
-  A mass the walk moved a candidate from now anchors the forms above it, and they are back at
-  0.21 %, still a false report (`benchmarks.md`).
+- That walk removed the mass through which NC's +5Na and +3Na+K forms, beyond the two of a type the
+  fit allows and the three the adduct-form exemption covers, had been recognised as adduct forms;
+  the better tooth, by 0.16 %, placed them on their comb and they were fitted whole - a 3.3 %
+  impurity under IP-HILIC made of NC's own sodium ladder. A mass the walk moved a candidate from
+  now anchors the forms above it, and they are back at 0.21 %, still a false report
+  (`benchmarks.md`).
 - The better tooth also lifted an "1831 Da species" from 0.001 % to 0.27 % of NC under IP-RPLC
-  (1.15 % under IP-HILIC since the first version): the singly and doubly charged ions of a 915 Da
-  species, below the methods' mass range, read at charges 2 and 4. Below 2 kDa the isotope pattern
-  has three major isotopologues and a comb at half the charge fills two of them, enough for the
-  gate's isotope test; a placement that fills only every other position no longer counts. Rejecting
-  a state that is as coherent at half its charge as at its own, the first idea, lost three
-  SI-listed shortmers, whose odd charge states are weak.
+  (1.1 % under IP-HILIC since the first version): the singly and doubly charged ions of a 915 Da
+  species, below the method's mass range, read at charges 2 and 4. At 1.2-1.9 kDa the isotope
+  pattern has three major isotopologues (five at 2.5-3.4 kDa) and a comb at half the charge fills
+  two (three) of them, enough for the gate's isotope test; a placement that fills only every other
+  position no longer counts. Rejecting a state that is as coherent at half its charge as at its
+  own, the first idea, lost three SI-listed shortmers, whose odd charge states are weak.
 
-With these the four runs give 229 reports, 116 of them EIC-confirmed and 51 unconfirmed (229, 117
+With these the four runs gave 229 reports, 116 of them EIC-confirmed and 51 unconfirmed (229, 117
 and 50 before the second review), with n-2, 1883.3 and every paper species unchanged; on the
 synthetic presets recall is unchanged, the oligonucleotide preset reports one false species fewer
 under each charge assignment, and the Orbitrap preset's precision stays at 76 % (68 % before this
 section's changes).
 
+A third review checked every report the whole section had moved against the runs themselves, with
+extracted-ion references and the positions of the isotopologues. Under IP-RPLC the moves were
+towards the references: weak shortmers from 0.00-0.73 to 0.83-1.55 times theirs, 5364.15 Da from
+0.25 % to 0.58 % against 0.53 % (its extracted-ion check now fails it: its apex ties between two
+scans, and from the earlier one the check reaches a stronger form's tail). Under IP-HILIC the comb
+had also placed sodium and potassium forms deeper than the exemption's three of a type: they share
+their parent's comb exactly, and fitted whole DA-NC + 4Na went from 0.79 % to 1.15 % - taking part
+of DA-NC's own sodium ladder with it - NC + 6Na + K from 0.14 % to 0.44 %, and a shortmer's +4Na
+form, folded before, was reported at 0.065 %. Such a form now keeps the edge where its comb lies
+within 0.03 Da of an accepted species' comb moved by the ladder's monoisotopic shift, its mass
+within 1 Da of that species plus the ladder; the three are back at their earlier amounts (and so is
+a 4949.4 Da report, whose wrong tooth lay on such a comb), with nothing else on the four runs or
+the synthetic presets changing. The four runs now give 228 reports, 115 EIC-confirmed and 51
+unconfirmed.
+
 The lesson: a template must be placed by evidence the species owns. A slide over everything nearby
 finds the best fit to whatever is there; the gate's per-charge measurements already say which
 envelopes are the candidate's, and each later step that places or moves its template should read
 only those (the fit itself still covers the rest: restricted to them it loses species). And a
-change that lets a template reach further also lets it reach the wrong thing: the better tooth
-quantified real species the window's edge had misplaced, and false ones with them - a charge error
-and an adduct ladder that an earlier rule had hidden by luck. Every report a change moves needs
-checking, not only the ones it was made for.
+change that lets a template reach further also lets it reach the wrong thing: the comb and its
+better tooth quantified real species the window's edge had misplaced, and false ones with them - a
+charge error and adduct forms that the edge had held at a fraction of their signal by luck. Every
+report a change moves needs checking, not only the ones it was made for.
