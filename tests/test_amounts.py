@@ -843,14 +843,14 @@ def test_the_overlap_search_reads_only_the_candidates_own_states():
         own, spectrum, grid, ORBI, "ps_rna")
 
 
-def _on_ladder_mass(parent, n_na, compound_class="ps_rna"):
-    """The average mass near parent + n Na at which the class template's comb is the parent's
-    comb moved by n sodium's monoisotopic shift."""
+def _on_ladder_mass(parent, n_na, compound_class="ps_rna", n_k=0):
+    """The average mass near parent + n Na + m K at which the class template's comb is the
+    parent's comb moved by the ladder's monoisotopic shift."""
     from lcmsdeconv.deconv.refine import _template_phase, _wrap_spacing
 
-    na = ADDUCTS["Na"]
-    want = _template_phase(parent, compound_class) + n_na * na.mass
-    grid = parent + n_na * na.avg_mass + np.arange(-0.5, 0.5, 0.0005)
+    na, k = ADDUCTS["Na"], ADDUCTS["K"]
+    want = _template_phase(parent, compound_class) + n_na * na.mass + n_k * k.mass
+    grid = parent + n_na * na.avg_mass + n_k * k.avg_mass + np.arange(-0.5, 0.5, 0.0005)
     miss = [abs(_wrap_spacing(_template_phase(m, compound_class) - want)) for m in grid]
     return float(grid[int(np.argmin(miss))])
 
@@ -926,3 +926,157 @@ def test_the_cation_ladder_rule_needs_sodium_in_the_region():
         placed[missing] = read * np.expm1(cand.template_shift)
     assert abs(placed["K"] - edge) < 1e-6  # sodium evidenced: a form of the parent, at the edge
     assert abs(placed["Na"] - 0.45) < 0.02  # no sodium: its own comb
+
+
+def test_the_cation_ladder_reads_the_parents_template_position_and_potassium():
+    """The parent's comb is where its templates sit - its mass plus the template offset the
+    ladder pairs carry - and a potassium form's comb moves by K - H's monoisotopic shift (0.13 Da
+    less than its average-mass shift). NC + 6Na + K of the IP-HILIC NC run is held only so: its
+    parent's templates sit 0.086 Da light of NC's mass."""
+    from lcmsdeconv.deconv.refine import align_candidate
+
+    parent = 5163.23
+    for n_na, n_k in ((4, 0), (3, 1)):
+        read = _on_ladder_mass(parent, n_na, n_k=n_k) - 0.45
+        grid, spectrum = _edge_case(read, (3, 4), 0.45)
+        cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+        edge = align_template(cand, spectrum, grid, ORBI, "ps_rna")
+        # a parent read 0.06 Da light, its templates on its comb: a form of it, at the edge
+        held = align_candidate(cand, spectrum, grid, ORBI, "ps_rna",
+                               ladder_of=[(parent - 0.06, 0.06)])
+        assert held == edge, (n_na, n_k)
+        # the same mass with its templates 0.06 Da heavy: another comb, so the candidate's own
+        free = align_candidate(cand, spectrum, grid, ORBI, "ps_rna", ladder_of=[(parent, 0.06)])
+        assert abs(read * np.expm1(free) - 0.45) < 0.02, (n_na, n_k)
+
+
+def test_the_cation_ladder_takes_this_passes_species_where_their_templates_sit():
+    """A species accepted earlier in the same refine_frame call is a parent, at the position its
+    alignment gave its templates (DA-NC + 4Na and NC + 6Na + K of the IP-HILIC NC run were held
+    by parents of the same pass): a deep sodium form of a parent read 0.12 Da light keeps its
+    window's edge."""
+    from lcmsdeconv.deconv.refine import refine_frame
+
+    parent, off = 5163.23, 0.12
+    read = _on_ladder_mass(parent + off, 4) - 0.45
+    grid, spectrum = _edge_case(read, (3, 4), 0.45)
+    for z in (3, 4, 5):
+        t = build_template(parent + off, z, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 2e7 * t.values
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    p = Candidate(parent, 10.0, {3, 4, 5}, gate_charges={3, 4, 5}, gate_failed=set())
+    f = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+    refine_frame([p, f], grid, spectrum, 100.0, ORBI, "ps_rna", lib)
+    assert abs(parent * np.expm1(p.template_shift) - off) < 0.02  # the parent's own alignment
+    # the window's edge (0.29 Da), not the form's comb (0.45 Da)
+    assert abs(read * np.expm1(f.template_shift) - 0.29) < 0.02
+
+
+def test_later_passes_get_where_earlier_passes_species_templates_sit(monkeypatch):
+    """deconvolve_spectrum hands each pass the earlier passes' species with where their templates
+    sit (mass * exp(template_shift) less the mass), one offset per mass: the cation-ladder rule
+    reads its parents there (a 2976 Da +4Na form of the IP-HILIC NC run was held in the second
+    pass by a first-pass parent whose templates sit 0.043 Da heavy)."""
+    from lcmsdeconv.core.model import Spectrum
+    from lcmsdeconv.deconv import pipeline
+    from lcmsdeconv.deconv.classical import CombPredictor
+
+    from .test_amounts import _comb_profile
+
+    x, y = _comb_profile(5163.23, (3, 4, 5, 6), 0.1, height=2e6, lo=600.0, hi=2000.0)
+    _x, y2 = _comb_profile(4503.71, (3, 4, 5, 6), -0.1, height=5e5, lo=600.0, hi=2000.0)
+    rng = np.random.default_rng(0)
+    spec = Spectrum(x, y + y2 + np.abs(rng.normal(0.0, 1e3, x.size)), rt=1.0, polarity=-1,
+                    is_profile=True)
+    calls = []
+    real = pipeline.refine_frame
+
+    def spy(*args, **kw):
+        out = real(*args, **kw)
+        calls.append((kw, [(c.mass, c.template_shift) for c in out[0]]))
+        return out
+
+    monkeypatch.setattr(pipeline, "refine_frame", spy)
+    params = pipeline.DeconvParams(compound_class="ps_rna", adduct_mode="iprp",
+                                   adduct_exclude=("TEA", "DIPEA", "HFIP"), charge_range=(2, 40),
+                                   mass_range=(1000.0, 60000.0), max_components=1)
+    pipeline.deconvolve_spectrum(spec, CombPredictor(z_max=40, instrument=ORBI), params, ORBI)
+    assert len(calls) >= 2
+    known = []
+    for kw, new in calls:
+        assert kw["known_masses"] == [m for m, _s in known]
+        assert len(kw["known_shifts"]) == len(known)
+        for (m, s), d in zip(known, kw["known_shifts"]):
+            assert abs(d - m * np.expm1(s)) < 1e-9 and abs(d) > 1e-4
+        known += new
+
+
+def test_the_walks_trial_is_held_by_the_cation_ladder_too():
+    """A candidate one sodium above a deep sodium form of an accepted species does not walk onto
+    that form: the trial is placed by the rules that placed the candidate it is compared with,
+    the cation-ladder rule included, and held at its window's edge it explains less. Placed on
+    its comb instead it would win, and the form would be fitted whole as the species."""
+    from lcmsdeconv.deconv.nnls_solve import fit_weights
+    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base
+    from lcmsdeconv.nn.grid import LogMzGrid
+
+    from .test_amounts import _comb_profile
+
+    parent, na = 5163.23, ADDUCTS["Na"].avg_mass
+    f4 = _on_ladder_mass(parent, 4)  # on the parent's comb moved by four sodium
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    x = np.arange(400.0, 2500.0, 0.002)
+    y = np.zeros_like(x)
+    for m, h in ((f4, 1e6), (f4 + na, 2e5)):
+        _x, yy = _comb_profile(m, (3, 4), 0.0, height=h, lo=400.0, hi=2500.0)
+        y += yy
+    observed = grid.resample_profile(x, y)
+    weights = fit_weights(observed, 50.0, grid.step, 70000.0)
+    states = lib.states()
+    read = f4 + na - 0.45  # the trial one sodium lower is read 0.45 Da light of f4
+    cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+    cand.template_shift = float(np.log1p(0.45 / read))  # its own comb
+    full = _fit_candidate(cand, observed.copy(), weights, grid, ORBI, "ps_rna", states,
+                          mz_range=(400.0, 2500.0))
+
+    def walk(ladder_of):
+        moved, _ = _recenter_base(cand, full, observed.copy(), weights, grid, ORBI, "ps_rna",
+                                  states, lib, (400.0, 2500.0), raw_mz=x, raw_int=y,
+                                  noise_sigma=50.0, resolution=70000.0, ladder_of=ladder_of)
+        return moved
+
+    assert walk(None) is not cand  # with no parent the trial takes its comb and wins
+    assert walk([(parent, 0.0)]) is cand
+
+
+def test_the_cation_ladder_verdict_does_not_depend_on_the_tooth():
+    """The comb is measured against the class pattern at the read mass; the pattern is quantized
+    (0.2 % bins) and its comb phase jumps at a bin's edge (0.0126 Da at 2502.39 Da). A tooth
+    across that edge is the same comb, and must get the same verdict as its neighbour."""
+    import math
+
+    from lcmsdeconv.chem.classes import _quantize
+    from lcmsdeconv.deconv.refine import (
+        ISOTOPE_DA,
+        _on_cation_ladder,
+        _template_phase,
+        _wrap_spacing,
+    )
+
+    na = ADDUCTS["Na"]
+    edge = math.exp((_quantize(2502.3) + 0.5) * 0.002)  # 2502.386 Da
+    read, comb = edge - 0.30, 0.437  # the near tooth lies across the edge, the other does not
+    assert _quantize(read) != _quantize(read + comb) and _quantize(read) == _quantize(
+        read + comb - ISOTOPE_DA)
+    # a parent on whose comb, moved by four sodium, the measured comb lies to 0.024 Da
+    measured = _template_phase(read, "ps_rna") + comb
+    ps = read - 4 * na.avg_mass + np.arange(-0.5, 0.5, 0.0005)
+    miss = [abs(_wrap_spacing(measured - _template_phase(p, "ps_rna") - 4 * na.mass + 0.024))
+            for p in ps]
+    parent = float(ps[int(np.argmin(miss))])
+    verdicts = {_on_cation_ladder(read, c, [(parent, 0.0)], "ps_rna", 1.0, 0.03)
+                for c in (comb, comb - ISOTOPE_DA)}
+    assert verdicts == {True}
