@@ -577,9 +577,9 @@ replayed stage by stage on the real runs, found three different failures behind 
    species are left alone as well: their masses are pulled by neighbouring forms by up to three
    quarters of a dalton, and the comb then takes the tooth one spacing off - NC + 3Na of the
    IP-HILIC NC run jumped from 0.56 % to 10.5 %, its two teeth fitting the envelope equally to
-   0.6 %. Above 4 kDa the two teeth's overlaps differ by 0.03-26 % on the four runs, and right and
-   wrong picks share that range - n-2's correct tooth wins by 2.5 and 2.9 %, FLP + K's wrong one by
-   0.75 % - so no margin rule separates them.
+   0.6 %. On the final code, which takes the better tooth, the two teeth's overlaps above 4 kDa
+   differ by 0.03-26 % on the four runs, and right and wrong picks share that range - n-2's correct
+   tooth wins by 2.5 and 2.9 %, FLP + K's wrong one by 0.75 % - so no margin rule separates them.
 
 Now n-2 is reported in both runs (0.08 % under IP-RPLC against 0.15 %, 0.14 % under IP-HILIC
 against 0.11 %), 1883.3 at 0.08 % (0.09-0.10 % by extracted ions), all 20 paper species are found,
@@ -600,8 +600,9 @@ and adduct forms no longer walked to their base; the trial is placed by the same
 tooth quantifies species whose templates the edge had misplaced: a 5129.63 Da species of the
 IP-RPLC NC run, whose template the comb puts at 5130.18 Da (two phosphorothioates as phosphates,
 32.1 Da below NC; the reported mass is 0.5 Da lighter), went from 0.006 % at 17.90 min to 0.36 % at
-its extracted-ion apex, 1.3 times its extracted-ion reference, and a 1900.64 Da shortmer reported
-as two 0.000 % slivers (section 15) to 0.11 %, 0.84 times its reference.
+its extracted-ion apex, 1.3 times its extracted-ion reference, and a 1900.08 Da shortmer (its
+template at 1900.64 Da) reported as two 0.000 % slivers (section 15) to 0.11 %, 0.84 times its
+reference.
 
 A second review found that version still reading what it should not, and the better tooth taking
 false species along with the real ones; each finding is fixed, and each fix but three small ones
@@ -616,9 +617,10 @@ that fails without it:
   those found beside them for the fit - and merged duplicates bring their gate's verdicts. A
   6752.33 Da species, whose templates an isotope comb of the wrong charge under a rejected state
   had pulled to the far edge of the window, is now reported (0.08 %, EIC-confirmed; its templates
-  sit at the near edge, held there by the adduct-form exemption), and n-1's +Na+K form, 0.004 %
-  before, is a 6507.42 Da report of 0.023 %, unconfirmed, placed on a comb it no longer reads
-  against a rejected state.
+  sit at the near edge, held there by the adduct-form exemption), and a report labelled n-1's +Na+K
+  form before (6507.77 Da, 0.004 %; by its isotopes n-1 + 58.0 Da, 2 Da short of that form) is a
+  6507.42 Da report of 0.023 % (1.3 times its extracted-ion reference), unconfirmed, placed on a
+  comb it no longer reads against a rejected state.
 - "At least two states agree" counted a state too weak to be checked: a second state with 4-7 % of
   the weight, 0.12-0.22 Da off the combined phase, let a comb read off one window through (2213.17
   Da of the IP-RPLC NC run, whose z = 3 holds 5.6 %, went from 0.028 % to 0.039 %). A weak state
@@ -648,20 +650,21 @@ section's changes).
 
 A third review checked every report the whole section had moved against the runs themselves, with
 extracted-ion references and the positions of the isotopologues. Under IP-RPLC the moves were
-towards the references: weak shortmers from 0.00-0.73 to 0.83-1.55 times theirs, 5364.15 Da from
-0.25 % to 0.58 % against 0.53 % (its extracted-ion check now fails it: its apex ties between two
-scans, and from the earlier one the check reaches a stronger form's tail). Under IP-HILIC the comb
-had also placed sodium and potassium forms deeper than the exemption's three of a type: they share
+towards the references but one - a 2980.4 Da species of 0.008 % lost its 0.0013 % report
+(`benchmarks.md`) - weak shortmers from 0.00-0.73 to 0.83-1.55 times theirs, 5364.15 Da from 0.25 %
+to 0.58 % against 0.53 % (its extracted-ion check now fails it: its apex ties between two scans,
+and from the earlier one the check reaches a stronger form's tail). Under IP-HILIC the comb had
+also placed sodium and potassium forms deeper than the exemption's three of a type: they share
 their parent's comb exactly, and fitted whole DA-NC + 4Na went from 0.79 % to 1.15 % - taking part
 of DA-NC's own sodium ladder with it - NC + 6Na + K from 0.14 % to 0.44 %, and a shortmer's +4Na
 form, folded before, was reported at 0.065 %. Such a form now keeps the edge where its comb lies
 within 0.03 Da of an accepted species' comb moved by the ladder's monoisotopic shift, its mass
-within 1 Da of that species plus the ladder, and the region evidences sodium; the three are back at
-their earlier amounts, still reported apart, with nothing else on the four runs or the synthetic
-presets changing. Without the sodium condition a 4949 Da report of the IP-RPLC NC run, where no
-sodium is evidenced, fell back to its edge amount: its tooth lies on NC - dG's comb moved by six
-sodium, to 0.003 Da, by chance. The four runs now give 228 reports, 115 EIC-confirmed and 51
-unconfirmed.
+within 1 Da of that species plus the ladder, and the region evidences sodium; DA-NC + 4Na and NC +
+6Na + K are back at their earlier amounts, still reported apart, and the shortmer's +4Na form is
+folded into its parent again, with nothing else on the four runs or the synthetic presets changing.
+Without the sodium condition a 4949 Da report of the IP-RPLC NC run, where no sodium is evidenced,
+fell back to its edge amount: its tooth lies on NC - dG's comb moved by six sodium, to 0.003 Da, by
+chance. The four runs now give 228 reports, 115 EIC-confirmed and 51 unconfirmed.
 
 The lesson: a template must be placed by evidence the species owns. A slide over everything nearby
 finds the best fit to whatever is there; the gate's per-charge measurements already say which

@@ -351,17 +351,18 @@ strongest charge states share their m/z windows with other signal can fail it.
 | before the fix, LadderNet stage 2, corrected mixture | 12 / 20 | 4 / 29 | 61 | 4 | 2 | 12 | 27 |
 | after the resampling fix, comb | 15 / 20 | 15 / 29 | 198 | 21 | 4 | 100 | 43 |
 | after the resampling fix, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
-| amounts made comparable, comb | 18 / 20 | 23 / 29 | 227 | 13 | 5 | 114 | 54 |
+| amounts made comparable, three reviews, comb | 18 / 20 | 23 / 29 | 227 | 13 | 5 | 114 | 54 |
 | **now, comb** | **20 / 20** | **23 / 29** | **228** | **13** | **5** | **115** | **51** |
 
 (Every row but the first two uses the extracted-ion check described above; those two were scored
 with its first version. The resampling fix and the recalibration it needed are `lessons.md`,
-section 14; "amounts made comparable" adds consistent amounts, region boundaries that no longer cut
-species and a region threshold of three times the TIC's noise (section 15), and "now" templates
-placed by the candidate's own isotope comb, template placement and the adduct walk read on its own
-charge states, a comb of half the charge no longer counted as support and deep sodium and potassium
-forms recognised by their comb (section 16); its one charge harmonic is counted in no column. The
-LadderNets were trained before the resampling fix and are not re-measured.)
+section 14; "amounts made comparable, three reviews" adds consistent amounts, region boundaries
+that no longer cut species and a region threshold of three times the TIC's noise, with that
+section's review fixes (section 15), and "now" templates placed by the candidate's own isotope
+comb, template placement and the adduct walk read on its own charge states, a comb of half the
+charge no longer counted as support and deep sodium and potassium forms recognised by their comb
+(section 16); its one charge harmonic is counted in no column. The LadderNets were trained before
+the resampling fix and are not re-measured.)
 
 Before the fix no report of any variant was a charge harmonic (half, a third, double or triple a
 found species' mass at its time), which the scoring checks for before the extracted-ion test; now
@@ -579,21 +580,25 @@ What is still wrong on these runs:
   moves a 6660.16 Da report's apex from 19.17 to 19.32 min (19.21 by extracted ions) and lowers the
   conjugate's all-forms shares by 2-4 % of their values.
 - Adduct forms beyond the library (more than two of a type, three in all) are fitted with no
-  species, and are reported apart at what their templates, kept at the window's edge, explain.
-  Under IP-HILIC NC's +5Na and +3Na+K forms, which co-elute with it and follow its sodium load, are
-  a 5270.85 Da report at 0.21 %, unconfirmed (about 4 % of NC by a fit of NC's sodium ladder and by
-  extracted ions): its mass, a blend of the two, lies 1.4 Da from either, beyond the cation-ladder
-  rule's 1 Da, and the adduct-form exemption holds it at the edge only through the mass NC + 3Na
-  was walked from, with 0.22 Da to spare (placed on its comb it was fitted whole, at 3.3 %). DA-NC
-  + 4Na (5250.45 Da, 0.79 %; about 1 % by a fit of the ladder) and NC + 6Na + K (5331.67 Da,
-  0.14 %, unconfirmed) are held there by the cation-ladder rule. 4842's +2Na and +3Na forms are two
-  reports (0.20 and 0.25 %, against one of 0.28 % before section 16): without its rejected z = 5
-  the +2Na form's template explains less than the +3Na form's, and the fold takes no stronger form
-  into a weaker one. Sodium forms of a 5279.76 Da species seen only under IP-HILIC (NC + 117.5 Da)
-  are reported apart too (5324.21 Da, 0.17 %). PO-NC's sodium ladder is read 0.6-1.5 Da light,
-  pulled by NC's sodium forms 6 Da below it: its +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of
-  the ladder), misses the fold by 0.02 Da, and its +4Na form, 5232.61 Da at 0.45 %, unconfirmed,
-  has no folded parent within reach.
+  species, and are reported apart at what their templates explain: held at the window's edge by the
+  adduct-form exemption or the cation-ladder rule (the 5270.85, 5250.45 and 5331.67 Da reports
+  below), at an optimum inside the window (4842 + 3Na), or on their own comb where neither applies
+  (PO-NC + 4Na). Under IP-HILIC NC's +5Na and +3Na+K forms, which co-elute with it and follow its
+  sodium load, are a 5270.85 Da report at 0.21 %, unconfirmed (about 4 % of NC by a fit of NC's
+  sodium ladder and by extracted ions): its mass, a blend of the two, lies 1.4 Da below the +5Na
+  form and 4.5 Da above the +3Na+K form, beyond the cation-ladder rule's 1 Da, and the adduct-form
+  exemption holds it at the edge only through the mass NC + 3Na was walked from, with 0.22 Da to
+  spare (placed on its comb it was fitted whole, at 3.3 %). DA-NC + 4Na (5250.45 Da, 0.79 %;
+  0.8-1.0 % by two fits of the sodium ladder, with the NC + 4Na under it) and NC + 6Na + K (5331.67
+  Da, 0.14 %, unconfirmed) are held there by the cation-ladder rule. 4842's +2Na and +3Na forms are
+  two reports (0.20 and 0.25 %, against one of 0.28 % before section 16): without its rejected z =
+  5 the +2Na form's template explains less than the +3Na form's, and the fold takes no stronger
+  form into a weaker one. Sodium forms of the deaminated form of a 5279.76 Da species seen only
+  under IP-HILIC (NC + 117.5 Da), which elutes with DA-NC, are reported apart too (5324.21 Da at
+  12.83 min, 0.17 %). PO-NC's sodium ladder is read 0.6-1.5 Da light, pulled by NC's sodium forms 6
+  Da below it: its +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of the ladder), misses the fold
+  by 0.02 Da, and its +4Na form, 5232.61 Da at 0.45 %, unconfirmed, has no folded parent within
+  reach.
 - A 915 Da species (0.4-0.5 % of NC under IP-RPLC, 1.1-1.6 % under IP-HILIC) lies below the
   method's 1 kDa mass range and is not reported; read at twice its charge it was reported as an
   1831 Da species until section 16's parity rule. That rule also lets a non-covalent dimer of the

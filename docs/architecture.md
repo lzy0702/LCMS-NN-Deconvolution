@@ -203,13 +203,13 @@ on it. Of its two teeth either side of the measured mass the one whose template 
 better is taken: a mass read more than half a spacing off has its nearest tooth on the wrong side,
 and the edge between them fits neither. The comb is not consulted where the overlap peaks inside
 the window: on the wrong tooth for a mass read 0.7-1.3 Da off, or between the teeth on a weak
-species' noise (1908.3 and 2887.4 of the IP-RPLC NC run, read 0.53 Da light, are missed that way;
-`benchmarks.md`). A candidate whose gate measured another mass's envelopes (one the adduct dedupe
-renamed to a lighter partner measured the stronger form's) is left at the edge, and so is an adduct
-form of an accepted species - within 1 Da of its mass, or of a mass the adduct walk moved a
-candidate from (itself a form of the species it joined), plus an adduct state, up to three of a
-type - whose mass its neighbouring forms pull by up to three quarters of a dalton and whose two
-teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb such a form is
+species' noise (1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, are missed
+that way; `benchmarks.md`). A candidate whose gate measured another mass's envelopes (one the
+adduct dedupe renamed to a lighter partner measured the stronger form's) is left at the edge, and
+so is an adduct form of an accepted species - within 1 Da of its mass, or of a mass the adduct walk
+moved a candidate from (itself a form of the species it joined), plus an adduct state, up to three
+of a type - whose mass its neighbouring forms pull by up to three quarters of a dalton and whose
+two teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb such a form is
 fitted whole: NC's +5Na and +3Na+K forms, beyond the two of a type the fit allows and the three the
 exemption covers, were reported as a 3.3 % impurity until the mass NC + 3Na was walked from
 anchored them. Sodium and potassium forms deeper still, four to eight in all, are recognised by

@@ -370,7 +370,10 @@ def _on_cation_ladder(mass: float, comb_da: float, ladder_of, compound_class: st
     from ..chem.adducts import ADDUCTS
 
     na, k = ADDUCTS["Na"], ADDUCTS["K"]
-    phase_c = _template_phase(mass + comb_da, compound_class)
+    # the comb as comb_phase_shift measured it, against the class template at the read mass: the
+    # template at mass + comb_da can come from the next 0.2 % pattern bin, whose comb sits up to
+    # 0.09 Da elsewhere, and the verdict would depend on which of the comb's teeth was taken
+    phase_c = _template_phase(mass, compound_class) + comb_da
     for mp, sp in ladder_of:
         if mass <= mp:
             continue
