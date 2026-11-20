@@ -571,14 +571,13 @@ What is still wrong on these runs:
   reported at 0.0003 % at 11.94 min, where its windows are empty. 1883.3 under IP-HILIC is dropped
   by the co-elution test, a foreign ion lying in its z = 3 window.
 - Where the comb is taken, the overlaps of its two teeth differ by 0.03-26 % above 4 kDa (by less
-  than 1 % for two of 32 candidates on the four runs; and below 4 kDa by as little as 1.3 %, for a
-  2291 Da species), a weak basis for the choice: FLP + K of the IP-RPLC conjugate run is placed one
-  spacing light (by 0.75 %; the adduct-form exemption knows only the adducts a region evidences,
-  sodium and DIPEA there), which moves a 6660.16 Da report's apex from 19.17 to 19.32 min (19.21 by
-  extracted ions) and lowers the conjugate's all-forms shares by 2-4 % of their values. A 4949.4 Da
-  report of the IP-RPLC NC run (0.03 % of NC by its own envelope) keeps the window's edge and
-  0.001 %, as before section 16: the tooth its overlap picks, by 2.3 %, one spacing light, lies on
-  the comb of NC - dG moved by six sodium.
+  than 1 % for two of 30 candidates on the four runs; and below 4 kDa by as little as 1.3 %, for a
+  2291 Da species), a weak basis for the choice: 4949.38 Da of the IP-RPLC NC run is placed on the
+  tooth of a species one spacing lighter (by 2.3 %; its amount, 0.026 %, matches its own
+  envelope's), and FLP + K of the IP-RPLC conjugate run one spacing light (by 0.75 %; the
+  adduct-form exemption knows only the adducts a region evidences, sodium and DIPEA there), which
+  moves a 6660.16 Da report's apex from 19.17 to 19.32 min (19.21 by extracted ions) and lowers the
+  conjugate's all-forms shares by 2-4 % of their values.
 - Adduct forms beyond the library (more than two of a type, three in all) are fitted with no
   species, and are reported apart at what their templates, kept at the window's edge, explain.
   Under IP-HILIC NC's +5Na and +3Na+K forms, which co-elute with it and follow its sodium load, are
@@ -586,14 +585,15 @@ What is still wrong on these runs:
   extracted ions): its mass, a blend of the two, lies 1.4 Da from either, beyond the cation-ladder
   rule's 1 Da, and the adduct-form exemption holds it at the edge only through the mass NC + 3Na
   was walked from, with 0.22 Da to spare (placed on its comb it was fitted whole, at 3.3 %). DA-NC
-  + 4Na (5250.45 Da, 0.79 %) and NC + 6Na + K (5331.67 Da, 0.14 %, unconfirmed) are held by the
-  cation-ladder rule. 4842's +2Na and +3Na forms are two reports (0.20 and 0.25 %, against one of
-  0.28 % before section 16): without its rejected z = 5 the +2Na form's template explains less than
-  the +3Na form's, and the fold takes no stronger form into a weaker one. Sodium forms of a 5279.76
-  Da species seen only under IP-HILIC (NC + 117.5 Da) are reported apart too (5324.21 Da, 0.17 %).
-  PO-NC's sodium ladder is read 0.6-1.5 Da light, pulled by NC's sodium forms 6 Da below it: its
-  +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of the ladder), misses the fold by 0.02 Da, and
-  its +4Na form, 5232.61 Da at 0.45 %, unconfirmed, has no folded parent within reach.
+  + 4Na (5250.45 Da, 0.79 %; about 1 % by a fit of the ladder) and NC + 6Na + K (5331.67 Da,
+  0.14 %, unconfirmed) are held there by the cation-ladder rule. 4842's +2Na and +3Na forms are two
+  reports (0.20 and 0.25 %, against one of 0.28 % before section 16): without its rejected z = 5
+  the +2Na form's template explains less than the +3Na form's, and the fold takes no stronger form
+  into a weaker one. Sodium forms of a 5279.76 Da species seen only under IP-HILIC (NC + 117.5 Da)
+  are reported apart too (5324.21 Da, 0.17 %). PO-NC's sodium ladder is read 0.6-1.5 Da light,
+  pulled by NC's sodium forms 6 Da below it: its +Na form, 5167.57 Da at 1.15 % (1.07 % by a fit of
+  the ladder), misses the fold by 0.02 Da, and its +4Na form, 5232.61 Da at 0.45 %, unconfirmed,
+  has no folded parent within reach.
 - A 915 Da species (0.4-0.5 % of NC under IP-RPLC, 1.1-1.6 % under IP-HILIC) lies below the
   method's 1 kDa mass range and is not reported; read at twice its charge it was reported as an
   1831 Da species until section 16's parity rule. That rule also lets a non-covalent dimer of the

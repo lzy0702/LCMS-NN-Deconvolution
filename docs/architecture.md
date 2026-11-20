@@ -213,26 +213,28 @@ teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb 
 fitted whole: NC's +5Na and +3Na+K forms, beyond the two of a type the fit allows and the three the
 exemption covers, were reported as a 3.3 % impurity until the mass NC + 3Na was walked from
 anchored them. Sodium and potassium forms deeper still, four to eight in all, are recognised by
-their comb instead (`refine._on_cation_ladder`): such a form shares its parent's isotope comb
-exactly, moved by the ladder's monoisotopic shift, so a candidate whose comb falls within 0.03 Da
-of an accepted species' comb so moved, its mass within 1 Da of that species plus the ladder, keeps
-the edge as well. Placed on their combs DA-NC + 4Na and NC + 6Na + K of the IP-HILIC NC run were
-fitted whole (1.15 % and 0.44 % of NC, 0.79 % and 0.14 % at the edge), the first taking part of
-DA-NC's own sodium ladder with it. A species of another composition near such a mass lies on that
-comb by chance about one time in sixteen. Searching the overlap itself past the edge instead lets a
-candidate slide onto whatever lies there: one the adduct dedupe had renamed to a weak partner 43.5
-Da (two sodium) lighter took the IP-RPLC main species' peaks as its +2Na form, and the main species
-was lost. The overlap is computed in quarter-bin steps and the optimum placed between them by a
-parabola through the best step and its neighbours, around no shift too unless a step does clearly
-better: at 140 000 (m/z 200) an Orbitrap peak at m/z 1700 is narrower than a 2e-5 bin, and the main
-species of the IP-RPLC conjugate run is fitted 2 % low with its templates an eighth of a bin off
-its peaks, 9 % a quarter bin off and 28 % half a bin off. The shift moves the templates, not the
-reported mass, which is measured from the raw envelopes as below; when the mass changes afterwards
-(that measurement, or two copies of one species merged) the shift is adjusted so that the templates
-stay where the alignment put them, and a candidate re-centred from an adducted form onto its base
-form is aligned afresh. Before this, re-measuring the mass moved the templates with it, and a
-re-centred candidate kept the shift found for its adducted form; on that main species, re-centred
-from an adducted form, the two cost 5 % of its amount (with only the first corrected, 20 %).
+their comb instead where the region evidences sodium (`refine._on_cation_ladder`): such a form
+shares its parent's isotope comb exactly, moved by the ladder's monoisotopic shift, so a candidate
+whose comb falls within 0.03 Da of an accepted species' comb so moved, its mass within 1 Da of that
+species plus the ladder, keeps the edge as well. Placed on their combs DA-NC + 4Na and NC + 6Na + K
+of the IP-HILIC NC run were fitted whole (1.15 % and 0.44 % of NC, 0.79 % and 0.14 % at the edge),
+the first taking part of DA-NC's own sodium ladder with it. A species of another composition near
+such a mass lies on that comb by chance about one time in sixteen - a 4949 Da report of the IP-RPLC
+NC run, where no sodium is evidenced, lies on NC - dG's comb moved by six sodium to 0.003 Da.
+Searching the overlap itself past the edge instead lets a candidate slide onto whatever lies there:
+one the adduct dedupe had renamed to a weak partner 43.5 Da (two sodium) lighter took the IP-RPLC
+main species' peaks as its +2Na form, and the main species was lost. The overlap is computed in
+quarter-bin steps and the optimum placed between them by a parabola through the best step and its
+neighbours, around no shift too unless a step does clearly better: at 140 000 (m/z 200) an Orbitrap
+peak at m/z 1700 is narrower than a 2e-5 bin, and the main species of the IP-RPLC conjugate run is
+fitted 2 % low with its templates an eighth of a bin off its peaks, 9 % a quarter bin off and 28 %
+half a bin off. The shift moves the templates, not the reported mass, which is measured from the
+raw envelopes as below; when the mass changes afterwards (that measurement, or two copies of one
+species merged) the shift is adjusted so that the templates stay where the alignment put them, and
+a candidate re-centred from an adducted form onto its base form is aligned afresh. Before this,
+re-measuring the mass moved the templates with it, and a re-centred candidate kept the shift found
+for its adducted form; on that main species, re-centred from an adducted form, the two cost 5 % of
+its amount (with only the first corrected, 20 %).
 
 The overlap search and the adduct walk read only the candidate's own charge states
 (`refine.own_charges`): those the gate passed, with those it passed for a duplicate merged in by
