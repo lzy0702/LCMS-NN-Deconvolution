@@ -490,10 +490,50 @@ took that apart:
    the valleys where two regions meet; it now applies only to a region's unshared sides. The
    scan on a shared boundary belongs to both regions, and adding its two readings put the PS-to-PO
    impurity's apex on the boundary; it is counted once.
-5. **What did not work.** Sliding templates over half an isotope spacing instead of 1.5 bins
+5. **A review found defects in the fixes themselves.** Templates were aligned over 1.5 grid
+   bins: at the 2·10⁻⁵ grid that is 0.04 Da for a 1.2 kDa shortmer, too little to reach its
+   peaks, so its amount came out at 0.01 % instead of 4.2 %; the window is now 0.3 Da, whatever
+   the mass, and four more SI-listed impurities are found. The re-centring walk stepped by
+   monoisotopic shifts and judged where it landed by one charge state, which a neighbour's
+   isotopologue can carry; it now steps by average shifts and takes the median of the charge
+   states that agree. Adduct forms were folded after region pieces were merged, so a form split
+   over two regions was compared with a merged parent whose trace no longer matched; pieces are
+   now folded first, and the merge keeps one reading per scan. A fold within a dalton by any
+   library adduct put a +201.4 Da impurity under its parent as two TEA and a peptide's oxidation
+   under it as ammonium: the tolerance now follows the instrument (2.5 peak widths, at least
+   0.6 Da), mobile-phase adducts fold only where some region of the run shows them, and a
+   difference that a known modification of the species' class explains as well (an n+1 among
+   them) is not folded. Merging region pieces joined two 4842 Da isomers eluting either side of
+   a boundary (12.80 and 13.30 min); pieces of comparable height with a deep valley between them
+   stay apart. Smaller fixes: the apex is read on the base form's trace, species ids are unique
+   over every linked track, the region sum is a sweep over the union axis instead of one pass
+   per scan (8.5 times faster), and training scans are thresholded as vendor software writes
+   them, as segments around every point above the threshold. On synthetic runs this costs up to
+   four false species per preset, most of them artifacts the permissive fold had hidden under
+   adduct types the generator never added (`benchmarks.md`). A second review found the sweep
+   turning a repeated m/z (converted files can repeat a point, vendor files do not) into NaN for
+   the rest of the axis and leaving rounding residues where no scan measured anything, a region
+   of profile and centroided scans gridded as centroids whenever its largest scan was centroided,
+   scans calibrated a few ppm apart added index by index, and training segments padded to seven
+   points where the real ones are five or six. It also found the valley test reading frames
+   without a reading (a gap the linking bridged, a frame whose fit gave the species nothing) as
+   valleys, so that one band was reported twice; merged adduct forms carrying labels beyond the
+   library's limits (+3K where two of a type are listed), which were neither fitted frame by
+   frame nor judged at their own mass; a fold's flag lost when region pieces merge; species of
+   one mass merged across polarities whatever their retention times; and adduct types given as
+   formulas, which the documentation offers, failing outright. Fixed, these change one real-run
+   report (a 1900.08 Da piece joins its species) and no synthetic one but a legacy-generator
+   duplicate.
+6. **What did not work.** Sliding templates over half an isotope spacing instead of 1.5 bins
    (the IP-RPLC main species fell to 69 % of another report), adducts forced into every region
-   (above), and one template bank over abutting regions (the deaminated NC, 0.98 Da above NC,
-   took a quarter of NC).
+   (above), one template bank over abutting regions (the deaminated NC, 0.98 Da above NC,
+   took a quarter of NC), following the alignment overlap past the 0.3 Da window's edge to
+   half an isotope spacing (a 1.9 kDa shortmer read 0.34 Da light was quantified, but fourteen
+   candidates walked, some onto the peaks of the IP-RPLC main species' adduct forms, and the
+   main species was lost), and folding by the whole adduct library rather than the adducts a
+   run shows: it takes back one synthetic false species per oligonucleotide preset, and on the
+   IP-HILIC NC run, where no region shows an amine and NC + TEA is not reported, folds a 1.9 %
+   species 138.75 Da above NC into it as TEA + potassium.
 
 The lesson extends section 5: an amount is only comparable when every species' amount is made
 the same way, and a comparison against a reference is only as good as the reference.

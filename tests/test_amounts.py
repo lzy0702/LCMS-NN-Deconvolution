@@ -349,3 +349,105 @@ def test_isomers_either_side_of_a_boundary_stay_apart():
     c = _species(2, 4841.90, t1, 50 * np.exp(-0.5 * ((t1 - 13.10) / 0.15) ** 2))
     d = _species(3, 4841.78, t2, 50 * np.exp(-0.5 * ((t2 - 13.10) / 0.15) ** 2))
     assert len(merge_adjacent_species([c, d])) == 1
+
+
+def test_alignment_does_not_slide_onto_a_neighbour_half_a_dalton_away():
+    """Templates move 0.3 Da at most, even where the overlap keeps rising beyond: following it
+    to half an isotope spacing let candidates beside the IP-RPLC main species slide onto its
+    adduct forms' peaks, and the main species was lost."""
+    mass = 6831.56
+    grid = LogMzGrid(1000.0, 2500.0, 2e-5, -1)
+    spectrum = np.zeros(grid.size)
+    for z in (3, 4, 5):
+        t = build_template(mass + 0.46, z, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 1e6 * t.values
+    s = align_template(Candidate(mass, 1.0, {3, 4, 5}), spectrum, grid, ORBI, "ps_rna")
+    assert abs(mass * np.expm1(s)) <= 0.3 + 1e-9
+
+
+def test_scans_without_a_reading_do_not_split_one_band():
+    """The linking leaves zeros where it bridged a gap, and three frames whose fit gave a
+    species nothing end its track: neither is a valley between two elution bands."""
+    t1, t2 = np.linspace(12.0, 13.14, 30), np.linspace(13.14, 13.9, 20)
+    band = lambda t: 50 * np.exp(-0.5 * ((t - 13.0) / 0.15) ** 2)  # noqa: E731
+    ya = band(t1)
+    ya[-4] = 0.0  # a bridged gap near the boundary
+    a = _species(0, 4841.90, t1, ya)
+    b = _species(1, 4841.78, t2, band(t2))
+    assert len(merge_adjacent_species([a, b])) == 1
+    t = np.round(np.arange(9.0, 10.2, 0.04), 6)
+    y = 100 * np.exp(-0.5 * ((t - 9.5) / 0.12) ** 2)
+    k = int(np.argmax(y))
+    ya = y[:k + 5].copy()
+    ya[k + 3:] = 0.0  # the track bridged two of the three empty frames, then ended
+    a = _species(0, 3208.52, t[:k + 5], ya)
+    b = _species(1, 3208.52, t[k + 6:], y[k + 6:])
+    out = merge_adjacent_species([a, b])
+    assert len(out) == 1 and abs(out[0].rt_apex - 9.5) < 0.03
+
+
+def test_combined_adduct_labels_beyond_the_library_are_fitted_and_judged_at_their_mass():
+    """A component merged with its +2K form carries a +3K column where the library lists two
+    of a type at most: that column is judged at PO + 3K, and fitted frame by frame."""
+    from lcmsdeconv.deconv.refine import _merge_adduct_components, drop_coincident_adducts
+    from lcmsdeconv.features.quantify import TemplateBank
+
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"), max_per_type=2,
+                                  max_total=3)
+    k = ADDUCTS["K"].avg_mass
+    flp = Component(6793.98, 100.0, charges={4: 100.0}, adducts={"base": 100.0},
+                    columns={(4, ""): 100.0})
+    po = Component(6777.92, 10.0, charges={4: 10.0}, adducts={"base": 10.0},
+                   columns={(4, ""): 10.0})
+    po2k = Component(6777.92 + 2 * k, 3.0, charges={4: 3.0}, adducts={"base": 2.0, "+K": 1.0},
+                     columns={(4, ""): 2.0, (4, "+K"): 1.0})
+    comps = [flp, po, po2k]
+    _merge_adduct_components(comps, lib)
+    po_m = next(c for c in comps if abs(c.mass - 6777.92) < 0.1)
+    assert (4, "+3K") in po_m.columns and "+3K" not in {s.label for s in lib.states()}
+    # PO + 3K is FLP + Na + 2K to 0.05 Da: it goes, as PO + 2K (FLP + Na + K) does
+    out = drop_coincident_adducts(comps, lib)
+    po_out = next(c for c in out if abs(c.mass - 6777.92) < 0.1)
+    assert set(po_out.adducts) == {"base"}
+    grid = LogMzGrid(1000.0, 2500.0, 2e-5, -1)
+    comp = Component(6777.92, 11.0, charges={4: 11.0}, adducts={"base": 10.0, "+3K": 1.0},
+                     columns={(4, ""): 10.0, (4, "+3K"): 1.0}, compound_class="ps_rna")
+    bank = TemplateBank([comp], grid, ORBI, lib, compound_class="ps_rna")
+    assert (0, "+3K") in bank.keys
+
+
+def test_a_fold_on_the_weaker_region_piece_is_still_reported():
+    """The fold flag of the piece that took a form apart survives the merge of the pieces."""
+    na = ADDUCTS["Na"].avg_mass
+    ta, tb = np.linspace(10.0, 10.4, 11), np.linspace(10.4, 10.8, 11)
+    prof = lambda t: np.exp(-0.5 * ((t - 10.30) / 0.1) ** 2)  # noqa: E731
+    a = _species(0, 5162.25, ta, 100 * prof(ta))
+    b = _species(1, 5162.27, tb, 100 * prof(tb))
+    b_na = _species(2, 5162.27 + na, tb, 10 * prof(tb))
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"))
+    out = merge_adjacent_species(fold_adduct_forms([a, b, b_na], lib))
+    assert len(out) == 1
+    assert any(f.startswith("adduct forms reported apart counted with it") for f in out[0].flags)
+
+
+def test_isomers_seen_in_opposite_polarities_at_different_times_stay_apart():
+    from lcmsdeconv.features.link import merge_species_across_polarity
+
+    t = np.linspace(3.0, 11.0, 201)
+
+    def sp(sid, mass, pol, apex):
+        y = 100 * np.exp(-0.5 * ((t - apex) / 0.1) ** 2)
+        return Species(sid, mass, "average", pol, "small_molecule", t, y, {"base": y.copy()},
+                       {1: float(y.sum())})
+
+    assert len(merge_species_across_polarity([sp(0, 302.115, -1, 4.0),
+                                              sp(1, 302.118, 1, 10.0)])) == 2
+    both = merge_species_across_polarity([sp(0, 302.115, -1, 4.0), sp(1, 302.118, 1, 4.02)])
+    assert len(both) == 1 and "also seen in" in both[0].flags[-1]
+
+
+def test_an_adduct_given_as_a_formula_has_states():
+    lib = AdductLibrary.from_mode("iprp", -1, include=("C7H17N",), max_per_type=2, max_total=2)
+    st = lib.state_of("+2C7H17N")
+    assert st is not None and abs(st.mass - 2 * 115.1361) < 0.01
+    assert "+2C7H17N" in {s.label for s in lib.states()}

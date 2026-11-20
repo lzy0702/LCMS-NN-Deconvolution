@@ -119,7 +119,10 @@ later run on; that mismatch is the most common way a network that trains well fa
 The same applies to the resampling: a thresholded segment's edge point once stood for half the
 gap beside it, in training as at run time. Since that was fixed (`lessons.md`, section 14) the
 grid views differ, and models trained before the fix - the CPU `proof` LadderNets and any GPU
-run started before it - must be retrained.
+run started before it - must be retrained. So must models trained before training scans were
+thresholded as vendor software writes them (segments of at least five points around every point
+above the threshold; earlier, noise points were kept one by one, half the segments of a training
+scan were single points, and its noise level differed from a real scan's by up to threefold).
 
 ## Checks before a long run
 

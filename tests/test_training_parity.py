@@ -52,3 +52,23 @@ def test_comb_does_not_wrap_window_edges():
     w[10:20] = 1000.0  # a peak near the left edge only
     feats = featurize(w, 1.0, step, z_max=64)
     assert feats[2, -500:].max() == 0.0
+
+
+def test_training_scans_are_thresholded_into_segments_of_five_points_or_more():
+    """As in the real Thermo runs, no thresholded training scan holds a segment shorter than
+    five points (two points either side of each point above the threshold)."""
+    from lcmsdeconv.core.profile import gap_mask
+
+    cfg = SynthConfig(classes=[ClassConfig("ps_rna", (4000.0, 12000.0))], mode="iprp",
+                      polarity=-1, crop_size=8192)
+    fs = generate_frame(cfg, np.random.default_rng(4))
+    short = total = 0
+    for mz, _y in fs.meta["scans"]:
+        if mz.size < 2:
+            continue
+        cuts = np.flatnonzero(gap_mask(mz)) + 1
+        lengths = np.diff(np.concatenate([[0], cuts, [mz.size]]))
+        inner = lengths[1:-1]  # the first and last can be cut by the axis ends
+        short += int(np.sum(inner < 5))
+        total += inner.size
+    assert total > 100 and short == 0

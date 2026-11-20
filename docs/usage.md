@@ -93,7 +93,7 @@ mobile phase cannot produce removes the ambiguity.
 
 `species.csv` and the report's species table give, per species: mass, difference from the main
 species, retention time, area of its base form (`area`) and of every adduct form resolved with it
-(`area_all_forms`), percentage of the deconvolved ion signal (base forms compared), charge range,
+(`area_all_forms`), percentage of the deconvolved base-form signal ("% (base forms)"), charge range,
 mass spread across charge states (a quality measure — a real species agrees to a few parts per
 million), adduct fractions, and the modification that matches the mass difference. Adduct forms
 that were reported apart and belong to a co-eluting species are counted with it and listed in its

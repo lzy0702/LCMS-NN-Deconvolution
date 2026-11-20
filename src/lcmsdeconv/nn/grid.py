@@ -173,9 +173,11 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     deconvolve_spectrum` and the training-frame renderer both call this one function, so the
     network's input statistics cannot drift apart between training and use.
 
-    ``frames``, the profile scans a summed spectrum was made of (``Run.sum_frames`` keeps
-    them), are resampled one by one and added when their axes differ: each scan's own axis
-    shows where its gaps are, which the union of many axes does not.
+    ``frames``, the scans a summed spectrum was made of (``Run.sum_frames`` keeps them), are
+    placed one by one and added when their axes differ and any of them is a profile scan: each
+    profile scan is resampled on its own axis, which shows where its gaps are (the union of
+    many axes does not), and each centroided scan is drawn with the line shape - whichever kind
+    of scan the sum was labelled after.
     """
     from ..chem.instrument import InstrumentModel, estimate_noise_sigma
 
@@ -194,9 +196,9 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
     if hi <= lo * 1.01:
         lo, hi = 50.0, mz_max
     grid = LogMzGrid(lo, hi, step, polarity)
-    if is_profile is False:
-        observed = grid.render_centroids(mz, intensity, instrument or InstrumentModel("tof", 30000.0))
-    elif frames and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames):
+    by_scan = (bool(frames) and any(f.is_profile is not False for f in frames)
+               and not all(f.mz.size == mz.size and np.array_equal(f.mz, mz) for f in frames))
+    if by_scan:
         # scan by scan: profile scans resampled on their own points, centroided ones drawn
         observed = np.zeros(grid.size, dtype=np.float64)
         for f in frames:
@@ -205,6 +207,8 @@ def spectrum_to_grid(mz: np.ndarray, intensity: np.ndarray, polarity: int, step:
                                                   instrument or InstrumentModel("tof", 30000.0))
             else:
                 observed += grid.resample_profile(f.mz, f.intensity)
+    elif is_profile is False:
+        observed = grid.render_centroids(mz, intensity, instrument or InstrumentModel("tof", 30000.0))
     else:
         observed = grid.resample_profile(mz, intensity)
     return grid, observed, estimate_noise_sigma(observed)

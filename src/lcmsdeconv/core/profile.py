@@ -12,8 +12,12 @@ must not read a gap as signal:
 A gap is a spacing more than ``GAP_FACTOR`` times the scan's own spacing there, measured in
 ln(m/z) so that it is the same at every m/z. The own spacing is a low percentile
 (``SPACING_PERCENTILE``) of the spacings in a window of ``GAP_WINDOW`` around each: where noise
-or weak ions leave many one- and two-point segments, gaps are most of the spacings, and a median
+or weak ions leave many short segments, gaps are a large share of the spacings, and a median
 would take them for the spacing.
+
+A scan that repeats an m/z value (vendor files do not, converted ones can) is read with the
+mean of the repeated values there (:func:`scan_points`), as :meth:`lcmsdeconv.nn.grid.LogMzGrid.
+resample_profile` reads it.
 """
 
 from __future__ import annotations
@@ -96,6 +100,22 @@ def sample_widths(u: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:
     return left_f + right_f
 
 
+def scan_points(mz, intensity) -> tuple[np.ndarray, np.ndarray]:
+    """A scan's points sorted by m/z (stably), a repeated m/z kept once with the mean of its
+    values: a piece of zero width between the two has an infinite slope."""
+    x = np.asarray(mz, dtype=float)
+    v = np.asarray(intensity, dtype=float)
+    if x.size > 1 and np.any(np.diff(x) <= 0):
+        order = np.argsort(x, kind="stable")
+        x, v = x[order], v[order]
+        new = np.concatenate([[True], x[1:] != x[:-1]])
+        if not new.all():
+            idx = np.cumsum(new) - 1
+            v = np.bincount(idx, weights=v) / np.bincount(idx)
+            x = x[new]
+    return x, v
+
+
 def profiles_on_union(scans, axis: np.ndarray, factor: float = GAP_FACTOR) -> np.ndarray:
     """The sum of thresholded profile scans ``[(mz, intensity), ...]``, each read at the sorted
     m/z positions ``axis`` as :func:`profile_on_axis` reads it.
@@ -107,18 +127,20 @@ def profiles_on_union(scans, axis: np.ndarray, factor: float = GAP_FACTOR) -> np
     sorted starts and ends with cumulative sums give every axis point its active pieces. A
     point that starts no piece (a segment's last, an isolated one) adds its own value where it
     lies; ``axis`` must hold it.
+
+    The cumulative sums carry terms of order y * x / spacing, so they cancel to rounding, not
+    exactly: where no piece is active the sum is set to exactly zero (the active pieces are
+    counted in integers), and with non-negative scans it is kept non-negative.
     """
     axis = np.asarray(axis, dtype=float)
     total = np.zeros(axis.size)
     starts, ends, c0, c1, knots, kvals = [], [], [], [], [], []
+    nonneg = True
     for mz, y in scans:
-        x = np.asarray(mz, dtype=float)
-        v = np.asarray(y, dtype=float)
+        x, v = scan_points(mz, y)
         if x.size == 0:
             continue
-        if np.any(np.diff(x) < 0):
-            order = np.argsort(x, kind="stable")
-            x, v = x[order], v[order]
+        nonneg = nonneg and bool(v.min() >= 0.0)
         piece = ~gap_mask(x, factor) if x.size > 1 else np.zeros(0, dtype=bool)
         k = np.flatnonzero(piece)
         slope = (v[k + 1] - v[k]) / (x[k + 1] - x[k])
@@ -140,11 +162,16 @@ def profiles_on_union(scans, axis: np.ndarray, factor: float = GAP_FACTOR) -> np
         ce1 = np.concatenate([[0.0], np.cumsum(a1[oe])])
         i_s = np.searchsorted(s[os_], axis, side="right")
         i_e = np.searchsorted(e[oe], axis, side="right")
-        total += (cs0[i_s] - ce0[i_e]) + axis * (cs1[i_s] - ce1[i_e])
+        part = (cs0[i_s] - ce0[i_e]) + axis * (cs1[i_s] - ce1[i_e])
+        # pieces have positive width, so those started minus those ended are the active ones
+        part[i_s == i_e] = 0.0
+        total += part
     if knots:
         p = np.concatenate(knots)
         np.add.at(total, np.clip(np.searchsorted(axis, p), 0, max(axis.size - 1, 0)),
                   np.concatenate(kvals))
+    if nonneg:
+        np.maximum(total, 0.0, out=total)
     return total
 
 
@@ -156,13 +183,9 @@ def profile_on_axis(axis: np.ndarray, mz: np.ndarray, intensity: np.ndarray,
     outside its range and inside its gaps.
     """
     axis = np.asarray(axis, dtype=float)
-    mz = np.asarray(mz, dtype=float)
-    y = np.asarray(intensity, dtype=float)
+    mz, y = scan_points(mz, intensity)
     if mz.size == 0:
         return np.zeros(axis.size)
-    if np.any(np.diff(mz) < 0):
-        order = np.argsort(mz, kind="stable")
-        mz, y = mz[order], y[order]
     v = np.interp(axis, mz, y, left=0.0, right=0.0)
     if mz.size < 2:
         return v

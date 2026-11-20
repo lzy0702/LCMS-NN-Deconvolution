@@ -3,7 +3,7 @@
 import numpy as np
 
 from lcmsdeconv.core.model import Run, Spectrum
-from lcmsdeconv.core.profile import gap_mask, profile_on_axis, sample_widths
+from lcmsdeconv.core.profile import gap_mask, profile_on_axis, profiles_on_union, sample_widths
 from lcmsdeconv.nn.grid import LogMzGrid, spectrum_to_grid
 
 
@@ -195,3 +195,99 @@ def test_unresolved_envelopes_survive_scans_on_shifted_axes():
     fr = deconvolve_spectrum(summed, OraclePredictor(sticks, LogMzGrid(polarity=1)), params, inst)
     top = max(fr.components, key=lambda c: c.intensity)
     assert abs(top.mass - mass) < 1.0 and len(top.charges) > 10
+
+
+def _random_scans(rng, n_scans=6):
+    """Scans of short segments and isolated points on axes a fraction of a ppm apart, some
+    unsorted, one empty and one of a single point."""
+    base = 1000.0 + 0.002 * np.arange(4000)
+    scans = []
+    for k in range(n_scans):
+        ax = base * (1.0 + rng.uniform(-1.0, 1.0) * 1e-6)
+        keep = rng.random(base.size) < 0.02
+        keep = np.convolve(keep, np.ones(5), mode="same") > 0
+        keep[rng.integers(0, base.size, 5)] = True  # isolated points
+        y = rng.uniform(0.0, 5e6, base.size)
+        x, v = ax[keep], y[keep]
+        if k == 1:
+            order = rng.permutation(x.size)
+            x, v = x[order], v[order]
+        scans.append((x, v))
+    scans.append((np.zeros(0), np.zeros(0)))
+    scans.append((np.array([1003.0]), np.array([7.0])))
+    return scans
+
+
+def test_union_sum_equals_the_scans_read_one_by_one():
+    rng = np.random.default_rng(11)
+    scans = _random_scans(rng)
+    axis = np.unique(np.concatenate([x for x, _ in scans]))
+    ref = sum(profile_on_axis(axis, x, v) for x, v in scans)
+    got = profiles_on_union(scans, axis)
+    # equal to rounding: the sweep's cumulative sums carry terms of order y * x / spacing
+    np.testing.assert_allclose(got, ref, rtol=1e-7, atol=1e-8 * ref.max())
+    # where no scan holds a piece or a point the sum is exactly nothing, and never negative
+    assert np.all(got[ref == 0.0] == 0.0) and got.min() >= 0.0
+
+
+def test_a_repeated_mz_is_read_once_not_as_an_infinite_slope():
+    """A converted file can write one m/z twice: the zero-width piece between the two must not
+    turn the rest of the sum into NaN."""
+    rng = np.random.default_rng(12)
+    scans = _random_scans(rng, 3)
+    x, v = scans[0]
+    order = np.argsort(x)
+    x, v = x[order], v[order]
+    i = x.size // 2
+    x = np.insert(x, i + 1, x[i])
+    v = np.insert(v, i + 1, v[i] + 1000.0)
+    scans[0] = (x, v)
+    axis = np.unique(np.concatenate([a for a, _ in scans]))
+    got = profiles_on_union(scans, axis)
+    assert np.all(np.isfinite(got))
+    ref = sum(profile_on_axis(axis, a, b) for a, b in scans)
+    np.testing.assert_allclose(got, ref, rtol=1e-7, atol=1e-8 * ref.max())
+    # the repeated point is read at the mean of its two values, by both readers
+    alone = profile_on_axis(np.array([x[i]]), x, v)[0]
+    assert np.isclose(alone, v[i] + 500.0)
+    frames = [Spectrum(a, b.astype(np.float32), 1.0 + 0.01 * k, 1, is_profile=True)
+              for k, (a, b) in enumerate(scans) if a.size]
+    s = Run(frames).sum_frames(frames)
+    assert np.all(np.isfinite(s.intensity))
+
+
+def test_axes_a_few_ppm_apart_are_not_added_index_by_index():
+    """Two scans of one ion, calibrated 8 ppm apart, with as many points each: the sum must keep
+    the ion where both scans put it, not on the first scan's axis."""
+    def scan(shift_ppm):
+        ax = (1499.0 + 0.01 * np.arange(200)) * (1.0 + shift_ppm * 1e-6)
+        y = 1e5 * np.exp(-0.5 * ((ax - 1500.0) / 0.02) ** 2)
+        return Spectrum(ax, y.astype(np.float32), 1.0, 1, is_profile=True)
+
+    frames = [scan(0.0), scan(8.0)]
+    s = Run(frames).sum_frames(frames)
+    assert s.mz.size == 400
+    sel = np.abs(s.mz - 1500.0) < 0.1
+    centroid = float(np.sum(s.mz[sel] * s.intensity[sel]) / np.sum(s.intensity[sel]))
+    assert abs(centroid - 1500.0) < 1e-6 * 1500.0
+
+
+def test_mixed_profile_and_centroided_scans_are_gridded_scan_by_scan():
+    """However the sum is labelled - after its largest scan, here a centroided one - a profile
+    scan is resampled and a centroided one drawn, each on its own."""
+    from lcmsdeconv.chem.instrument import InstrumentModel
+
+    ax = 1199.9 + 0.005 * np.arange(40)
+    prof = Spectrum(ax, (1e5 * np.exp(-0.5 * ((ax - 1200.0) / 0.01) ** 2)).astype(np.float32),
+                    1.0, 1, is_profile=True)
+    cmz = np.linspace(1150.0, 1250.0, 60)
+    cent = Spectrum(cmz, np.full(60, 50.0, np.float32), 1.01, 1, is_profile=False)
+    frames = [prof, cent]
+    s = Run(frames).sum_frames(frames)
+    assert s.is_profile is False  # labelled after the scan with the most points
+    inst = InstrumentModel("tof", 30000.0)
+    grid, observed, _ = spectrum_to_grid(s.mz, s.intensity, 1, is_profile=s.is_profile,
+                                         instrument=inst, frames=s.meta["frames"])
+    ref = grid.resample_profile(prof.mz, prof.intensity) + grid.render_centroids(cent.mz,
+                                                                                cent.intensity, inst)
+    np.testing.assert_allclose(observed, ref, rtol=1e-9, atol=1e-9)

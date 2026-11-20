@@ -133,7 +133,10 @@ class Run:
         if not frames:
             raise ValueError("No frames to sum")
         ref = frames[0]
-        same_axis = all(f.mz.size == ref.mz.size and np.allclose(f.mz, ref.mz) for f in frames[1:])
+        # the very same points: axes calibrated a few ppm apart are not one axis (allclose's
+        # default 10 ppm would add them index by index and move every peak)
+        same_axis = all(f.mz.size == ref.mz.size and np.array_equal(f.mz, ref.mz)
+                        for f in frames[1:])
         if same_axis:
             total = np.sum([f.intensity for f in frames], axis=0)
             mz = ref.mz.copy()

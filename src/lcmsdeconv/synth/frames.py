@@ -145,9 +145,14 @@ def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: floa
     return out
 
 
-#: points written on either side of every point above a vendor threshold (as
-#: ``synth.chromatography._threshold_profile`` does for whole runs)
-VENDOR_PAD = 3
+#: points written on either side of every point above a vendor threshold. The real Thermo runs
+#: hold no segment shorter than five points, and most are five or six: the instrument writes a
+#: point either side of each run above its threshold, but its noise is correlated over the line
+#: shape, so such runs are rarely shorter than three points. For the white noise drawn here two
+#: points either side give that five-point minimum, three would give seven. (Whole synthetic
+#: runs, ``synth.chromatography._threshold_profile``, keep three: the benchmarks were measured
+#: on them.)
+VENDOR_PAD = 2
 
 
 def scan_spectra(scans, polarity: int) -> list:
@@ -218,8 +223,8 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
             scan = np.minimum(scan, sat_level)
         if thr > 0:
             # vendor thresholding writes every point above the threshold together with its
-            # neighbours, as segments (real Thermo scans hold no segment shorter than five
-            # points), never noise points one by one
+            # neighbours, as segments of at least five points (VENDOR_PAD), never noise points
+            # one by one
             above = scan >= thr
             keep = np.convolve(above, np.ones(2 * VENDOR_PAD + 1), mode="same") > 0
             scan[~keep] = 0.0
