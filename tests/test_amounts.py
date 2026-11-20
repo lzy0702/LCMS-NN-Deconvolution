@@ -903,3 +903,26 @@ def test_a_walk_anchors_the_adduct_forms_above_where_it_started():
     assert any(abs(c.mass - base) < 0.6 for c in comps)
     # the window's edge, not its comb (+0.45; at the edge it is too weak to be kept)
     assert abs((deep - 0.45) * np.expm1(second.template_shift) - 0.29) < 0.03
+
+
+def test_the_cation_ladder_rule_needs_sodium_in_the_region():
+    """The deep-ladder rule applies where the region evidences sodium; elsewhere a species that
+    sits on such a comb by chance is placed by its own (a 4949 Da report of the IP-RPLC NC run
+    lies on NC - dG's comb moved by six sodium, to 0.003 Da, where no sodium is evidenced)."""
+    from lcmsdeconv.deconv.refine import refine_frame
+
+    parent = 5163.23
+    read = _on_ladder_mass(parent, 4) - 0.45
+    grid, spectrum = _edge_case(read, (3, 4), 0.45)
+    edge = read * np.expm1(align_template(Candidate(read, 1.0, {3, 4}), spectrum, grid, ORBI,
+                                          "ps_rna"))
+    placed = {}
+    for missing in ("K", "Na"):
+        lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", missing),
+                                      max_per_type=2, max_total=2)
+        cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+        refine_frame([cand], grid, spectrum, 100.0, ORBI, "ps_rna", lib, known_masses=[parent],
+                     known_shifts=[0.0])
+        placed[missing] = read * np.expm1(cand.template_shift)
+    assert abs(placed["K"] - edge) < 1e-6  # sodium evidenced: a form of the parent, at the edge
+    assert abs(placed["Na"] - 0.45) < 0.02  # no sodium: its own comb

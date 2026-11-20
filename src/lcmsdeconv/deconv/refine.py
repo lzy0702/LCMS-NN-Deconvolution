@@ -459,6 +459,10 @@ def refine_frame(
     # walked onto NC; without it as an anchor NC's +5Na and +3Na+K forms were comb-placed and
     # reported as a 3.3 % impurity)
     walked_from: list[float] = walked if walked is not None else []
+    # sodium ladders deeper than the exemption's three (refine._on_cation_ladder) only where the
+    # region evidences sodium: elsewhere a species can sit on such a comb by chance (a 4949 Da
+    # report of the IP-RPLC NC run lies on NC - dG's comb moved by six sodium, to 0.003 Da)
+    sodium = "Na" in library.names()
     for cand in remaining:
         cand_mass0 = cand.mass
         if raw_mz is not None and raw_mz.size and cand.charges and cand.charges != {1}:
@@ -472,8 +476,9 @@ def refine_frame(
                                             coelution_r=coelution_r, instrument=instrument)
             cand.observed_extra = set(cand.charges) - voted
         forms = list(known_masses or ()) + [c.mass for c in components] + walked_from
-        ladder = (list(zip(known_masses or (), known_shifts or ()))
-                  + [(c.mass, c.mass * float(np.expm1(c.template_shift))) for c in components])
+        ladder = ((list(zip(known_masses or (), known_shifts or ()))
+                   + [(c.mass, c.mass * float(np.expm1(c.template_shift))) for c in components])
+                  if sodium else None)
         cand.template_shift = align_candidate(
             cand, residual, grid, instrument, compound_class,
             forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz, ladder_of=ladder)

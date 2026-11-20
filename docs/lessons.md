@@ -655,9 +655,11 @@ their parent's comb exactly, and fitted whole DA-NC + 4Na went from 0.79 % to 1.
 of DA-NC's own sodium ladder with it - NC + 6Na + K from 0.14 % to 0.44 %, and a shortmer's +4Na
 form, folded before, was reported at 0.065 %. Such a form now keeps the edge where its comb lies
 within 0.03 Da of an accepted species' comb moved by the ladder's monoisotopic shift, its mass
-within 1 Da of that species plus the ladder; the three are back at their earlier amounts (and so is
-a 4949.4 Da report, whose wrong tooth lay on such a comb), with nothing else on the four runs or
-the synthetic presets changing. The four runs now give 228 reports, 115 EIC-confirmed and 51
+within 1 Da of that species plus the ladder, and the region evidences sodium; the three are back at
+their earlier amounts, still reported apart, with nothing else on the four runs or the synthetic
+presets changing. Without the sodium condition a 4949 Da report of the IP-RPLC NC run, where no
+sodium is evidenced, fell back to its edge amount: its tooth lies on NC - dG's comb moved by six
+sodium, to 0.003 Da, by chance. The four runs now give 228 reports, 115 EIC-confirmed and 51
 unconfirmed.
 
 The lesson: a template must be placed by evidence the species owns. A slide over everything nearby
