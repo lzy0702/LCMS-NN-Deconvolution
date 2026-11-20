@@ -551,6 +551,7 @@ def test_the_gate_keeps_the_charge_states_that_passed_apart():
                                   instrument=ORBI, profile=True)
     assert len(out) == 1
     assert out[0].gate_charges == {3, 4} and 9 in out[0].charges
+    assert out[0].gate_failed == {9}
 
 
 def test_a_candidate_renamed_to_a_lighter_adduct_partner_loses_its_gate_charges():
@@ -561,33 +562,83 @@ def test_a_candidate_renamed_to_a_lighter_adduct_partner_loses_its_gate_charges(
     kept = dedupe_adduct_candidates([strong, weak], {"Na": ADDUCTS["Na"].avg_mass})
     assert len(kept) == 1 and abs(kept[0].mass - 6750.58) < 1e-9
     # its gate measured FLP's envelopes, not this mass's
-    assert kept[0].gate_charges is None
+    assert kept[0].gate_charges is None and kept[0].gate_failed is None
+
+
+def _edge_case(mass, zs, true, foreign=None):
+    """A grid spectrum of a species whose isotopologues sit ``true`` Da from its read mass, plus
+    an optional foreign species ``(mass, charges, shift, height)``."""
+    grid = LogMzGrid(300.0, 2500.0, 2e-5, -1)
+    spectrum = np.zeros(grid.size)
+    for z in zs:
+        t = build_template(mass + true, z, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 1e6 * t.values
+    if foreign is not None:
+        fm, fzs, fs, fh = foreign
+        for z in fzs:
+            t = build_template(fm + fs, z, grid, ORBI, "ps_rna")
+            spectrum[t.bins] += fh * t.values
+    return grid, spectrum
 
 
 def test_an_edge_pinned_template_takes_the_candidates_own_comb():
     """1.9 kDa shortmer read 0.34 Da light: the overlap stops at the 0.3 Da edge, the comb of the
     gate-passed states puts the templates on the isotopologues. Not for a candidate without gate
-    charges, an adduct form of an accepted species, or when the other tooth fits better."""
+    charges or for an adduct form of an accepted species."""
     from lcmsdeconv.deconv.refine import align_candidate
 
     mass, true = 1884.27, 0.356
-    grid = LogMzGrid(500.0, 2500.0, 2e-5, -1)
-    x, y = _comb_profile(mass, (2, 3), true, lo=500.0, hi=2500.0)
-    spectrum = np.zeros(grid.size)
-    for z in (2, 3):
-        t = build_template(mass + true, z, grid, ORBI, "ps_rna")
-        spectrum[t.bins] += 1e6 * t.values
+    grid, spectrum = _edge_case(mass, (2, 3), true)
     edge = align_template(Candidate(mass, 1.0, {2, 3}), spectrum, grid, ORBI, "ps_rna")
     assert abs(mass * np.expm1(edge) - 0.292) < 0.01  # pinned at the window's edge
     c = Candidate(mass, 1.0, {2, 3}, gate_charges={2, 3})
-    s = align_candidate(c, spectrum, grid, ORBI, "ps_rna", raw_mz=x, raw_int=y)
+    s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
     assert abs(mass * np.expm1(s) - true) < 0.01
     no_gate = Candidate(mass, 1.0, {2, 3})
-    assert align_candidate(no_gate, spectrum, grid, ORBI, "ps_rna", raw_mz=x, raw_int=y) == edge
-    form = align_candidate(c, spectrum, grid, ORBI, "ps_rna", raw_mz=x, raw_int=y,
-                           forms_of=[mass - 21.98], form_shifts=[21.98])
+    assert align_candidate(no_gate, spectrum, grid, ORBI, "ps_rna") == edge
+    form = align_candidate(c, spectrum, grid, ORBI, "ps_rna", forms_of=[mass - 21.98],
+                           form_shifts=[21.98])
     assert form == edge
 
+
+def test_a_mass_read_more_than_half_a_spacing_off_takes_the_better_tooth():
+    """Its nearest comb tooth is on the wrong side: the template goes to the tooth that fits the
+    envelope better, not to the window's edge between them (which fits nothing)."""
+    from lcmsdeconv.deconv.refine import align_candidate
+
+    for mass, zs, true in ((1884.27, (2, 3), -0.60), (4503.16, (3, 4), 0.62)):
+        grid, spectrum = _edge_case(mass, zs, true)
+        c = Candidate(mass, 1.0, set(zs), gate_charges=set(zs))
+        s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+        assert abs(mass * np.expm1(s) - true) < 0.02
+
+
+def test_the_comb_needs_its_charge_states_to_agree():
+    """Two gate states whose windows hold combs half a spacing apart, or one state alone, do not
+    move the template off the window's edge; a state that failed the gate is not read."""
+    from lcmsdeconv.deconv.refine import align_candidate
+
+    mass = 1884.27
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    spectrum = np.zeros(grid.size)
+    for z, shift in ((2, 0.35), (3, -0.35)):
+        t = build_template(mass + shift, z, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 1e6 * t.values
+    c = Candidate(mass, 1.0, {2, 3}, gate_charges={2, 3})
+    edge = align_template(c, spectrum, grid, ORBI, "ps_rna")
+    assert abs(abs(mass * np.expm1(edge)) - 0.292) < 0.01
+    assert align_candidate(c, spectrum, grid, ORBI, "ps_rna") == edge
+    grid, spectrum = _edge_case(mass, (2, 3), 0.356)
+    one = Candidate(mass, 1.0, {2, 3}, gate_charges={2})
+    assert align_candidate(one, spectrum, grid, ORBI, "ps_rna") == align_template(
+        one, spectrum, grid, ORBI, "ps_rna")
+    # another species' comb under z = 5, a state that failed the gate (too weak to move the
+    # overlap off its edge, strong enough to break the agreement if it were read): the comb
+    # follows 2 and 3
+    grid, spectrum = _edge_case(mass, (2, 3), 0.356, foreign=(mass, (5,), -0.2, 3e5))
+    c5 = Candidate(mass, 1.0, {2, 3, 5}, gate_charges={2, 3}, gate_failed={5})
+    s = align_candidate(c5, spectrum, grid, ORBI, "ps_rna")
+    assert abs(mass * np.expm1(s) - 0.356) < 0.01
 
 def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
     """n-2 of the NC product, gated on z = 3 and 4, with z = 9 left in its set: an unrelated peak
@@ -612,7 +663,8 @@ def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
     states = lib.states()
     results = {}
     for gate in ({3, 4}, None):
-        cand = Candidate(mass, 1.0, {3, 4, 9}, gate_charges=gate)
+        cand = Candidate(mass, 1.0, {3, 4, 9}, gate_charges=gate,
+                         gate_failed=None if gate is None else {9})
         full = _fit_candidate(cand, observed.copy(), weights, grid, ORBI, "ps_rna", states,
                               mz_range=(400.0, 2000.0))
         moved, _ = _recenter_base(cand, full, observed.copy(), weights, grid, ORBI, "ps_rna",
@@ -621,3 +673,53 @@ def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
         results[gate is None] = moved.mass
     assert results[False] == mass  # gate charges: stays
     assert abs(results[True] - (mass - ADDUCTS["Na"].avg_mass)) < 0.5  # all charges: walked
+
+
+def test_a_comb_placed_candidate_on_an_adduct_form_still_walks_to_its_base():
+    """The candidate sits on the +Na form, read 0.36 Da light: placed by its comb it must be
+    compared with a lighter trial placed the same way, or the walk is always refused."""
+    from lcmsdeconv.deconv.refine import refine_frame
+
+    base = 2549.80
+    na = ADDUCTS["Na"].avg_mass
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    x = np.arange(400.0, 2500.0, 0.002)
+    y = np.zeros_like(x)
+    for m, h in ((base, 1e6), (base + na, 6e5)):
+        _x, yy = _comb_profile(m, (2, 3), 0.0, height=h, lo=400.0, hi=2500.0)
+        y += yy
+    observed = grid.resample_profile(x, y)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    cand = Candidate(base + na - 0.36, 10.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+    comps, _frac, _res = refine_frame([cand], grid, observed, 100.0, ORBI, "ps_rna", lib,
+                                      raw_mz=x, raw_int=y)
+    assert comps and abs(comps[0].mass - base) < 0.6
+
+
+def test_a_single_charge_candidate_walks_on_its_other_observed_states():
+    """A candidate gated on one charge state reads the states that did not fail the gate."""
+    from lcmsdeconv.deconv.nnls_solve import fit_weights
+    from lcmsdeconv.deconv.refine import _fit_candidate, _recenter_base
+
+    base = 5162.25
+    na = ADDUCTS["Na"].avg_mass
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    x = np.arange(400.0, 2500.0, 0.002)
+    y = np.zeros_like(x)
+    for m, h in ((base, 1e6), (base + na, 4e5)):
+        _x, yy = _comb_profile(m, (3, 4, 5), 0.0, height=h, lo=400.0, hi=2500.0)
+        y += yy
+    observed = grid.resample_profile(x, y)
+    weights = fit_weights(observed, 50.0, grid.step, 70000.0)
+    states = lib.states()
+    cand = Candidate(base + na, 1.0, {3, 4, 5}, gate_charges={4}, gate_failed=set(),
+                     single_charge=True)
+    full = _fit_candidate(cand, observed.copy(), weights, grid, ORBI, "ps_rna", states,
+                          mz_range=(400.0, 2500.0))
+    moved, _ = _recenter_base(cand, full, observed.copy(), weights, grid, ORBI, "ps_rna", states,
+                              lib, (400.0, 2500.0), raw_mz=x, raw_int=y, noise_sigma=50.0,
+                              resolution=70000.0)
+    assert abs(moved.mass - base) < 0.5

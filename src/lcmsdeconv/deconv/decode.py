@@ -47,6 +47,10 @@ class Candidate:
     # the charge states whose own envelopes passed the gate (refine_candidate_masses), as
     # opposed to every state the charge map voted for: None before the gate
     gate_charges: set[int] | None = None
+    # the voted states the gate measured and rejected (an envelope that moved off, contradicted
+    # the charge by its isotopes, was discontinuous, belonged to another mass or did not
+    # co-elute): another species' signal lies under them. None before the gate
+    gate_failed: set[int] | None = None
 
 
 def accumulate_mass_histogram(
@@ -228,6 +232,7 @@ def dedupe_adduct_candidates(
                         # longer say where this mass's isotopologues sit
                         base.mass = c.mass
                         base.gate_charges = None
+                        base.gate_failed = None
                     merged = True
                     break
                 if merged:
@@ -515,6 +520,7 @@ def refine_candidate_masses(
         c.mass = float(masses[i])
         c.charges = {int(matched_z[i])}
         c.gate_charges = set(c.charges)
+        c.gate_failed = failed | (set(matched_z) - c.gate_charges)
         c.single_charge = True
         out.append(c)
         return True
@@ -531,6 +537,7 @@ def refine_candidate_masses(
             # histogram peak several daltons off for small molecules
             max_move_da = max(max_move_da, 2.5 * kern_da)
         masses, weights, matched_z, where = [], [], [], []
+        failed: set[int] = set()
         for z in sorted(c.charges):
             mz_pred = (c.mass + offset + z * carrier) / z
             pos, kw = _mean_shift(raw_mz, raw_int, mz_pred, kern_da / z)
@@ -538,6 +545,7 @@ def refine_candidate_masses(
                 continue
             m = z * (pos - carrier) - offset
             if abs(m - c.mass) > max_move_da:
+                failed.add(int(z))
                 continue
             # the envelope must actually stand above the noise around where the shift converged;
             # with resolved isotopes the converged centre can sit in the valley between two
@@ -552,11 +560,13 @@ def refine_candidate_masses(
             fwhm = pos / max(r_here, 1.0)
             if isotopes_contradict_charge(m, z, pos, raw_mz, raw_int, thr, polarity,
                                           compound_class, fwhm, height=core):
+                failed.add(int(z))
                 continue
             if profile and ISOTOPE_SPACING / z < 2.0 * fwhm:
                 hw = env_sigma / z
                 own = frames.spacing(pos - hw, pos + hw) if frames is not None else None
                 if envelope_discontinuous(pos, hw, raw_mz, raw_int, fwhm, spacing=own):
+                    failed.add(int(z))
                     continue
             masses.append(m)
             weights.append(kw)
@@ -599,6 +609,7 @@ def refine_candidate_masses(
             continue
         c.mass = med
         c.gate_charges = set(zs[best].tolist())
+        c.gate_failed = failed | (set(matched_z) - c.gate_charges)
         c.charges = c.gate_charges | c.charges
         out.append(c)
     return out

@@ -583,6 +583,24 @@ and nothing else on the four runs moves by more than a few tenths of a percent b
 were edge-pinned (a 1831.6 Da shortmer from 0.004 % to 1.1 %, 1.6 % by extracted ions). The cost
 is one false species more or less per synthetic preset.
 
+A review of that version found it still reading evidence the candidate did not own, in four places,
+each fixed. The comb was read on the spectrum as it came, so a species fitted earlier in the pass
+still lay in the windows; it is read on the residual. One coherence figure over all windows let one
+strong window speak for the rest - a foreign comb in a window the gate had rejected placed the
+template - so every charge state that carries a tenth of the weight must now agree within 0.1 Da,
+at least two must, and the rejected states are read neither by the comb nor by the overlap search.
+Where the measured mass lay more than half a spacing from the truth the nearest tooth was the wrong
+one, and falling back to the window's edge fitted neither; the tooth whose template fits better is
+taken. And the adduct walk compared a candidate placed by its comb with a lighter trial pinned at
+the edge, so the candidate always won and adduct forms no longer walked to their base; the trial is
+placed by the same rule (a candidate the gate accepted on one charge state also walks on the other
+states it shows, not only on that one). With these the four runs give 229 reports, 117 of them
+EIC-confirmed and 50 unconfirmed (228, 113 and 53 before the review); a 5129.63 Da species of the
+IP-RPLC NC run, 32.6 Da below NC (by mass, two phosphorothioates as phosphates), goes from 0.006 %
+to 0.36 %, EIC-confirmed, and the synthetic Orbitrap preset's precision from 70 % to 76 % (68 %
+before any of this section's changes). A cluster of NC 108 Da heavier under IP-HILIC, beyond the
+adduct library and so not folded, now carries its full amount, 3.3 %, unconfirmed.
+
 The lesson: a template must be placed by evidence the species owns. A slide over everything nearby
 finds the best fit to whatever is there; the gate's per-charge measurements already say which
 envelopes are the candidate's, and each later step should read only those.
