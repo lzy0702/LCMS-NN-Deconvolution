@@ -613,6 +613,45 @@ def test_a_mass_read_more_than_half_a_spacing_off_takes_the_better_tooth():
         assert abs(mass * np.expm1(s) - true) < 0.02
 
 
+def test_an_optimum_between_the_teeth_takes_the_better_tooth():
+    """1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light: both teeth of their
+    comb lie beyond the 0.3 Da window, and the overlap's optimum inside it sits between them on
+    weak foreign signal, a hundred times and more below the better tooth; the species was fitted
+    to that signal and missed. That tooth is taken. An optimum on the comb is the species' own
+    tooth and stays, and so does one off it that holds a real share of the tooth's overlap."""
+    from lcmsdeconv.deconv.refine import _align_charges, _overlap, align_candidate, comb_phase_shift
+
+    for mass, zs, true in ((1909.10, (2, 3), 0.546), (2887.90, (2, 3), 0.529)):
+        c = Candidate(mass, 1.0, set(zs), gate_charges=set(zs))
+        # weak signal one half spacing off the species' comb, inside the window
+        grid, spectrum = _edge_case(mass, zs, true, foreign=(mass, zs, 0.0, 1e4))
+        opt = align_template(c, spectrum, grid, ORBI, "ps_rna")
+        assert abs(mass * np.expm1(opt)) < 0.05  # the optimum lies between the teeth
+        s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+        assert abs(mass * np.expm1(s) - true) < 0.02
+        # not for a candidate without gate charges, or an adduct form of an accepted species
+        assert align_candidate(Candidate(mass, 1.0, set(zs)), spectrum, grid, ORBI,
+                               "ps_rna") == opt
+        assert align_candidate(c, spectrum, grid, ORBI, "ps_rna", forms_of=[mass - 21.98],
+                               form_shifts=[21.98]) == opt
+        # read where its isotopologues are, the optimum is on the comb and stays
+        grid, spectrum = _edge_case(mass, zs, 0.12, foreign=(mass, zs, -0.4, 1e4))
+        assert align_candidate(c, spectrum, grid, ORBI, "ps_rna") == align_template(
+            c, spectrum, grid, ORBI, "ps_rna")
+        # a species of 30 % at the optimum is no noise: the comb still agrees, but the optimum
+        # holds over a quarter of the tooth's overlap and stays
+        grid, spectrum = _edge_case(mass, zs, true, foreign=(mass, zs, 0.0, 3e5))
+        gm = grid.bin_to_mz(np.arange(grid.size))
+        comb, coherence, _n = comb_phase_shift(mass, set(zs), gm, spectrum, -1, ORBI, "ps_rna")
+        assert coherence >= 0.5
+        zz = _align_charges(mass, set(zs), grid, ORBI)
+        opt = align_template(c, spectrum, grid, ORBI, "ps_rna")
+        teeth = max(_overlap(mass + comb + k * 1.0033548, zz, spectrum, grid, ORBI, "ps_rna")
+                    for k in (-1, 0, 1))
+        assert _overlap(mass * np.exp(opt), zz, spectrum, grid, ORBI, "ps_rna") >= 0.25 * teeth
+        assert align_candidate(c, spectrum, grid, ORBI, "ps_rna") == opt
+
+
 def test_the_comb_needs_its_charge_states_to_agree():
     """Two gate states whose windows hold combs half a spacing apart, or one state alone, do not
     move the template off the window's edge; a state that failed the gate is not read."""
