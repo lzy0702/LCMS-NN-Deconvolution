@@ -20,6 +20,7 @@ from .features.link import (
     link_species,
     merge_adjacent_species,
     merge_species_across_polarity,
+    set_aside_later_elutions,
 )
 from .features.quantify import TemplateBank
 from .features.regions import Region, find_regions
@@ -154,6 +155,8 @@ def process_run(
 
     all_species: list[Species] = []
     evidenced: dict[int, set[str]] = {}
+    # the scan spacing, by polarity
+    steps: dict[int, float] = {}
     sid = 0
     for pol in polarities:
         tic = run.tic(pol)
@@ -166,6 +169,7 @@ def process_run(
         # a boundary two regions share is drawn at the valley between their bands
         rts = np.array([f.rt for f in run.frames(pol)])
         step = float(np.median(np.diff(rts))) if rts.size > 1 else 0.0
+        steps[pol] = step
         for ri, region in enumerate(regions):
             shared = (ri > 0 and region.start - regions[ri - 1].end <= 0.5 * step,
                       ri + 1 < len(regions) and regions[ri + 1].start - region.end <= 0.5 * step)
@@ -232,6 +236,12 @@ def process_run(
         tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0))
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
                                          method.linking.mass_tolerance_da)
+    # a species found again later in the run (its tail beyond its band, the column wash) is
+    # named in its flags: judged by its isotopes, read in the scans themselves
+    all_species = set_aside_later_elutions(all_species,
+                                           _same_molecule(run, instrument, params.compound_class),
+                                           steps, method.linking.mass_tolerance_ppm,
+                                           method.linking.mass_tolerance_da)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
     all_species.sort(key=lambda s: -s.base_intensity)
@@ -296,6 +306,33 @@ def process_run(
 
     result.timings["total_s"] = time.perf_counter() - t_start
     return result
+
+
+def _same_molecule(run: Run, instrument, compound_class: str, min_margin: float = 0.02,
+                   max_charges: int = 3):
+    """``same(a, band_a, b, band_b)``: whether species ``a``, read in the scans of the time band
+    ``band_a``, and ``b``, read in those of ``band_b``, are one molecule by their resolved
+    isotopes: the class's pattern fits both best on one tooth of the isotope comb
+    (:func:`lcmsdeconv.deconv.refine.tooth_position`, over ``b``'s strongest charge states),
+    each better than one tooth away by ``min_margin``. Where the isotopes are not resolved, a
+    band holds no signal or a fit is no better than its neighbouring tooth, the answer is no."""
+    from .deconv.refine import tooth_position
+
+    def same(a: Species, band_a, b: Species, band_b) -> bool:
+        if instrument is None:
+            return False
+        zs = [z for z, v in sorted(b.charges.items(), key=lambda kv: -kv[1]) if v > 0][:max_charges]
+        cls = b.compound_class or a.compound_class or compound_class
+        if not zs or not cls or cls == "auto":
+            return False
+        m = 0.5 * (a.mass + b.mass)
+        ta = tooth_position(m, zs, run.frames(a.polarity, band_a), instrument, cls)
+        tb = tooth_position(m, zs, run.frames(b.polarity, band_b), instrument, cls)
+        if ta is None or tb is None or min(ta[1], tb[1]) < min_margin:
+            return False
+        return abs(ta[0] - tb[0]) <= 0.5
+
+    return same
 
 
 def _drop_flat_species(species, bank, run, region, polarity, method, context_min: float = 0.3):

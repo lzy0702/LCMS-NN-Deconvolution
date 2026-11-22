@@ -364,6 +364,83 @@ def _merge_pass(species: list[Species], tolerance_ppm: float, tolerance_da: floa
     return out
 
 
+LATER_FLAG = ("the same molecule found later in the run (a tail past its band, the column wash), "
+              "not reported apart: ")
+
+
+def set_aside_later_elutions(species: list[Species], same_species, steps,
+                             tolerance_ppm: float = 30.0, tolerance_da: float = 0.5,
+                             min_ratio: float = 20.0, min_gap_min: float = 0.2,
+                             with_main_min: float = 0.1, min_rise: float = 2.0) -> list[Species]:
+    """Name the main species' later elutions in its flags instead of reporting them as species.
+
+    The run's main species loads the column far more than anything else, and part of it comes
+    off after its band: a tail that runs on across region boundaries, and a peak when the
+    column is washed (NC of the IP-RPLC NC run: a tail at 0.07-0.3 % of its height from 19 to
+    25 min, then a peak at 1.3 % of its height at 25.4 min). Each region that sees it reports it
+    at the main species' mass, as an impurity it is not. A species within the linking tolerance
+    of the main species' mass (the strongest of its polarity), at most ``1 / min_ratio`` of it,
+    whose trace starts more than ``min_gap_min`` after the main species' ends (closer pieces are
+    :func:`merge_adjacent_species`' business) and that is the same molecule by its isotopes
+    (``same_species``, read at both apexes) is taken out of the list, its mass, time and share
+    named in the main species' flags; the main species' amount stays its own band's. The same
+    event carries the main species' other forms off the column with it (NC's +201.4 Da form at
+    25.4 min): a species peaking within ``with_main_min`` of one of the main species' later
+    elutions is set aside the same way under an earlier, stronger species of its own mass. Only
+    a later elution that rises and falls in its own trace (its highest reading ``min_rise``
+    times its first and last) is such an event; a slice of the tail has its highest reading
+    wherever a region boundary cut it (NC's at 20.01 min, three scans after its region's start,
+    1.01 times its first), and nothing else leaves the column with it there. Isomers of the
+    main species that elute later at less than ``1 / min_ratio`` of it are set aside too, so the
+    flags name every species set aside.
+    """
+    parent: dict[int, Species] = {}
+
+    def later_of(s: Species, p: Species, step: float) -> bool:
+        if (p is s or id(p) in parent or p.polarity != s.polarity or not p.time.size
+                or p.base_intensity < min_ratio * s.base_intensity):
+            return False
+        if abs(p.mass - s.mass) > max(p.mass * tolerance_ppm * 1e-6, tolerance_da):
+            return False
+        if float(s.time.min()) - float(p.time.max()) <= min_gap_min:
+            return False
+        return bool(same_species(s, (s.rt_apex - 1.5 * step, s.rt_apex + 1.5 * step),
+                                 p, (p.rt_apex - 1.5 * step, p.rt_apex + 1.5 * step)))
+
+    def event(s: Species) -> bool:
+        y = np.asarray(s.intensity, dtype=float)
+        return y.size > 2 and float(y.max()) >= min_rise * max(float(y[0]), float(y[-1]))
+
+    for pol in sorted({s.polarity for s in species}):
+        mine = sorted((s for s in species if s.polarity == pol and s.time.size),
+                      key=lambda x: -x.base_intensity)
+        step = float(steps.get(pol, 0.0))
+        if len(mine) < 2 or step <= 0:
+            continue
+        main = mine[0]
+        for s in mine[1:]:
+            if later_of(s, main, step):
+                parent[id(s)] = main
+        times = [s.rt_apex for s in mine if parent.get(id(s)) is main and event(s)]
+        for s in mine[1:]:
+            if id(s) in parent or not any(abs(s.rt_apex - t) <= with_main_min for t in times):
+                continue
+            p = next((p for p in mine if later_of(s, p, step)), None)
+            if p is not None:
+                parent[id(s)] = p
+    later: dict[int, list[Species]] = {}
+    for s in species:
+        if id(s) in parent:
+            later.setdefault(id(parent[id(s)]), []).append(s)
+    for p in species:
+        if id(p) in later:
+            p.flags.append(LATER_FLAG + ", ".join(
+                f"{s.mass:.2f} Da at {s.rt_apex:.2f} min "
+                f"({100 * s.base_intensity / max(p.base_intensity, 1e-300):.2f} %)"
+                for s in sorted(later[id(p)], key=lambda x: x.rt_apex)))
+    return [s for s in species if id(s) not in parent]
+
+
 FOLD_FLAG = "adduct forms reported apart counted with it: "
 
 

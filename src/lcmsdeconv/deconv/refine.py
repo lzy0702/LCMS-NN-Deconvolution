@@ -273,6 +273,66 @@ def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray
     return shift, float(coherence), len(units)
 
 
+def tooth_position(mass: float, charges, scans, instrument: InstrumentModel,
+                   compound_class: str, reach_da: float = 1.6, step_da: float = 0.02,
+                   width_sigmas: float = 2.5) -> tuple[float, float] | None:
+    """Which tooth of its isotope comb a species' resolved envelopes sit on: ``(average mass,
+    margin)``, or None where no resolved charge state of ``charges`` holds signal in ``scans``.
+
+    The class's isotope pattern is placed at ``mass`` plus shifts of up to ``reach_da`` and
+    matched against every scan's own points within the envelope's windows (each scan on its own
+    axis: on the union of many scans' axes the points are densest where most scans measured);
+    the shift with the largest summed overlap gives the average mass. ``margin`` is how much
+    better that fits than the best placement one isotope spacing away (1 - other / best).
+
+    Two readings of one molecule land on one tooth wherever a region's summed spectrum put
+    their average masses (a neighbour's envelope can pull them a dalton apart); a deaminated
+    form, 0.98 Da heavier, lands one tooth away, and an isomer on the same one.
+    """
+    from ..chem.classes import class_isotope_pattern
+
+    if mass <= 0 or instrument is None or not scans:
+        return None
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(float(pat.abundances.sum()), 1e-300)
+    keep = a >= 1e-3 * a.max()
+    a, rel = a[keep], (pat.masses - pat.average_mass)[keep]
+    env_sigma = float(np.sqrt(np.sum(a * rel ** 2) / max(float(a.sum()), 1e-300)))
+    carrier = carrier_mass(scans[0].polarity)
+    shifts = np.arange(-reach_da, reach_da + 0.5 * step_da, step_da)
+    scores = np.zeros(shifts.size)
+    used = False
+    for z in sorted({int(z) for z in charges if int(z) >= 1}):
+        mz_c = (mass + z * carrier) / z
+        fwhm = mz_c / max(float(instrument.resolving_power(mz_c)), 1.0)
+        if ISOTOPE_DA / z < 2.0 * fwhm:
+            continue  # isotopes not resolved at this charge
+        sig = fwhm / 2.354820045
+        hw = (width_sigmas * env_sigma + reach_da) / z + 2.0 * fwhm
+        # isotopologue m/z for every shift: (shift, isotopologue)
+        pos = (mass + shifts[:, None] + rel[None, :] + z * carrier) / z
+        for s in scans:
+            lo, hi = np.searchsorted(s.mz, [mz_c - hw, mz_c + hw])
+            if hi - lo < 3:
+                continue
+            x = np.asarray(s.mz[lo:hi], dtype=float)
+            y = np.clip(np.asarray(s.intensity[lo:hi], dtype=float), 0.0, None)
+            if y.sum() <= 0:
+                continue
+            # the template at the scan's points, one isotopologue at a time: (shift, point)
+            t = np.zeros((shifts.size, x.size))
+            for j in range(a.size):
+                t += a[j] * np.exp(-0.5 * ((x[None, :] - pos[:, j:j + 1]) / sig) ** 2)
+            scores += t @ y
+            used = True
+    if not used or scores.max() <= 0:
+        return None
+    k = int(np.argmax(scores))
+    away = np.abs(np.abs(shifts - shifts[k]) - ISOTOPE_DA) <= 0.25
+    other = float(scores[away].max()) if away.any() else 0.0
+    return float(mass + shifts[k]), float(1.0 - other / scores[k])
+
+
 def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: InstrumentModel,
                     compound_class: str, min_coherence: float = 0.5,
                     forms_of: list[float] | None = None, form_shifts=(),
