@@ -166,7 +166,8 @@ def process_run(
         regions = find_regions(run, method.regions.source, pol, method.regions.window_min,
                                method.regions.margin_min, method.regions.min_frames,
                                integration=method.integration_for("tic"),
-                               min_snr=getattr(method.regions, "min_snr", 10.0))
+                               min_snr=getattr(method.regions, "min_snr", 10.0),
+                               min_rel_height=getattr(method.regions, "min_rel_height", 0.002))
         result.regions.extend(regions)
         # a boundary two regions share is drawn at the valley between their bands
         rts = np.array([f.rt for f in run.frames(pol)])

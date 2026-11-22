@@ -57,6 +57,7 @@ regions:
   margin_min: 0.05
   min_frames: 2
   min_snr: 3.0
+  min_rel_height: 0.001
 linking:
   mass_tolerance_ppm: 30.0
   mass_tolerance_da: 0.5

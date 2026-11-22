@@ -113,6 +113,9 @@ class RegionSettings:
     #: noise (the oligonucleotide methods use 3: a 2 % impurity eluting on its own makes a TIC
     #: peak about four times the noise)
     min_snr: float = 10.0
+    #: and stands this share of the tallest peak's height (a guard against ripple on the tails of
+    #: the main peak; the oligonucleotide methods, whose noise floor of 3 decides, use 0.1 %)
+    min_rel_height: float = 0.002
 
 
 @dataclass

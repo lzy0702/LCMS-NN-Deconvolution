@@ -51,9 +51,12 @@ def find_regions(
     floors (``min_rel_height`` of the tallest peak, ``min_rel_area`` of the total) are kept low
     on purpose: a second component at a few percent of the main one is an ordinary sample, and a
     floor tied to the tallest peak silently deletes it before deconvolution has a chance to
-    look. Neighbouring peaks become separate regions split at the valley between them, so each
-    region's summed spectrum is dominated by one elution band; only peaks whose apexes are
-    closer than their widths are deconvolved together.
+    look. The oligonucleotide methods lower the height floor to 0.1 %: at 0.2 % it took the region
+    of a 0.04 % shortmer of the IP-RPLC NC run (3206.4 Da of the SI) and of two co-eluting
+    shortmers, whose TIC peak stands 3.5 times above the noise at 0.197 % of the tallest; there
+    the noise floor decides. Neighbouring peaks become separate regions split at the valley
+    between them, so each region's summed spectrum is dominated by one elution band; only peaks
+    whose apexes are closer than their widths are deconvolved together.
     """
     frames = run.frames(polarity)
     if not frames:
