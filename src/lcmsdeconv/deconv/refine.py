@@ -1024,6 +1024,84 @@ def drop_shared_evidence(components: list[Component], library: AdductLibrary, po
     return kept
 
 
+def drop_multimers(components: list[Component], polarity: int, resolution: float = 30000.0,
+                   frames=None, coelution_r: float = 0.5, tol_ppm: float = 500.0,
+                   max_order: int = 6, ratio: float = 0.6, own_share: float = 0.25,
+                   trace: list | None = None) -> list[Component]:
+    """Remove components at n times the mass of a stronger, co-eluting component (n = 2 to
+    ``max_order``): multimers the source makes of a species' own molecules.
+
+    A non-covalent dimer's charge states that are multiples of two hold its monomer's ions, but
+    the odd ones are its own, so :func:`drop_shared_evidence` keeps it. Before the fit,
+    :func:`~lcmsdeconv.deconv.decode.suppress_harmonics` drops a candidate at n*M only when its
+    mass-histogram score is clearly below the monomer's, and with resolved isotopes a multimer's
+    score is not: the monomer's isotopologues, read at n times their charge, put teeth n daltons
+    apart, each scored on its own instead of smoothed into one envelope, and the charge
+    ladder at n*M finds the monomer's states and the multimer's own between them. The 1580 Da
+    shortmer of the IP-RPLC NC run and its [2M-3H]3- dimer scored 1 : 0.74, and the dimer was
+    reported at 0.8 % of the shortmer. The fitted amounts measure each species' own envelopes,
+    so they decide here: a component within the multimer tolerance of ``suppress_harmonics``
+    (``tol_ppm``, at least 2 Da and n * 0.5 Da) of n times a component with more than 1 /
+    ``ratio`` times its intensity is dropped where it co-elutes with it - a multimer is made of
+    the monomer's molecules as they elute. The strongest charge state of its own (not a multiple
+    of n) is compared with the monomer's strongest over the scans the spectrum sums
+    (:func:`~lcmsdeconv.deconv.coelution.coeluting`, which abstains on too few scans). A
+    component whose own states carry less than ``own_share`` of its fit is the monomer's ions
+    read at n times their charge, a harmonic, and goes without the test: what its own states
+    hold is too little to show an elution profile (the 1234 Da shortmer's ions read as a
+    2469 Da species of the IP-HILIC NC run, 9 % of its fit on odd states). The bar is half of
+    what a genuine species at 2M carries on its odd states over an even charge ladder: such a
+    species, eluting on its own, is judged by its elution, not by its charge-state distribution
+    (the dimer of the IP-RPLC NC run has 75 % of its fit on odd states). Methods for native
+    and size-exclusion work, where oligomers are the point, turn this off with
+    ``suppress_multimers: false``.
+    """
+    from .coelution import coeluting
+    from .decode import envelope_geometry
+
+    if len(components) < 2:
+        return components
+    carrier = carrier_mass(polarity)
+
+    def window(c: Component, own_of: int = 1) -> tuple[float, float] | None:
+        """The envelope core of ``c``'s strongest base-form state (z not a multiple of
+        ``own_of`` when that is above one)."""
+        cols = [(v, z) for (z, lab), v in c.columns.items()
+                if v > 0 and (not lab or lab == "base") and (own_of < 2 or z % own_of)]
+        if not cols:
+            return None
+        _v, z = max(cols)
+        env_sigma, offset = envelope_geometry(c.mass, c.compound_class)
+        mz = (c.mass + offset + z * carrier) / z
+        return mz, max(env_sigma / z, mz / max(resolution, 1.0))
+
+    def coelutes(c: Component, k: Component, n: int) -> bool:
+        total = sum(v for v in c.columns.values() if v > 0)
+        own_fit = sum(v for (z, _lab), v in c.columns.items() if v > 0 and z % n)
+        if own_fit < own_share * total:
+            return True  # the monomer's ions at n times their charge: a harmonic
+        own, mono = window(c, n), window(k)
+        if own is None or mono is None or frames is None or coelution_r <= 0:
+            return True
+        tr = frames.traces([mono[0], own[0]], [mono[1], own[1]])
+        return bool(coeluting(tr, 0, coelution_r)[1])
+
+    kept: list[Component] = []
+    for c in sorted(components, key=lambda c: -c.intensity):
+        tol = max(c.mass * tol_ppm * 1e-6, 2.0)
+        monomers = [(k, n) for k in kept if c.intensity < ratio * k.intensity
+                    for n in range(2, max_order + 1)
+                    if abs(c.mass - n * k.mass) <= max(tol, n * 0.5)]
+        monomer = next((m for m in monomers if coelutes(c, *m)), None)
+        if monomer is not None:
+            if trace is not None:
+                trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
+                              "outcome": "multimer", "mass": float(monomer[0].mass)})
+            continue
+        kept.append(c)
+    return kept
+
+
 def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray, thr: float,
                      polarity: int, compound_class: str, resolution: float,
                      mz_range: tuple[float, float] | None = None, max_gap: int = 1,

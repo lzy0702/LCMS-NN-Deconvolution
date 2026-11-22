@@ -21,7 +21,7 @@ from .decode import (
     suppress_harmonics,
 )
 from .nnls_solve import fit_weights
-from .refine import drop_coincident_adducts, drop_shared_evidence, refine_frame
+from .refine import drop_coincident_adducts, drop_multimers, drop_shared_evidence, refine_frame
 
 
 @dataclass
@@ -212,6 +212,13 @@ def deconvolve_spectrum(
         if not new:
             break
         components.extend(new)
+    if params.suppress_multimers:
+        # by fitted amounts: with resolved isotopes a multimer's candidate can score like its
+        # monomer's and pass suppress_harmonics (refine.drop_multimers). First, so that a
+        # multimer explains nothing away from weaker species in the steps below
+        components = drop_multimers(components, polarity,
+                                    resolution=float(instrument.resolving_power(1000.0)),
+                                    frames=frames, coelution_r=params.coelution_r, trace=trace)
     components = drop_shared_evidence(components, library, polarity,
                                       resolution=float(instrument.resolving_power(1000.0)),
                                       trace=trace)
