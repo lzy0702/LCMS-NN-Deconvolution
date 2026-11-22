@@ -135,9 +135,13 @@ range; weight floors were behind 73 % of one decoder's misses.
 
 **Here.** The region finder discarded chromatographic peaks below 5 % of the tallest one. A
 second main component at 4 % of the TIC height (10 % of its area) was never deconvolved. Peaks
-are now kept when they stand ten times above the trace's noise, with relative floors of 0.2 %
-of height and 0.05 % of area, and neighbouring peaks become separate regions split at their
-valley, so one region's summed spectrum is dominated by one elution band.
+are now kept when they stand ten times above the trace's noise (three times with the
+oligonucleotide methods), with relative floors of 0.2 % of height and 0.05 % of area, and
+neighbouring peaks become separate regions split at their valley, so one region's summed spectrum
+is dominated by one elution band. The oligonucleotide methods lower the height floor to 0.1 %:
+at 0.2 % it deleted the region of a 0.04 % shortmer of the IP-RPLC NC run (3206.4 Da of the SI),
+whose TIC peak stood 3.5 times above the noise at 0.197 % of the tallest - this section's lesson
+once more (section 17).
 
 ## 7. Measure on the raw data, with statistics that tolerate a neighbour
 
@@ -578,10 +582,14 @@ replayed stage by stage on the real runs, found three different failures behind 
    IP-HILIC NC run jumped from 0.56 % to 10.5 %, its two teeth fitting the envelope equally to
    0.6 %. On the final code, which takes the better tooth, the two teeth's overlaps above 4 kDa
    differ by 0.03-26 % on the four runs, and right and wrong picks share that range - n-2's correct
-   tooth wins by 2.5 and 2.9 %, FLP + K's wrong one by 0.75 % - so no margin rule separates them.
+   tooth wins by 2.5 and 2.9 %, FLP + K's wrong one by 0.75 % - so no margin rule separates them
+   (section 17 chooses the tooth by a joint fit with same-comb neighbours instead, which takes
+   FLP + K's own tooth).
 
-Now n-2 is reported in both runs (0.08 % under IP-RPLC against 0.15 %, 0.14 % under IP-HILIC
-against 0.11 %), 1883.3 at 0.08 % (0.09-0.10 % by extracted ions), all 20 paper species are found,
+Now n-2 is reported in both runs (0.08 % under IP-RPLC against 0.15 % by its windows - 0.074-0.078 %
+by its own isotopologues, the windows also holding a same-comb neighbour's upper isotopologues,
+section 17 - and 0.14 % under IP-HILIC against 0.11 %), 1883.3 at 0.08 % (0.09-0.10 % by extracted
+ions), all 20 paper species are found,
 and nothing else on the four runs moves by more than a few tenths of a percent but species that
 were edge-pinned (one, reported as an 1831.08 Da shortmer, from 0.004 % to 1.1 %: it was not one,
 below). The cost was one false species more or less per synthetic preset.
@@ -635,7 +643,8 @@ that fails without it:
   (`benchmarks.md`).
 - The better tooth also lifted an "1831 Da species" from 0.001 % to 0.27 % of NC under IP-RPLC
   (1.1 % under IP-HILIC since the first version): the singly and doubly charged ions of a 915 Da
-  species, below the method's mass range, read at charges 2 and 4. At 1.2-1.9 kDa the isotope
+  species, then below the method's mass range, read at charges 2 and 4 (section 17 extends the
+  range to 800 Da, with z = 1 counted beside z = 2). At 1.2-1.9 kDa the isotope
   pattern has three major isotopologues (five at 2.5-3.4 kDa) and a comb at half the charge fills
   two (three) of them, enough for the gate's isotope test; a placement that fills only every other
   position no longer counts. Rejecting a state that is as coherent at half its charge as at its
@@ -650,7 +659,8 @@ section's changes).
 A third review checked every report the whole section had moved against the runs themselves, with
 extracted-ion references and the positions of the isotopologues. Under IP-RPLC the moves were
 towards the references but one - a 2980.4 Da species of 0.008 % lost its 0.0013 % report
-(`benchmarks.md`) - weak shortmers from 0.00-0.73 to 0.83-1.55 times theirs, 5364.15 Da from 0.25 %
+(found again, at 0.007 %, by section 17's between-teeth rule) - weak shortmers from 0.00-0.73 to
+0.83-1.55 times theirs, 5364.15 Da from 0.25 %
 to 0.58 % against 0.53 % (its extracted-ion check now fails it: its apex ties between two scans,
 and from the earlier one the check reaches a stronger form's tail). Under IP-HILIC the comb had
 also placed sodium and potassium forms deeper than the exemption's three of a type: they share
@@ -673,3 +683,253 @@ change that lets a template reach further also lets it reach the wrong thing: th
 better tooth quantified real species the window's edge had misplaced, and false ones with them - a
 charge error and adduct forms that the edge had held at a fraction of their signal by luck. Every
 report a change moves needs checking, not only the ones it was made for.
+
+## 17. Fix the known issues, leave the adduct decisions alone
+
+After section 16 `benchmarks.md` listed what was still wrong on the four runs: 23 of the 29
+SI-listed impurity elutions found among 228 reports, 51 of them unconfirmed; n-2 read 0.49 Da light
+and 0.27 Da heavy, and under IP-RPLC at half its reference; 1883.3 dropped under IP-HILIC; 1908.3,
+2887.4 and 3206.4 of the IP-RPLC NC run missed; NC reported again at 20.0 and 25.4 min; n-1 of the
+IP-HILIC NC run split over two regions and read 0.88 Da heavy; a 915 Da species below the method's
+range; a non-covalent dimer reported at 0.008 %. The rule for this round: adduct forms stay listed
+as species of their own, and adduct handling waits for a module of its own. Six investigations, each
+replaying its issues stage by stage on the runs, proposed fixes; an independent verifier reproduced
+each, checked every report it moved against the raw scans, and for six of the ten fixes adopted
+supplied the variant that was adopted. Ten fixes were adopted and integrated one commit at a time,
+the four runs, the five synthetic benchmarks and the tests run on the whole chain after each; three
+reviews (the code, the outputs, the scope and these documents) and two follow-ups came after.
+
+1. **A reference must own its signal.** n-2 under IP-RPLC sat at 0.08 % against a 0.15 %
+   reference, half of it apparently lost. The reference's windows (2.5 envelope widths around each
+   charge state, over n-2's elution) also held the upper isotopologues of a 4497.7 Da species six
+   spacings below n-2 on its comb and eluting with it, about half of the windows' signal. Split
+   from its neighbours on the comb's positions scan by scan, n-2 is 0.074-0.078 % of NC over its
+   whole elution and 0.065-0.068 % within its region; the same split gives n-1 2.08 % against the
+   windows' 2.03 %. The pipeline was right (1.03 times its own isotopologues) and the reference
+   was not. Under IP-HILIC n-2's 0.14 % against 0.11 % is its own signal: its trace follows its
+   isotopologues scan by scan, at 1.17-1.31 times them, where NC - dG and 3847.4 of that run are
+   1.10. What n-2 does lose is 10-11 % of its IP-RPLC elution, in the next region, where its
+   candidate's envelope search climbs 5.2 Da onto the 4497.7 Da species; recovering it needs that
+   region's bank to carry its neighbour's species across the boundary, and would add 0.008 %.
+2. **A floor tied to the tallest peak deleted a species again.** 3206.4 of the IP-RPLC NC run had
+   no region: its TIC peak stood 3.47 times above the noise, enough for the oligonucleotide
+   methods' floor of three, but at 0.197 % of the tallest peak, 1.7 % under the relative floor of
+   0.2 % that section 6 had kept as a guard against ripple. The floor is now a method setting
+   (`regions.min_rel_height`), 0.1 % for the two oligonucleotide methods and 0.2 % for the
+   others, whose noise floor of ten decides anyway and which nothing here could validate: the
+   synthetic generator makes impurities co-elute with their parent, and none of 112 synthetic runs
+   changed a region at 0.1 %. On the real runs the noise floor then decides on three of four
+   (0.17-0.49 % of the tallest peak); on the IP-RPLC conjugate run, whose noise floor lies at
+   0.076 %, 0.1 % binds and admits two more peaks. 3206.4 is found (3207.18 Da at 0.020 % against
+   0.042 % by its own isotopologues; 13 % of its elution falls before the new region), with a
+   shortmer, its PO form and, in the conjugate run, a 2559 Da shortmer at 1.08 times its reference.
+3. **A merge taken strongest first is order-dependent.** Pieces of one species in adjacent regions
+   are merged strongest first, so a weak tail piece that touched only a middle piece not yet
+   joined was compared with the strong piece's trace before it grew (a gap of 0.21 min against the
+   0.2 min limit) and was left apart: the last pieces of 2653.32 and 2998.45 Da of the IP-RPLC
+   conjugate run, each over three regions. The merge is now repeated until nothing more joins.
+4. **Pieces and later elutions are judged by the isotope tooth read in the scans.** A region's
+   summed spectrum mixes a band's front or tail with whatever elutes there and can read it a dalton
+   off; the scans cannot: one molecule sits on one tooth of its isotope comb however a blend skews
+   its average mass, and a deaminated form sits one tooth away (`refine.tooth_position`, the class
+   pattern matched against each scan's own points). Two rules read it. A piece peaking on a shared
+   boundary, read up to 1.5 Da off a stronger species that runs on past the boundary without a
+   valley, is joined to it where both read one tooth, each by a margin of 0.02
+   (`features.link.merge_boundary_pieces`): n-1 of the IP-HILIC NC run, a 1.87 % main piece read
+   at 4833.86 Da and a 0.47 % tail at 4833.14 Da, is one report of 2.35 % against 2.45 +- 0.18 %.
+   The verifier made the joined species keep the mass its own isotopes support instead of the
+   stronger piece's, which would have reported n-1 0.88 Da heavy. The IP-RPLC conjugate run's
+   0.02-0.05 % boundary reports, which the known issue had called a neighbour's front, read other
+   teeth - species lighter than PO and FLP, one peaking on the boundary - and stay. The other rule
+   sets the run's main species' later elutions aside (`features.link.set_aside_later_elutions`):
+   NC's reports at 20.0 and 25.4 min (1.24 and 1.32 %) are its own tail, falling from 0.3 to 0.07 %
+   of its height from 19 to 25 min, and its column-wash peak at 1.3 % of its height, the same
+   molecule by its tooth at every time (5162.17 Da, margins 0.037-0.057), and are named in NC's
+   flags; the flags name 2.6 of the 5.6 % of NC that elutes after its band. Its +201.4 Da form's
+   wash piece goes with them, but only from a later piece that rises and falls: in the verifier's
+   probe a slice of NC's tail had carried a later isomer of n-1 off with it.
+5. **A window's trace judges whatever lies in it; a species' own isotopologues judge the species.**
+   1883.3 under IP-HILIC was dropped by the co-elution test: its z = 3 window held one of its
+   isotopologues and, 0.006 m/z beside it, an ion of the 1234.2 Da 4-mer's +Na form eluting
+   earlier, so that window's trace correlated at 0.36 with z = 2 while its own isotopologues did at
+   0.97. A state that fails on its window is now judged again on narrow windows on the species' own
+   major isotopologues and kept at r >= 0.9; rescues at 0.5 and 0.8 added 21 to 29 reports, mostly
+   adduct forms of the main species (FLP + DIPEA at 1.78 %). The verifier found the rescue pairing
+   the 1580 Da shortmer's z = 1 ion with its dimer's z = 3 - 99 % of the reference's comb trace lay
+   outside its own window - and added an anchor: the reference's comb positions inside its window
+   must carry a quarter of the share the pattern predicts there. 1883.3 is found at 1884.51 Da and
+   0.33 %, against 0.33 % by its own isotopologues, with two small species whose isotopologues
+   co-elute at 0.92 and 0.99.
+6. **Multimers go by their fitted amounts, and only on evidence.** With resolved isotopes a
+   multimer's candidate scores like its monomer's: the 1580 Da shortmer's z = 2 isotopologues,
+   read at z = 4, vote on teeth 2 Da apart that the smoothing does not merge, and its [2M-3H]3-
+   dimer scored 0.74 of the shortmer, above the harmonic test's 0.6; section 16's parity rule had
+   removed the accident that kept it out. `refine.drop_multimers` drops a component at n x M with
+   less than 0.6 of the monomer's fitted amount where its own charge states (not multiples of n)
+   carry under a quarter of its fit - a harmonic reading - or where its strongest own state
+   co-elutes with the monomer's: the dimer (75 % of its fit on odd states, r 0.91 over 26 scans)
+   and a 2469 Da reading of the 1234 Da 4-mer (9 %) go, nothing else on the runs. The verifier
+   lowered the share from a half to a quarter, as a genuine 2M species carries about half its fit
+   on odd states; the code review found the rule dropping wherever co-elution could not be judged
+   (no frames, fewer than four scans, no profile in the monomer's trace), which the oligonucleotide
+   methods' two-scan regions allow, and it now keeps such a component unless it is a harmonic.
+7. **Below 1.2 kDa z = 1 is one of two charge states.** The 915 Da trimer (0.41 % of NC under
+   IP-RPLC, 1.15 % under IP-HILIC) lay below the Orbitrap oligonucleotide method's 1 kDa floor; at
+   m/z 400-2500 a species under about 1.2 kDa shows only z = 1 and z = 2. Lowering the floor alone
+   found nothing; allowing z = 1 as it stood gave 283 reports instead of 228 and lost three
+   EIC-confirmed species, because every envelope fills a z = 1 comb: NC's non-covalent dimer
+   [2M-5H]5-, read at z = 1, became 2065-2079 Da species at 0.6-1.6 % of NC. With z = 1 never a
+   species on its own and counted only where its envelope has no peaks between its isotopologues,
+   the method now reaches 800 Da and finds the trimer, 1563.2 and 1234.2 under IP-RPLC and a ladder
+   of shortmers whose monoisotopic masses differ by phosphorothioate residues to 0.01 Da, with a
+   4-mer's silver adduct listed apart, real ions at 0.000 % and two unidentified reports. z = 1
+   reached further than intended. Through the unchanged adduct-evidence test it made sodium and
+   potassium evidenced in three low-mass regions (item 13), and on one of 16 synthetic Orbitrap
+   seeds peaks voted for by z = 1 beside another charge state pushed a weak 6.42 kDa main species
+   out of the decoder's list of 200 candidates. That preset's 3-9 kDa species show no z = 1, and the
+   fix's verifier had judged it unaffected for that reason; the benchmark's four seeds do not show
+   the loss.
+8. **The comb takes over where the overlap's optimum lies between its teeth, and chooses its tooth
+   with its neighbours.** Section 16 consulted the comb only where the overlap search ended on the
+   window's edge. A mass read about half a spacing off (an envelope 2 Da lighter on the same comb
+   pulls the mean shift) has both teeth beyond the 0.29 Da window, and the optimum sits between
+   them on whatever weak signal is there, 115-2000 times below the better tooth: 1908.3 and 2887.4
+   were missed, the 2980.4 Da species was lost and a 2602.07 Da species was reported at 0.0003 %
+   at a time where its windows are empty. An interior optimum is now kept where it lies on the comb
+   (within 0.15 Da of a tooth; on the four runs such optima lie within 0.093 Da, those between the
+   teeth 0.19-0.48 Da off) or holds a quarter of the larger tooth's overlap (those between the
+   teeth hold at most 15 %), and otherwise the better tooth is taken: 1908.3 and 2887.4 are found
+   at 0.82 and 0.98 times their own-isotopologue references, the 2980.4 and 2602.07 Da species at
+   their times. The better tooth was section 16's weak point: compared alone, the two teeth's
+   overlaps differ by 0.03-26 %, right and wrong picks sharing that range, because an envelope of
+   the same comb two to seven spacings away overlaps the candidate's and favours the tooth on its
+   side. Fitted together with same-comb templates two to seven spacings beyond the pair, the teeth
+   are right on 49 of the 50 placements that composition or the raw scans decide, the overlaps also
+   on 49 - but the joint fit's miss, NC + 6Na + K, is held at the window's edge by the cation-ladder
+   rule either way, while the overlaps' miss, FLP + K, is placed a spacing light. The verifier
+   widened the joint fit from four spacings to seven when n-2 under IP-HILIC flipped to the wrong
+   tooth for a comb read 0.005-0.02 Da heavier; strong same-comb neighbours on both sides still
+   defeat it.
+9. **The reported mass follows the templates where the comb placed them.** A comb-placed species
+   kept its mean-shift mass, 0.3-0.5 Da off its own isotopologues: n-2 was read 0.49 Da light and
+   0.27 Da heavy while its templates sat 0.06 Da from the truth. Read off the comb, the template
+   position carries only the class pattern's composition error, -0.12 to +0.17 Da on the four runs
+   and the same for one molecule in both chromatographies, where the mean-shift masses of those
+   pairs differ by up to 0.6 Da. Such a species is now reported there where that lies within half a
+   spacing of its measured mass (`refine.report_comb_masses`). The investigator moved the mass
+   inside the fit passes; the verifier found the next pass's filter of species already found then
+   reading the moved mass, so that an envelope placed on its far tooth, 0.52-0.59 Da from its gate
+   mass, was found again and fitted on the other tooth (a 4486.64 Da report), and the adduct merges
+   and drops reading it too. Done once per frame after the adduct steps, every amount on the four
+   runs stayed as it was but one merge's: 4948.78 and 4949.38 Da, two species one tooth apart, now
+   merge into one report, away from the truth. n-2 is reported at 4503.65 Da in both runs (-0.06 Da,
+   from -0.49 and +0.27 Da), 1883.3 under IP-RPLC at 1884.63 Da (+0.02, from -0.34 Da), 3527.5 under
+   IP-HILIC at 3527.87 Da (-0.12, from +0.33 Da) and n-1 under IP-HILIC at its tail piece's comb
+   position (-0.06 Da).
+10. **A knife edge is shut with a tolerance the code already has.** Integrated, the region floor
+    (item 2) moved 3207.4's gate mass by 0.025 Da and put its comb's tooth 0.005 Da inside the
+    0.289 Da window. The edge path took the comb only for a tooth beyond the window, so 3207.4 kept
+    its mean-shift mass, 0.30 Da light, where item 9 alone had put it at +0.01 Da. An alignment
+    that stops at the edge within 0.15 Da of a tooth inside the window - the tolerance that already
+    puts an interior optimum on the comb - now takes the comb: it is that tooth cut short by the
+    window, the overlap peaking past the midpoint of the last step. It fires on four alignments of
+    the four runs, 0.0005-0.024 Da from their tooth, and moves 3207.4 to 3208.69 Da (+0.01) and
+    two unconfirmed reports onto the teeth their summed scans read. A threshold of 0.03 Da gave
+    the same four runs but would have been a new knife edge, among the distances observed
+    (0.020-0.024 Da inside it, 0.038 Da outside). The jump itself remains, one step in: an interior
+    optimum on the comb keeps the mean-shift mass, and 3315.35 Da of the same run, 0.28 Da light of
+    its tooth, peaks 0.0007 Da short of the midpoint that decides.
+11. **Fixes interact, and every one needs the whole chain run again.** Each fix was validated
+    alone on the code of section 16; integrated, results appeared that no single validation could
+    show. 3207.4 needed items 2 and 9 together to lose its correction (item 10). A 1481.14 Da
+    report of the IP-HILIC NC run needs the 800 Da range and the between-teeth rule together: it is
+    a cluster ion, the sodium form of a calcium-bridged dimer of a co-eluting 710.09 Da compound
+    (its ions fit that composition within 1.3 ppm), which its one z = 1 isotopologue gives a second
+    charge state, the between-teeth rule templates on its own isotopologues and item 9 a mass 0.43
+    Da above its measured one; requiring z = 1 to show in two scans removes it, and also the
+    deaminated 4-mer, so it is left to the adduct module. The 2602.07 Da species got its time and
+    amount from item 8 and, from item 9, the tooth the apex-scan fits reject as its reported mass:
+    1.0 Da from its reference where it had been 0.55 Da. And the pooled reading below turned
+    item 4's join of n-1 against it. Each step was therefore committed alone, the four runs, the
+    synthetic benchmarks and the tests run on the chain after it, and every changed report traced
+    to the steps that changed it; the review fixes and item 10 were run on the final tree again.
+12. **The pooled reading was tried and not used.** The union axis weights a region's points by
+    count; read on each scan's own points, pooled, n-1's main piece is 4833.16 instead of
+    4833.86 Da, and that reading was integrated as a last step. It moved 60 other reports by 0.1 Da
+    or more, 33 towards their per-scan reading and 14 away. But the adduct folds and the region
+    merges read the reported masses: six folds flipped at their 0.5-0.6 Da edges (5301.01, PO-NC +
+    Na, 4885.13, 7012.43, 6555.47 and 3368.69 Da), PO-NC + 2Na became a species at 0.82 % - adduct
+    decisions this round left alone - and n-1 under IP-HILIC went from -0.06 to +0.18 Da: read
+    pooled, its main piece came within 0.5 Da of the tail piece, so the merge that keeps the
+    stronger piece's mass joined them before the one that keeps the mass the isotopes support saw
+    them. The paper's species got worse (mean error 0.053 to 0.062 Da), the SI's better (0.184 to
+    0.168 Da). It waits for the adduct module, with folds and merges decided on one mass, the
+    pooled value given to the reported mass only, and boundary pieces left to the tooth.
+13. **Adduct outcomes moved although no adduct rule changed.** The adduct dedupe, the fold, the
+    cation-ladder rule, the coincident-adduct and shared-evidence drops and the adduct-form
+    exemption are the code of section 16; the adduct-evidence test only gained arguments that keep
+    it reading charge windows and judge z = 1 as detection does, and no form listed apart before is
+    folded away. The in-scope fixes moved adduct outcomes all the same: NC + K of the IP-RPLC
+    conjugate run, rescued at r 0.98 (item 5), folds into NC (all forms 1.65 to 1.69 %), and NC +
+    DIPEA, rescued at 0.903, is removed by the dedupe and the shared-evidence test; z = 1 evidences
+    sodium and potassium in three low-mass regions, giving the IP-HILIC 4-mer adduct columns (all
+    forms 2.59 to 4.14 %) and walking its [2M+Na] dimer to 2M, which item 6 then drops; the
+    between-teeth rule ends a walk (3058.12 to 2998.05 Da), moves adduct columns between shortmers
+    and fits two synthetic adduct forms whole (Orbitrap precision 76 to 70 %); the joint-fit tooth
+    puts FLP + K's template on its own tooth (PO all forms 4.82 to 4.86 %); and the comb-placed
+    masses leave every fold as it was but move each form's offset from its parent plus the adduct
+    (2558.52 Da's +K form now 0.52 Da off, 0.08 Da inside the fold's 0.6 Da). In-scope rules lean on
+    adduct rules in turn: only the cation-ladder rule holds 2887.4 + 3Na + K at its optimum and
+    masks the joint fit's one miss, FLP + K is comb-placed only because its region does not evidence
+    potassium, and item 10 places adduct-walk trials. The list, with its numbers, is in
+    `benchmarks.md` for the adduct module.
+
+On the four runs the round gives 250 reports instead of 228, 127 of them EIC-confirmed (115) and
+58 unconfirmed (51; 45 of them below 0.1 % of the main species, 40 before); all 20 of the paper's
+species, and all 29 SI-listed elutions (23). The scored mass error on the 43 species found before
+goes from a median of 0.080 to 0.060 Da and a mean of 0.142 to 0.105 Da, 11 to 6 of them above
+0.2 Da and 6 to 2 above 0.3 Da; 19 of 24 impurity amounts lie within 0.88-1.19 of their
+extracted-ion references (16 of 23). Five IP-RPLC shortmers are still read 0.52-0.75 Da light of
+their own isotopologues: three whose templates sit on the right tooth more than half a spacing
+from the measured mass, two whose templates sit on the wrong one. On the synthetic benchmarks
+recall is unchanged in every preset and tier, the oligonucleotide preset's median error goes from
+1.4 to 1.1 ppm, the Orbitrap preset's precision from 76 to 70 % and the legacy polymer preset's
+from 61 to 64 %; over 16 Orbitrap seeds 75 of 165 reports matched before and 74 now, the main
+species of item 7 lost.
+
+The three reviews found more to fix. The code review found the later-elution set-aside running
+for every method, so that under the protein top-down method a 12 kDa protein's isomer at 3 % a
+minute later was named in a flag instead of reported; it is now a method setting
+(`linking.set_aside_later_elutions`), on for the two oligonucleotide methods, where the main
+species' tail and column-wash peak are the concern. It found the multimer rule dropping without
+evidence (item 6), and rules no test pinned - the pipeline's call to `report_comb_masses`, the z = 1
+rules beyond the gate's, the rescue's 0.9 bar, the tooth mass the boundary join reads, the floors
+and weights passed through the pipeline - each now with a test that fails when it is removed (28
+mutations, all caught). The outputs review found 3207.4's knife edge (item 10), the unconfirmed
+count and the moves to explain (2601.07 Da, the 4949 merge), three SI-listed shortmers read half a
+spacing light although 29 of 29 are found, and the unexamined 1481.14 Da (item 11); the scope
+review the adduct side effects (item 13), a misreading of the rescue (NC + DIPEA does not fold), and
+47 statements in these documents that the tree had made stale.
+
+What did not work, besides the pooled reading: an amplitude test for the comb's second state (a
+state counts only where a window without its comb would agree that closely by chance at most 0.5 %
+of the time) cut chance agreement on noise from 17.5-20.5 % to 1.0-2.5 %, but changed no report
+anywhere and, below about 3 kDa, where a short envelope leaks into the off-comb frequencies it
+compares with, lost weak states of the species' own (1883.3's z = 3 among them); taking the other
+tooth for 2558.3's on-comb optimum raised it from 0.29 to 0.33 % against 0.36 % but put other
+templates on teeth the apex-scan fits reject and churned six adduct-cluster reports, and a shape fit
+on the same residual moved 4 of 12 candidates onto rejected teeth, among them a 2.9 % species;
+reporting the template position for every comb placement, near tooth or far, made FLP + K a 1.8 %
+false species, and for every isotope-resolved species took 2558.3 1.00 Da off and out of the
+scorer's reach; a 500 Da floor added nothing; relaxing `report_comb_masses`' half spacing was
+considered and not tried: 19 comb-placed components lie 0.52-0.75 Da from their templates, among
+them two sodium forms of PO-NC whose folds would flip and two whose templates sit on rejected teeth.
+
+The lesson extends section 16's: evidence must be the species' own - its own isotopologues for the
+co-elution of its charge states, its own tooth read in its own scans for its pieces and its later
+elutions, its own signal for its reference. And a fix is validated only in the chain it ships in: of
+this round's surprises, three came from fixes combined, one from a list of candidates every species
+shares, one from masses that decisions downstream of the fix read, and one from a step every method
+ran that only the oligonucleotide methods had asked for. No adduct rule changed and adduct outcomes
+moved anyway; the adduct module inherits that list, and every rule that leans on the ones it will
+redesign.

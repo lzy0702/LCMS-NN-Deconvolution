@@ -94,10 +94,12 @@ Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run 
 checks every other report with extracted-ion chromatograms. Of 20 known species the original code
 found 2 among 87 reports; before the resampling fix the code found 13 among 39 (15 of 20 with
 `deconvolution.single_charge`), after it 15, and 15 of 29 SI-listed impurities, among 198 reports,
-and the current code finds all 20, and 23 of 29 SI-listed impurities, among 228 reports, with
-base-form amounts within 0.88-1.19 of extracted-ion references for 16 of the 23 impurities found.
-Details, mass errors and what is still wrong are in `benchmarks.md`; the defects these runs
-exposed, and what the truth table changed, are in `lessons.md`, sections 11, 14, 15 and 16.
+and the current code finds all 20, and all 29 SI-listed impurity elutions (five IP-RPLC shortmers
+among them read 0.52-0.75 Da light of their own isotopologues), among 250 reports, 127 of them
+EIC-confirmed and 58 unconfirmed, with base-form amounts within 0.88-1.19 of extracted-ion
+references for 19 of the 24 impurities in the amounts table. Details, mass errors and what is
+still wrong are in `benchmarks.md`; the defects these runs exposed, and what the truth table
+changed, are in `lessons.md`, sections 11, 14, 15, 16 and 17.
 
 ## Public data
 
@@ -135,7 +137,18 @@ package could not reach:
   what the mobile phase can actually produce is the practical remedy.
 - A genuine dimer and a doubled charge assignment are indistinguishable within one spectrum. The
   `suppress_multimers` setting decides which way to resolve it, and is off for the native and
-  size-exclusion methods.
+  size-exclusion methods. Where it is on, a species at n times a stronger one's mass with less
+  than 0.6 of its amount is dropped after the fit (`refine.drop_multimers`) as a harmonic reading
+  where its own charge states carry under a quarter of its fit, and otherwise where it co-elutes
+  with the stronger one over four scans or more: a genuine dimer that co-elutes with its monomer
+  over that many scans is dropped too, and one in a region of two or three scans is kept.
+- The later-elution set-aside of the oligonucleotide methods (`linking.set_aside_later_elutions`)
+  names a same-mass species at under a twentieth of the main species, eluting more than 0.2 min
+  after its band, in the main species' flags; an isomer of the main species eluting there would
+  be named instead of reported. The other methods leave it off.
+- With z = 1 among its charges (the Orbitrap oligonucleotide method, from 800 Da), peaks voted
+  for by z = 1 beside another charge state take places in the decoder's list of 200 candidates;
+  on one synthetic Orbitrap run of 16 that pushed out a weak main species.
 - An adduct whose mass is within about 1 Da of a modification cannot be separated from it at
   modest resolving power. Such species are flagged rather than silently merged.
 - Adduct fractions become uncertain when the adduct spacing is below about 0.7 peak widths, which
@@ -150,8 +163,9 @@ package could not reach:
 - On vendor-thresholded data the decoder separates species from charge ladders of unrelated
   ions by isotope sizes and by the co-elution of charge states, not by the noise level. Species
   seen in only a few scans of a region, or whose charge states share their m/z windows with
-  other ions, can be rejected; a ladder of ions that co-elute (a broad column wash) can still
-  pass where the isotopes are not resolved.
+  other ions, can be rejected (where the isotopes are resolved, a charge state whose window does
+  not co-elute is judged again on the species' own isotopologues); a ladder of ions that co-elute
+  (a broad column wash) can still pass where the isotopes are not resolved.
 - Abundances of a minor species next to a much stronger one depend on templates matching the
   strong species' resolved isotopologues; with the alignment step they agree with
   extracted-ion areas to within about 25 % under IP-RPLC and a factor of two to three under

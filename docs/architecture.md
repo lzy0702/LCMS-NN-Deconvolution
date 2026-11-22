@@ -126,28 +126,41 @@ positions per dalton, and a z = 3 envelope read as its own dimer at z = 6 popula
 species has three major isotopologues at 1.2-1.9 kDa and five at 2.5-3.4 kDa, and an ion of half
 the charge fills two or three of them, every other position - enough to pass: a placement whose
 filled positions all lie on one such sub-comb does not count while the pattern has major
-isotopologues off it (the singly and doubly charged ions of a 915 Da species, below the method's
-mass range, were otherwise read as charges 2 and 4 of an 1831 Da one, 1.2 % of the main species
-under IP-HILIC; at 3.2 kDa the rule takes the charge-2 state, the 1580 Da shortmer's ions, from a
-candidate built on that shortmer's non-covalent dimer, which it had kept out, and the dimer is
-reported at 0.008 %). Where the spacing is not resolved, an envelope much wider than one peak must
-appear as a continuous hump in profile data rather than as a few narrow peaks of a low-charge
-species.
+isotopologues off it (the singly and doubly charged ions of a 915 Da species were otherwise read
+as charges 2 and 4 of an 1831 Da one, 1.2 % of the main species under IP-HILIC; the Orbitrap
+oligonucleotide method now reaches down to 800 Da and reports that species from its own z = 1 and
+z = 2, below. At 3.2 kDa the rule takes the charge-2 state, the 1580 Da shortmer's ions, from a
+candidate built on that shortmer's non-covalent dimer, which it had kept out; the dimer is now
+dropped by its fitted amount, section 4). Where the spacing is not resolved, an envelope much
+wider than one peak must appear as a continuous hump in profile data rather than as a few narrow
+peaks of a low-charge species.
 
-On vendor-thresholded data some ion stands above the noise near almost every position, so a
-comb position counts as populated only by a peak of at least a third of the height the isotope
-pattern predicts there, given the envelope's height where the mean shift found it. A charge
-ladder assembled from one strong low-charge ion and whatever weak signal lies at the other
-positions - the column wash of the real runs produced dozens of 9-22 kDa "species" that way -
-fails it. And when the spectrum is a region's sum, the charge states of the deciding cluster
-must co-elute (`coelution_r`, `deconv.coelution`): the scan-by-scan intensity in each one's
-envelope core must correlate with the strongest one's at Pearson r >= 0.5. A state that does not
-is another ion under this species' window and leaves the cluster, which must still hold two
-charge states. The test abstains when the strongest state carries signal in fewer than four
-scans. The charge states of one molecule are the same molecules at different m/z; a ladder of
-unrelated ions follows as many elution profiles as it has members.
-A further step drops candidates separated from a stronger one by an adduct delta, because the
-stronger candidate's adduct columns will account for them.
+On vendor-thresholded data some ion stands above the noise near almost every position, so a comb
+position counts as populated only by a peak of at least a third of the height the isotope pattern
+predicts there, given the envelope's height where the mean shift found it. A charge ladder assembled
+from one strong low-charge ion and whatever weak signal lies at the other positions - the column
+wash of the real runs produced dozens of 9-22 kDa "species" that way - fails it. And when the
+spectrum is a region's sum, the charge states of the deciding cluster must co-elute (`coelution_r`,
+`deconv.coelution`): the scan-by-scan intensity in each one's envelope core must correlate with the
+strongest one's at Pearson r >= 0.5. A state that does not is another ion under this species'
+window - unless the species' own isotopologues in it co-elute: narrow windows, half a peak width
+either side, on the major isotopologues of the comb the strongest state's envelope sets, kept at
+r >= 0.9 (`coelution.COMB_RESCUE_R`), and only where the strongest state's comb positions inside its
+own window carry at least a quarter of the share the class pattern predicts there (a shortmer's
+z = 1 ion, paired with its dimer's z = 3 at a window between the shortmer's isotopologues, fails
+that). On the four runs the states that pass on their windows correlate on their isotopologues at a
+median 0.96; of those that fail, a third reach 0.5, most of them adduct forms of the main species
+beside other forms' peaks, and 4 % reach 0.9. 1883.3 under IP-HILIC, whose z = 3 window also holds
+the 1234.2 Da 4-mer's +Na ion (r 0.36 on the window, 0.97 on its isotopologues), is kept this way;
+so are NC + K and NC + DIPEA of the IP-RPLC conjugate run (r 0.98 and 0.903): the first now folds
+into NC, the second is removed by the adduct dedupe and, found again in the next pass, by the
+shared-evidence test. The adduct-evidence test (section 4) still reads the windows only
+(`own_comb=False`): on the isotopologues it would evidence DIPEA in NC's region of that run. A state
+that fails both leaves the cluster, which must still hold two charge states. The test abstains when
+the strongest state carries signal in fewer than four scans. The charge states of one molecule are
+the same molecules at different m/z; a ladder of unrelated ions follows as many elution profiles as
+it has members. A further step drops candidates separated from a stronger one by an adduct delta,
+because the stronger candidate's adduct columns will account for them.
 
 On isotope-resolved data (Orbitrap and FT-ICR methods, or `isotope_charges: true`) the comb
 estimator also reads charges from isotope spacing: for each bin, the largest charge whose
@@ -165,6 +178,19 @@ than z - 1 or z + 1, and its isotopologue comb is filled. It is flagged "one cha
 charge read from isotope spacing". The option is off by default (see `benchmarks.md` for what
 it gains and costs on real runs).
 
+The Orbitrap oligonucleotide method reads masses from 800 Da and charges from 1: below about
+1.2 kDa z = 1 and z = 2 are a species' only charge states within m/z 400-2500, and below about
+802 Da z = 2 leaves that range too. There z = 1 never makes a species on its own
+(`singly_charged_species: false`), and a z = 1 state counts - in the candidate pick, the gate, the
+fit's charge support, the charges added for the fit and the adduct-evidence test - only where its
+envelope has no peak of a third of its height between its isotopologues
+(`decode.singly_charged_contradicted`): any charge c >= 2 puts peaks at k/c of a spacing, and every
+envelope fills a z = 1 comb (NC's non-covalent dimer [2M-5H]5-, read at z = 1, was otherwise a
+2065-2079 Da species at 0.6-1.6 % of NC). The other methods keep singly charged species, and the
+time-of-flight oligonucleotide method still starts at 1 kDa and z = 2. Peaks voted for by z = 1
+beside another charge state also enter the decoder's list of 200 candidates, and on one synthetic
+Orbitrap run they pushed a weak main species out of it (`benchmarks.md`).
+
 ## 4. Refinement and quantitation
 
 Candidates are fitted greedily, strongest first, against the residual. For one candidate the
@@ -179,48 +205,65 @@ while impurities kept 60-80 % of theirs.
 
 On isotope-resolved data a compound class's average composition places the isotopologues of a
 particular molecule up to 0.1-0.2 Da from where they are (0.11 Da for the non-conjugated product of
-the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is
-fitted, its templates are slid together by up to 1.5 bins, or 0.3 Da where that is wider, onto the
-spectrum and the shift with the largest normalized overlap is kept (`refine.align_template`; only
-where the instrument resolves the isotopes of the candidate's central charge). The offsets to
-absorb are in daltons: 1.5 bins is 0.04 Da at 1.2 kDa, and with that window half the alignments of
-the IP-HILIC NC run were pinned to its edge, a 1235 Da shortmer quantified at a four-hundredth of
-its amount. Where the overlap's best is still the window's edge, the candidate's own isotope comb
-decides (`refine.align_candidate`, `refine.comb_phase_shift`): the residual's bins in each window
-of a charge state that passed the gate, folded onto one isotope spacing, give the shift that puts
-the template's isotopologues on them, modulo a spacing. A weak species' average mass can be read
-several tenths of a dalton off - a co-eluting envelope 2 Da lighter on the same comb, or a
-neighbour 6 Da away, pulls the mean shift - and its templates then need more than the window
-allows: the 1.9 kDa shortmer 1883.3 of the IP-RPLC NC run, read 0.34 Da light, needs +0.36 Da and
-at the edge, 0.07 Da beside its isotopologues and off their narrow peaks, was fitted 300 times low;
-n-2 of the NC product needs +0.49 Da under IP-RPLC and -0.37 Da under IP-HILIC. The comb is
-consulted only where the overlap's optimum is the window's edge and the comb's nearest tooth lies
-beyond the window, and taken only where at least two gate-passed charge states agree on it, each
-within 0.1 Da of the combined phase - a state with less than a tenth of the weight cannot veto, its
-phase being the less certain, but counts towards the two only where it agrees (1883.3's comb is its
-z = 2's, 97 % of the weight, z = 3 agreeing to 0.02 Da) - and half the windows' intensity lines up
-on it. Of its two teeth either side of the measured mass the one whose template fits the envelope
-better is taken: a mass read more than half a spacing off has its nearest tooth on the wrong side,
-and the edge between them fits neither. The comb is not consulted where the overlap peaks inside
-the window: on the wrong tooth for a mass read 0.7-1.3 Da off, or between the teeth on a weak
-species' noise (1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, are missed
-that way; `benchmarks.md`). A candidate whose gate measured another mass's envelopes (one the
-adduct dedupe renamed to a lighter partner measured the stronger form's) is left at the edge, and
-so is an adduct form of an accepted species - within 1 Da of its mass, or of a mass the adduct walk
-moved a candidate from (itself a form of the species it joined), plus an adduct state, up to three
-of a type - whose mass its neighbouring forms pull by up to three quarters of a dalton and whose
-two teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb such a form is
-fitted whole: NC's +5Na and +3Na+K forms, beyond the two of a type the fit allows and the three the
-exemption covers, were reported as a 3.3 % impurity until the mass NC + 3Na was walked from
-anchored them. Sodium and potassium forms deeper still, four to eight in all, are recognised by
+the real runs under the `ps_rna` class): a grid bin at charge four. Before each candidate is fitted,
+its templates are slid together by up to 1.5 bins, or 0.3 Da where that is wider, onto the spectrum
+and the shift with the largest normalized overlap is kept (`refine.align_template`; only where the
+instrument resolves the isotopes of the candidate's central charge). The offsets to absorb are in
+daltons: 1.5 bins is 0.04 Da at 1.2 kDa, and with that window half the alignments of the IP-HILIC NC
+run were pinned to its edge, a 1235 Da shortmer quantified at a four-hundredth of its amount. Where
+the overlap's best is still the window's edge, or lies inside it between the teeth of the
+candidate's own isotope comb, that comb decides (`refine.align_candidate`,
+`refine.comb_phase_shift`): the residual's bins in each window of a charge state that passed the
+gate, folded onto one isotope spacing, give the shift that puts the template's isotopologues on
+them, modulo a spacing. A weak species' average mass can be read several tenths of a dalton off - a
+co-eluting envelope 2 Da lighter on the same comb, or a neighbour 6 Da away, pulls the mean shift -
+and its templates then need more than the window allows: the 1.9 kDa shortmer 1883.3 of the IP-RPLC
+NC run, read 0.34 Da light, needs +0.36 Da and at the edge, 0.07 Da beside its isotopologues and off
+their narrow peaks, was fitted 300 times low; n-2 of the NC product needs +0.49 Da under IP-RPLC and
+-0.37 Da under IP-HILIC. The comb is consulted where the overlap's optimum is the window's edge, and
+where it lies inside the window but off the comb: more than 0.15 Da from a tooth (`off_comb_da`) and
+holding under a quarter (`between_ratio`) of the larger of the two teeth's overlaps. A mass read
+about half a spacing off has both teeth beyond the window, and the optimum then sits between them on
+noise (1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, 115 and 2000 times
+below the better tooth, were missed that way; on the four runs optima on the comb lie within
+0.093 Da of a tooth, those between the teeth 0.19-0.48 Da from it, holding at most 15 % of it). At
+the edge the comb is consulted where its nearest tooth lies beyond the window, or inside it within
+0.15 Da of the edge: that is the tooth cut short by the window, the overlap peaking past the
+midpoint of the last step, where no parabola is fitted (on the four runs four alignments end so,
+0.0005-0.024 Da from their tooth; 3207.4 of the IP-RPLC NC run, its tooth 0.005 Da inside the
+0.289 Da window, was otherwise left at the edge and reported 0.30 Da light). An edge further from a
+tooth inside the window, pulled there by a state the gate did not pass, is kept. The comb is taken
+only where at least two gate-passed charge states agree on it, each within 0.1 Da of the combined
+phase - a state with less than a tenth of the weight cannot veto, its phase being the less certain,
+but counts towards the two only where it agrees (1883.3's comb is its z = 2's, 97 % of the weight,
+z = 3 agreeing to 0.02 Da) - and half the windows' intensity lines up on it. Of its two teeth either
+side of the measured mass the one that carries more of the spectrum is taken, in a weighted fit of
+both teeth's templates together with templates of the same comb two to seven spacings beyond the
+pair (`refine._better_tooth`): a mass read more than half a spacing off has its nearest tooth on the
+wrong side, the edge between them fits neither, and compared alone by their overlaps the two teeth
+differ by 0.03-26 %, right and wrong picks sharing that range (FLP + K of the IP-RPLC conjugate run
+went one spacing light under a species 3-4 Da lighter on its comb; fitted with it, its own tooth
+carries four times the other's). An optimum inside the window on the comb is kept even on the wrong
+tooth, for a mass read 0.7-1.3 Da off (2558.3 of the IP-RPLC NC run, `benchmarks.md`): the two
+teeth's overlaps do not tell that apart. A candidate whose gate measured another mass's envelopes
+(one the adduct dedupe renamed to a lighter partner measured the stronger form's) is left where the
+overlap put it, and so is an adduct form of an accepted species - within 1 Da of its mass, or of a
+mass the adduct walk moved a candidate from (itself a form of the species it joined), plus an adduct
+state, up to three of a type - whose mass its neighbouring forms pull by up to three quarters of a
+dalton and whose two teeth fit alike (NC + 3Na of the IP-HILIC NC run, to 1.0 %). Placed on its comb
+such a form is fitted whole: NC's +5Na and +3Na+K forms, beyond the two of a type the fit allows and
+the three the exemption covers, were reported as a 3.3 % impurity until the mass NC + 3Na was walked
+from anchored them. Sodium and potassium forms deeper still, four to eight in all, are recognised by
 their comb instead where the region evidences sodium (`refine._on_cation_ladder`): such a form
 shares its parent's isotope comb exactly, moved by the ladder's monoisotopic shift, so a candidate
 whose comb falls within 0.03 Da of an accepted species' comb so moved, its mass within 1 Da of that
-species plus the ladder, keeps the edge as well. Placed on their combs DA-NC + 4Na and NC + 6Na + K
-of the IP-HILIC NC run were fitted whole (1.15 % and 0.44 % of NC, 0.79 % and 0.14 % at the edge),
+species plus the ladder, keeps the overlap's place as well (2887.4 + 3Na + K, 2991.98 Da of the
+IP-HILIC NC run, at an optimum inside the window). Placed on their combs DA-NC + 4Na and NC + 6Na +
+K of the IP-HILIC NC run were fitted whole (1.15 % and 0.44 % of NC, 0.79 % and 0.14 % at the edge),
 the first taking part of DA-NC's own sodium ladder with it. A species of another composition near
-such a mass lies on that comb by chance about one time in sixteen - a 4949 Da report of the IP-RPLC
-NC run, where no sodium is evidenced, lies on NC - dG's comb moved by six sodium to 0.003 Da.
+such a mass lies on that comb by chance about one time in sixteen - a 4949 Da candidate of the
+IP-RPLC NC run, where no sodium is evidenced, lies on NC - dG's comb moved by six sodium to 0.003 Da
+(its report, 4949.38 Da, now merges with a 4948.78 Da piece into 4948.97 Da, `benchmarks.md`).
 Searching the overlap itself past the edge instead lets a candidate slide onto whatever lies there:
 one the adduct dedupe had renamed to a weak partner 43.5 Da (two sodium) lighter took the IP-RPLC
 main species' peaks as its +2Na form, and the main species was lost. The overlap is computed in
@@ -228,13 +271,17 @@ quarter-bin steps and the optimum placed between them by a parabola through the 
 neighbours, around no shift too unless a step does clearly better: at 140 000 (m/z 200) an Orbitrap
 peak at m/z 1700 is narrower than a 2e-5 bin, and the main species of the IP-RPLC conjugate run is
 fitted 2 % low with its templates an eighth of a bin off its peaks, 9 % a quarter bin off and 28 %
-half a bin off. The shift moves the templates, not the reported mass, which is measured from the
-raw envelopes as below; when the mass changes afterwards (that measurement, or two copies of one
-species merged) the shift is adjusted so that the templates stay where the alignment put them, and
-a candidate re-centred from an adducted form onto its base form is aligned afresh. Before this,
-re-measuring the mass moved the templates with it, and a re-centred candidate kept the shift found
-for its adducted form; on that main species, re-centred from an adducted form, the two cost 5 % of
-its amount (with only the first corrected, 20 %).
+half a bin off. The shift moves the templates; the reported mass is measured from the raw envelopes
+as below, except that a species whose templates its own comb placed is reported at the templates'
+position where that lies within half a spacing of the measured mass (`refine.report_comb_masses`),
+once per frame after the adduct steps, so that detection and every adduct decision within the frame
+read the measured mass (the adduct folds and region merges across the run read the reported one);
+when the mass changes afterwards (that measurement, or two copies of one species merged) the shift
+is adjusted so that the templates stay where the alignment put them, and a candidate re-centred from
+an adducted form onto its base form is aligned afresh. Before this, re-measuring the mass moved the
+templates with it, and a re-centred candidate kept the shift found for its adducted form; on that
+main species, re-centred from an adducted form, the two cost 5 % of its amount (with only the first
+corrected, 20 %).
 
 The overlap search and the adduct walk read only the candidate's own charge states
 (`refine.own_charges`): those the gate passed, with those it passed for a duplicate merged in by
@@ -280,50 +327,92 @@ that species (NC + 3Na of the IP-HILIC NC run, kept at its window's edge as a fo
 to NC this way and no longer reported apart). Accepted components are subtracted from the residual
 before the next candidate is fitted.
 
-After all passes, a component is dropped when at least 80 % of its fitted intensity lies within two
+After all passes, where `suppress_multimers` is on, a component at n times the mass of a stronger
+component (n = 2-6, within the multimer tolerance of 500 ppm, at least 2 Da and n x 0.5 Da, with
+less than 0.6 of its amount) is dropped first (`refine.drop_multimers`): with resolved isotopes a
+multimer's candidate scores like its monomer's in the mass histogram and passes the harmonic test
+(the 1580 Da shortmer's [2M-3H]3- dimer scored 0.74 of the shortmer). It goes as a harmonic
+reading of the monomer's ions where its own charge states (not multiples of n) carry under a
+quarter of its fit, and otherwise only where its strongest own state co-elutes with the monomer's
+strongest over the region's scans. Where that cannot be judged - no frames, fewer than four
+scans, or no profile in the monomer's trace - it is kept: the oligonucleotide methods take regions
+of two scans, and a species at n x M eluting apart from its monomer would otherwise go without
+evidence. Then a component is dropped when at least 80 % of its fitted intensity lies within two
 envelope widths of a stronger column of a stronger component (explaining away by shared evidence).
 An adduct column of a weaker component whose mass (species plus adduct) lies within 0.5 Da of a
 stronger component plus any adduct state of the method's list, evidenced or not, is removed from it:
 the PS-to-PO impurity plus potassium is the main species plus sodium to within 0.07 Da, and fitted
 to the impurity that column carried the main species' sodium adduct into the impurity's amount. A
 charge misassignment reads a strong envelope as another mass whose envelopes sit on the strong
-one's; a genuine weak species sits between them, and a real dimer keeps its odd charge states.
+one's; a genuine weak species sits between them, and a real dimer keeps its odd charge states -
+which the shared-evidence test respects, while the multimer rule drops a dimer that co-elutes with
+its monomer.
 
 The mass is then measured from the raw spectrum rather than the grid, which quantizes at about
 20 ppm. Each fitted charge state's envelope is located by the same envelope-wide mean shift and
 corrected for the skew of the class's isotope pattern, which gives the average mass directly and
 does not hop between resolved isotopologues; the per-charge masses are clustered and the cluster
-carrying most of the fitted intensity gives the mass and its spread.
+carrying most of the fitted intensity gives the mass and its spread. A comb-placed species is then
+reported at its templates' position (above): its comb puts the templates within the class pattern's
+composition error of the truth (-0.12 to +0.17 Da on the four runs, the same for one molecule in
+both chromatographies; 0.06 Da for both n-2s), where a neighbour on the same comb pulls the mean
+shift several tenths of a dalton off (n-2 0.49 Da light under IP-RPLC, by a 4497 Da species six
+spacings below it). The template position is taken only within half a spacing of the measured mass,
+as the comb is read modulo one spacing: three species of the IP-RPLC NC run whose templates lie
+0.52-0.60 Da from their measured mass keep it (`benchmarks.md`). The summed spectrum's axis also
+weights points by count, which pulls a mean shift towards the side more scans cover
+(`benchmarks.md`).
 
 ## 5. Across retention time
 
 Deconvolution runs on the summed spectrum of each chromatographic region, where the signal-to-noise
 ratio is highest. Regions are built around peaks of the TIC that stand ten times above the trace's
-noise - three times with the oligonucleotide methods, as a 2 % impurity eluting on its own makes
-a TIC peak about four times the noise (relative floors of 0.2 % of the tallest peak's height and
-0.05 % of the total area only remove ripple); neighbouring peaks are split at their valley, and only peaks whose apexes are closer
-than their widths share a region. The components it finds define a template bank — one column per
-component and adduct state, with the charge distribution baked in — and every frame in the region is
-then quantified by a small non-negative least-squares solve against that bank. This gives a
-deconvolved extracted-ion chromatogram per species at full time resolution, and shows how each
-adduct's share changes across the peak, without paying for a full deconvolution per frame.
+noise - three times with the oligonucleotide methods, as a 2 % impurity eluting on its own makes a
+TIC peak about four times the noise (relative floors of 0.2 % of the tallest peak's height and 0.05
+% of the total area only remove ripple; the oligonucleotide methods lower the height floor to 0.1 %,
+`regions.min_rel_height`, as 0.2 % deleted the region of a 0.04 % shortmer whose TIC peak stood 3.5
+times above the noise at 0.197 % of the tallest - on the real runs the noise floor then decides on
+three of four, at 0.17-0.49 % of the tallest peak, and 0.1 % binds on the IP-RPLC conjugate run,
+whose noise floor lies at 0.076 %); neighbouring peaks are split at their valley, and only peaks
+whose apexes are closer than their widths share a region. The components it finds define a template
+bank — one column per component and adduct state, with the charge distribution baked in — and every
+frame in the region is then quantified by a small non-negative least-squares solve against that
+bank. This gives a deconvolved extracted-ion chromatogram per species at full time resolution, and
+shows how each adduct's share changes across the peak, without paying for a full deconvolution per
+frame.
 
-Components are then linked across frames by mass, giving species. A species whose trace stays
-within a third of its maximum at both ends - judged with one region width of quantified frames on
-either side, since a broad band can fill its own region - is chemical background and is dropped,
-and so is a species whose profile peaks in the outer tenth of its region (unless it is the region's
+Components are then linked across frames by mass, giving species. A species whose trace stays within
+a third of its maximum at both ends - judged with one region width of quantified frames on either
+side, since a broad band can fill its own region - is chemical background and is dropped, and so is
+a species whose profile peaks in the outer tenth of its region (unless it is the region's
 strongest): a region is built around an elution band, so such a trace is a template absorbing a
 neighbour's tail. That last test is not made at a boundary the region shares with the next one: a
 boundary drawn at the valley between two bands is where a species eluting between them peaks, and
 the neighbouring region holds the rest of it. A species found in adjacent regions of one broad band
 is merged into one; the scan on their shared boundary is counted once, with the larger of its two
-readings. Pieces of comparable height (each at least a tenth of the other) whose joined trace falls
-below half the lower apex between them are two bands of one mass - isomers either side of a
+readings, and the merge is repeated until nothing more joins (pieces are taken strongest first, and
+the last piece of a tail over three regions was left apart: 2653.32 and 2998.45 Da of the IP-RPLC
+conjugate run). Pieces of comparable height (each at least a tenth of the other) whose joined trace
+falls below half the lower apex between them are two bands of one mass - isomers either side of a
 boundary - and stay apart; a scan where neither piece has a reading (a gap the linking bridged, a
 frame whose fit gave the species nothing; three scans at most) is read across from its neighbours,
-not as a valley, while a longer stretch without a reading is a valley. In a polarity-switching run
-each polarity is processed separately and species are matched by neutral mass and apex (within 0.2
-min) afterwards.
+not as a valley, while a longer stretch without a reading is a valley. A piece that a shared
+boundary cut off and its region read up to 1.5 Da off its band, beyond the linking tolerance, is
+joined to the band where both read the same tooth of the isotope comb in the scans themselves
+(`features.link.merge_boundary_pieces`, `refine.tooth_position`: the class pattern matched against
+each scan's own points), and the joined species keeps the mass its own isotopes support (n-1 of the
+IP-HILIC NC run: one report at 2.35 % instead of 1.9 % and 0.5 %); a deaminated form lies one tooth
+away and stays apart. With `linking.set_aside_later_elutions` (on in the two oligonucleotide
+methods, off by default) the run's main species' later elutions - its tail past its band and its
+column-wash peak: the same molecule by its isotopes, at most a twentieth of it, starting more than
+0.2 min after its band ends - are named in its flags instead of being reported, and a species
+peaking within 0.1 min of such a wash peak (a later elution that rises and falls, its highest
+reading twice its first and last) is set aside the same way under an earlier species of its own mass
+at least twenty times stronger (NC's +201.4 Da form at 25.4 min). An isomer eluting later at under a
+twentieth of the main species is set aside as well, since its isotopes cannot tell it apart - an
+isoAsp or disulfide-scrambled protein variant, a branched polymer beside a linear one - which is why
+the other methods leave the step off. In a polarity-switching run each polarity is processed
+separately and species are matched by neutral mass and apex (within 0.2 min) afterwards.
 
 A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its total
 over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct forms are
@@ -335,8 +424,8 @@ forms come out as species of their own; they are folded into the species they be
 whose mass is a stronger (base form), co-eluting species' plus an adduct state of cation adducts or
 of adduct types some region of the run evidenced (the mobile phase's amines, acids and solvents,
 whose clusters can lie within a dalton of an oligonucleotide's n+1; average-mass shifts, within 0.6
-Da or 2.5 peak widths M/R, whichever is larger; apexes within 0.1 min and traces correlating at r
->= 0.8, both on all forms) is counted as that species' adduct form, unless a known modification of
+Da or 2.5 peak widths M/R, whichever is larger; apexes within 0.1 min and traces correlating at
+r >= 0.8, both on all forms) is counted as that species' adduct form, unless a known modification of
 its class explains the difference as well (peptide oxidation lies 1.04 Da from an ammonium adduct,
 an oligonucleotide's n+1 can lie within a dalton of amine and HFIP clusters): a report too many is
 the lesser error. Forms are folded before the pieces of a species split over two regions are

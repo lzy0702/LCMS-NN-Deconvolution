@@ -46,18 +46,48 @@ deconvolution:
   compound_class: peptide  # or auto, dna, rna, ps_dna, ps_rna, glycan, peg, small_molecule
   min_relative_abundance: 0.0001   # 0.01 % detection floor
   min_charge_support: 2    # charge states a species must show; set 1 for small molecules
+  singly_charged_species: true   # z = 1 alone makes a species; false: z = 1 counts only beside
+                                 # another charge state, where its envelope is singly charged
+  suppress_multimers: true       # drop a weaker co-eluting species at n x M (false: native, SEC)
   coelution_r: 0.5         # charge states of a region must co-elute (Pearson r); 0 = no test
   adducts:
     mode: rplc             # rplc | rplc_tfa | iprp | hilic | ip-hilic | sec | native | polymer
     include: []            # extra adducts, e.g. ["TEA"] or a formula like "C7H17N"
     exclude: []
     max_total: 3           # adducts per ion
+regions:
+  min_snr: 10.0            # a TIC peak this many times the trace's noise makes a region
+  min_rel_height: 0.002    # ... and at least this share of the tallest TIC peak's height
+linking:
+  set_aside_later_elutions: false  # name the main species' later elutions in its flags
 quant:
   purity_signal: uv        # uv | tic
   impurity_floor_pct: 0.01
 saturation:
   esi_ratio_drop: 0.25     # apex-versus-flank response drop that raises a warning
 ```
+
+The oligonucleotide methods change several of these. Their regions need a TIC peak only three times
+the trace's noise and 0.1 % of the tallest peak's height (`min_snr: 3.0`, `min_rel_height: 0.001`):
+a 2 % impurity eluting on its own makes a TIC peak about four times the noise, and at 0.2 % the
+height floor deleted the region of a 0.04 % shortmer whose peak stood 3.5 times above the noise. The
+Orbitrap oligonucleotide method reads masses from 800 Da and charges from 1, with
+`singly_charged_species: false`: its species of 0.8-2.5 kDa show z = 1 beside z = 2, and z = 1
+counts as one of their charge states only where its envelope has no peaks between its isotopologues;
+a z = 1 ion alone makes no species, as singly charged background, or an envelope of any charge read
+at z = 1, would make one. Both set `set_aside_later_elutions: true`: a species at the main species'
+mass, at most a twentieth of it, starting more than 0.2 min after the main species' band and the
+same molecule by its resolved isotopes - its tail past its band and its re-elution when the column
+is washed - is named in the main species' flags instead of being reported, and so are the forms that
+leave the column with such a wash peak. The setting is off by default because an isomer eluting
+later at that share (an isoAsp or disulfide-scrambled protein variant, a branched polymer beside a
+linear one) would be set aside the same way.
+
+With `suppress_multimers` a weaker species at n times a stronger one's mass is dropped as a
+harmonic reading of the stronger one's ions where its own charge states carry under a quarter of
+its fit, and otherwise only where its elution follows the stronger one's over four scans or more;
+methods for native and size-exclusion work, where oligomers are the point, turn it off. Method
+files written before a setting existed load with its default.
 
 ### Compound class
 

@@ -130,10 +130,11 @@ https://doi.org/10.1021/acs.analchem.5c01407), are scored against the paper's sp
 species the original code found 2 among 87 reports; the current code, since vendor-thresholded
 profiles are resampled correctly, the decoder was recalibrated for it, every species' amount is
 made the same way and weak species' templates are placed by their own isotope comb, finds all 20,
-and 23 of the 29 impurity elutions its Supporting Information lists, among 228 reports, with masses
-within about 0.1 Da of theory for the main species and base-form impurity shares within 0.88-1.19
-of extracted-ion references for 16 of the 23 impurities found (`docs/benchmarks.md`,
-`scripts/validate_oligo_runs.py`). Public spectra are used only for validation, never for training.
+and all 29 of the impurity elutions its Supporting Information lists, among 250 reports, with
+masses within about 0.1 Da of theory for the main species and base-form impurity shares within
+0.88-1.19 of extracted-ion references for 19 of the 24 impurities in the amounts table
+(`docs/benchmarks.md`, `scripts/validate_oligo_runs.py`). Public spectra are used only for
+validation, never for training.
 Bovine serum albumin and the alcohol dehydrogenase tetramer are recovered within 1 % of their
 literature masses from public native mass spectra. On synthetic data with known truth, a 17 kDa
 protein carrying a 10 % sodium adduct is recovered to 0.2 ppm with the adduct fraction measured at
