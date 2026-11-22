@@ -1,6 +1,7 @@
-"""Pieces of one species that region boundaries leave apart: a chain of tail pieces, and a
-species found again later in the run (its tail beyond its band, the column wash), named in its
-flags, not reported."""
+"""Pieces of one species that region boundaries leave apart: a chain of tail pieces, a front or
+tail its region read up to a dalton off (joined to its band only where the isotopes say it is the
+same molecule), and a species found again later in the run (its tail beyond its band, the column
+wash), named in its flags, not reported."""
 
 import numpy as np
 
@@ -8,7 +9,12 @@ from lcmsdeconv.chem.classes import class_isotope_pattern
 from lcmsdeconv.chem.instrument import InstrumentModel
 from lcmsdeconv.core.model import Run, Species, Spectrum
 from lcmsdeconv.deconv.refine import tooth_position
-from lcmsdeconv.features.link import LATER_FLAG, merge_adjacent_species, set_aside_later_elutions
+from lcmsdeconv.features.link import (
+    LATER_FLAG,
+    merge_adjacent_species,
+    merge_boundary_pieces,
+    set_aside_later_elutions,
+)
 from lcmsdeconv.process import _same_molecule
 
 MP = 1.00727646688
@@ -73,6 +79,68 @@ def test_the_tooth_of_the_isotope_comb_tells_a_deaminated_form_from_its_parent()
     tof = InstrumentModel("tof", 4000.0)
     assert tooth_position(m, (4, 5, 6), one, tof, "ps_rna") is None
     assert tooth_position(m - 600.0, (4, 5, 6), one, ORBI, "ps_rna") is None
+
+
+def _boundary_pair(piece_mass, front=False):
+    """A band peaking before the boundary at 13.14 min in one region, its tail in the next read
+    ``piece_mass``; or (``front``) the band after the boundary and its front before it."""
+    band = lambda t: 1e6 * np.exp(-0.5 * ((t - (13.30 if front else 13.00)) / 0.08) ** 2)  # noqa: E731
+    t1, t2 = np.arange(12.70, 13.14 + 1e-9, STEP), np.arange(13.14, 13.62 + 1e-9, STEP)
+    if front:
+        return _species(0, 4832.97, t2, band(t2)), _species(1, piece_mass, t1, band(t1))
+    return _species(0, 4833.86, t1, band(t1)), _species(1, piece_mass, t2, band(t2))
+
+
+def test_a_piece_a_boundary_cut_off_joins_its_band_only_as_the_same_molecule():
+    yes = lambda *a: True  # noqa: E731
+    no = lambda *a: False  # noqa: E731
+    bounds, steps = [(-1, 13.14)], {-1: STEP}
+    k, s = _boundary_pair(4833.14)
+    total = k.total_intensity
+    out = merge_boundary_pieces([k, s], bounds, yes, steps)
+    assert len(out) == 1 and out[0].mass == 4833.86
+    assert np.isclose(out[0].time.max(), 13.62) and out[0].total_intensity > total
+    # the same pair, but the isotopes say two molecules (a deaminated form, 0.98 Da off)
+    k, s = _boundary_pair(4833.14)
+    assert len(merge_boundary_pieces([k, s], bounds, no, steps)) == 2
+    # a front piece before the boundary
+    k, s = _boundary_pair(4832.34, front=True)
+    assert len(merge_boundary_pieces([k, s], bounds, yes, steps)) == 1
+    # no boundary there: two regions that do not touch
+    k, s = _boundary_pair(4833.14)
+    assert len(merge_boundary_pieces([k, s], [(-1, 12.0)], yes, steps)) == 2
+    # more than max_da off, or within the linking tolerance (merge_adjacent_species' business)
+    for m in (4835.50, 4833.60):
+        k, s = _boundary_pair(m)
+        assert len(merge_boundary_pieces([k, s], bounds, yes, steps)) == 2
+    # a species that peaks in its region, one scan from the boundary, is no cut-off piece
+    t2 = np.arange(13.14, 13.62 + 1e-9, STEP)
+    k, _s = _boundary_pair(4833.14)
+    own = _species(1, 4833.14, t2, 1e6 * np.exp(-0.5 * ((t2 - 13.18) / 0.05) ** 2))
+    assert len(merge_boundary_pieces([k, own], bounds, yes, steps)) == 2
+    # two bands of one molecule either side of the boundary, a valley between: apart
+    t1 = np.arange(12.70, 13.14 + 1e-9, STEP)
+    g = lambda t, c: np.exp(-0.5 * ((t - c) / 0.04) ** 2)  # noqa: E731
+    k = _species(0, 4833.86, t1, 1e6 * g(t1, 12.85) + 3e5 * g(t1, 13.14))
+    s = _species(1, 4833.14, t2, 8e5 * g(t2, 13.14))
+    assert len(merge_boundary_pieces([k, s], bounds, yes, steps)) == 2
+
+
+def test_the_joined_species_keeps_the_mass_its_isotopes_support():
+    """The stronger piece's mass unless the piece's lies nearer the isotopes' reading: n-1 under
+    IP-HILIC, its main piece read 0.88 Da heavy by its region, its tail 0.16 Da."""
+    bounds, steps = [(-1, 13.14)], {-1: STEP}
+    k, s = _boundary_pair(4833.14)
+    out = merge_boundary_pieces([k, s], bounds, lambda *a: 4832.92, steps)
+    assert len(out) == 1 and out[0].mass == 4833.14
+    k, s = _boundary_pair(4833.14)
+    out = merge_boundary_pieces([k, s], bounds, lambda *a: 4833.80, steps)
+    assert len(out) == 1 and out[0].mass == 4833.86
+    k, s = _boundary_pair(4833.14)  # a bare yes keeps the stronger piece's mass
+    out = merge_boundary_pieces([k, s], bounds, lambda *a: True, steps)
+    assert len(out) == 1 and out[0].mass == 4833.86
+    k, s = _boundary_pair(4833.14)
+    assert len(merge_boundary_pieces([k, s], bounds, lambda *a: None, steps)) == 2
 
 
 def test_the_isotope_judgement_reads_the_scans_either_side():

@@ -344,24 +344,120 @@ def _merge_pass(species: list[Species], tolerance_ppm: float, tolerance_da: floa
         if hit is None:
             out.append(s)
             continue
-        times = np.union1d(hit.time, s.time)
-        y_hit, y_s = _on(times, hit.time, hit.intensity), _on(times, s.time, s.intensity)
-        # per scan, one piece's reading: the only one, or on a shared scan the larger
-        take = y_s > y_hit
-        merged_adducts = {}
-        for name in set(hit.adduct_intensity) | set(s.adduct_intensity):
-            a = (_on(times, hit.time, hit.adduct_intensity[name])
-                 if name in hit.adduct_intensity else np.zeros(times.size))
-            b = (_on(times, s.time, s.adduct_intensity[name])
-                 if name in s.adduct_intensity else np.zeros(times.size))
-            merged_adducts[name] = np.where(take, b, a)
-        hit.intensity = np.where(take, y_s, y_hit)
-        hit.adduct_intensity = merged_adducts
-        hit.time = times
-        for z, v in s.charges.items():
-            hit.charges[z] = hit.charges.get(z, 0.0) + v
-        _merge_flags(hit, s)
+        _absorb(hit, s)
     return out
+
+
+def _absorb(hit: Species, s: Species) -> None:
+    """Join piece ``s`` of one elution band to ``hit``, which keeps its mass: on a scan both
+    hold (the boundary of their regions), the larger reading."""
+    times = np.union1d(hit.time, s.time)
+    y_hit, y_s = _on(times, hit.time, hit.intensity), _on(times, s.time, s.intensity)
+    # per scan, one piece's reading: the only one, or on a shared scan the larger
+    take = y_s > y_hit
+    merged_adducts = {}
+    for name in set(hit.adduct_intensity) | set(s.adduct_intensity):
+        a = (_on(times, hit.time, hit.adduct_intensity[name])
+             if name in hit.adduct_intensity else np.zeros(times.size))
+        b = (_on(times, s.time, s.adduct_intensity[name])
+             if name in s.adduct_intensity else np.zeros(times.size))
+        merged_adducts[name] = np.where(take, b, a)
+    hit.intensity = np.where(take, y_s, y_hit)
+    hit.adduct_intensity = merged_adducts
+    hit.time = times
+    for z, v in s.charges.items():
+        hit.charges[z] = hit.charges.get(z, 0.0) + v
+    _merge_flags(hit, s)
+
+
+def _reading(sp: Species, t: float, tol: float) -> float:
+    """``sp``'s trace at the scan at time ``t`` (0 where it has no reading within ``tol``)."""
+    if not sp.time.size:
+        return 0.0
+    i = int(np.argmin(np.abs(sp.time - t)))
+    return float(sp.intensity[i]) if abs(float(sp.time[i]) - t) <= tol else 0.0
+
+
+def merge_boundary_pieces(species: list[Species], boundaries, same_species, steps,
+                          tolerance_ppm: float = 30.0, tolerance_da: float = 0.5,
+                          max_da: float = 1.5, min_presence: float = 0.3,
+                          valley: float = 0.5) -> list[Species]:
+    """Join to its species a piece of its band that a region boundary cut off and that the
+    piece's region read up to a dalton off.
+
+    A boundary drawn at the valley between two bands leaves a band's front or tail in the
+    neighbouring region, whose summed spectrum mixes it with what elutes there and can put its
+    mass beyond :func:`merge_adjacent_species`' tolerance (n-1's tail under IP-HILIC, 4833.14 Da
+    against 4833.86 Da): it is reported as a species of its own, peaking on the boundary. Such a
+    piece - its trace on one side of a shared boundary, its apex on it - is joined to a stronger
+    species within ``max_da`` that holds that boundary scan (at least ``min_presence`` of the
+    piece's reading there), runs on past it and peaks on the other side, without a valley
+    between them (:func:`_one_band`), and only where the two are one molecule by their
+    isotopes: ``same_species(piece, band, species, band)`` reads the piece's scans next to the
+    boundary and the species' apex scans, and returns the average mass the isotopes put the
+    molecule at (or True) where it is one, a false value where not; the joined species keeps the
+    stronger piece's mass unless the piece's lies nearer that reading. A deaminated form, 0.98 Da
+    from its parent, lies one tooth of the isotope comb away from it, and so do the minor species
+    whose leading edges a region reads as a blend half a dalton or a dalton from a neighbour
+    (6777.31 and 6792.99 Da of the IP-RPLC conjugate run, lighter than PO and FLP by more than a
+    spacing, peaking at 19.0 min): those stay.
+
+    ``boundaries`` holds (polarity, time) of every boundary two regions share, ``steps`` the
+    scan spacing (min) by polarity.
+    """
+    removed: set[int] = set()
+    for s in sorted(species, key=lambda x: x.base_intensity):
+        if id(s) in removed or not s.time.size:
+            continue
+        step = float(steps.get(s.polarity, 0.0))
+        if step <= 0:
+            continue
+        half = 0.5 * step
+        apex = s.rt_apex
+        tb = next((b for pol, b in boundaries if pol == s.polarity and abs(apex - b) <= half), None)
+        if tb is None:
+            continue
+        if abs(float(s.time.max()) - tb) <= half:
+            side = -1  # the piece ends on the boundary: the front of a later band
+        elif abs(float(s.time.min()) - tb) <= half:
+            side = 1  # it starts there: the tail of an earlier band
+        else:
+            continue
+        tol = max(s.mass * tolerance_ppm * 1e-6, tolerance_da)
+        here = _reading(s, tb, half)
+        cands = []
+        for k in species:
+            if (k is s or id(k) in removed or k.polarity != s.polarity or not k.time.size
+                    or k.base_intensity <= s.base_intensity):
+                continue
+            dm = abs(k.mass - s.mass)
+            if dm <= tol or dm > max_da:
+                continue
+            if side < 0 and not (float(k.time.max()) > tb + half and k.rt_apex > tb + half):
+                continue
+            if side > 0 and not (float(k.time.min()) < tb - half and k.rt_apex < tb - half):
+                continue
+            if _reading(k, tb, half) < max(min_presence * here, 1e-300):
+                continue
+            t = np.union1d(k.time, s.time)
+            if not _one_band(t, _on(t, k.time, k.intensity), _on(t, s.time, s.intensity), valley):
+                continue
+            cands.append((dm, k))
+        # three scans of each: the piece's next to the boundary, the species' about its apex
+        band_s = (tb - 2.5 * step, tb + half) if side < 0 else (tb - half, tb + 2.5 * step)
+        for _dm, k in sorted(cands, key=lambda c: c[0]):
+            tooth = same_species(s, band_s, k, (k.rt_apex - 1.5 * step, k.rt_apex + 1.5 * step))
+            if tooth:
+                # the joined species keeps the mass its isotopes support: the stronger piece's
+                # unless the piece's lies nearer the tooth (a region's summed spectrum can read
+                # the band's main piece most of a dalton off, n-1 under IP-HILIC at +0.88 Da)
+                own = isinstance(tooth, float) and abs(s.mass - tooth) < abs(k.mass - tooth)
+                _absorb(k, s)
+                if own:
+                    k.mass = s.mass
+                removed.add(id(s))
+                break
+    return [x for x in species if id(x) not in removed]
 
 
 LATER_FLAG = ("the same molecule found later in the run (a tail past its band, the column wash), "

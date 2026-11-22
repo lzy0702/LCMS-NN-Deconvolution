@@ -19,6 +19,7 @@ from .features.link import (
     fold_adduct_forms,
     link_species,
     merge_adjacent_species,
+    merge_boundary_pieces,
     merge_species_across_polarity,
     set_aside_later_elutions,
 )
@@ -155,7 +156,8 @@ def process_run(
 
     all_species: list[Species] = []
     evidenced: dict[int, set[str]] = {}
-    # the scan spacing, by polarity
+    # the boundaries two regions share (polarity, time) and the scan spacing, by polarity
+    boundaries: list[tuple[int, float]] = []
     steps: dict[int, float] = {}
     sid = 0
     for pol in polarities:
@@ -173,6 +175,8 @@ def process_run(
         for ri, region in enumerate(regions):
             shared = (ri > 0 and region.start - regions[ri - 1].end <= 0.5 * step,
                       ri + 1 < len(regions) and regions[ri + 1].start - region.end <= 0.5 * step)
+            if shared[0]:
+                boundaries.append((pol, float(region.start)))
             if progress:
                 progress(f"deconvolving region {region.id} ({region.start:.2f}-{region.end:.2f} min)")
             summed = region.summed(run)
@@ -236,11 +240,15 @@ def process_run(
         tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0))
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
                                          method.linking.mass_tolerance_da)
-    # a species found again later in the run (its tail beyond its band, the column wash) is
-    # named in its flags: judged by its isotopes, read in the scans themselves
-    all_species = set_aside_later_elutions(all_species,
-                                           _same_molecule(run, instrument, params.compound_class),
-                                           steps, method.linking.mass_tolerance_ppm,
+    # a piece of a band that its region read up to a dalton off, and a species found again later
+    # in the run (its tail beyond its band, the column wash): judged by their isotopes, read in
+    # the scans themselves
+    same = _same_molecule(run, instrument, params.compound_class)
+    all_species = merge_boundary_pieces(all_species, boundaries, same, steps,
+                                        method.linking.mass_tolerance_ppm,
+                                        method.linking.mass_tolerance_da)
+    all_species = set_aside_later_elutions(all_species, same, steps,
+                                           method.linking.mass_tolerance_ppm,
                                            method.linking.mass_tolerance_da)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
@@ -314,23 +322,24 @@ def _same_molecule(run: Run, instrument, compound_class: str, min_margin: float 
     ``band_a``, and ``b``, read in those of ``band_b``, are one molecule by their resolved
     isotopes: the class's pattern fits both best on one tooth of the isotope comb
     (:func:`lcmsdeconv.deconv.refine.tooth_position`, over ``b``'s strongest charge states),
-    each better than one tooth away by ``min_margin``. Where the isotopes are not resolved, a
-    band holds no signal or a fit is no better than its neighbouring tooth, the answer is no."""
+    each better than one tooth away by ``min_margin``: then the average mass ``b``'s band puts the
+    molecule at, else None. Where the isotopes are not resolved, a band holds no signal or a fit
+    is no better than its neighbouring tooth, the answer is no."""
     from .deconv.refine import tooth_position
 
-    def same(a: Species, band_a, b: Species, band_b) -> bool:
+    def same(a: Species, band_a, b: Species, band_b) -> float | None:
         if instrument is None:
-            return False
+            return None
         zs = [z for z, v in sorted(b.charges.items(), key=lambda kv: -kv[1]) if v > 0][:max_charges]
         cls = b.compound_class or a.compound_class or compound_class
         if not zs or not cls or cls == "auto":
-            return False
+            return None
         m = 0.5 * (a.mass + b.mass)
         ta = tooth_position(m, zs, run.frames(a.polarity, band_a), instrument, cls)
         tb = tooth_position(m, zs, run.frames(b.polarity, band_b), instrument, cls)
         if ta is None or tb is None or min(ta[1], tb[1]) < min_margin:
-            return False
-        return abs(ta[0] - tb[0]) <= 0.5
+            return None
+        return tb[0] if abs(ta[0] - tb[0]) <= 0.5 else None
 
     return same
 
