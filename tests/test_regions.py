@@ -47,3 +47,15 @@ def test_method_relative_height_floor():
     for name in ("rplc_pos_protein", "polymer_pos", "hilic_glycan"):
         assert Method.load(name).regions.min_rel_height == pytest.approx(0.002)
     assert Method().regions.min_rel_height == pytest.approx(0.002)
+
+
+def test_process_run_hands_the_methods_floors_to_find_regions(monkeypatch):
+    from .test_region_pieces import _process
+
+    method = Method.load("orbitrap_iprp_neg_oligo")
+    method.regions.min_rel_height, method.regions.min_snr = 0.0037, 4.5
+    _result, calls = _process(monkeypatch, _run(1.5e3), method)
+    ((args, kw),) = calls["find_regions"]
+    assert kw["min_rel_height"] == 0.0037 and kw["min_snr"] == 4.5
+    assert args[1:] == ("tic", -1, method.regions.window_min, method.regions.margin_min,
+                        method.regions.min_frames)

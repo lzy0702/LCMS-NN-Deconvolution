@@ -114,16 +114,16 @@ def test_gate_judges_a_state_on_its_own_isotopologues():
     assert len(out) == 1 and out[0].gate_charges == {3, 4} and abs(out[0].mass - MASS) < 0.5
 
 
-def test_gate_rescues_a_state_whose_isotopologue_has_a_foreign_neighbour():
-    """The 1.9 kDa shortmer's geometry: an ion of another elution 0.8 peak widths from the
-    strongest isotopologue of the weaker state, which is not the reference. Its window fails
-    against the reference's; its isotopologues, read on the reference's comb, co-elute."""
+def _beside_a_foreign_ion(profile_z3):
+    """z = 3 (eluting as ``profile_z3``) and z = 4 of the species, and an ion of another
+    elution 0.8 peak widths from z = 3's strongest isotopologue: the gate with or without the
+    test on the states' own isotopologues."""
     early = np.exp(-0.5 * ((t - 1.0) / 2.0) ** 2)
     mz3, h3 = _envelope_peaks(MASS, 3, 1.0)
     k = int(np.argmax(h3))
     fwhm = mz3[k] / float(INST.resolving_power(mz3[k]))
     foreign, sig = mz3[k] + 0.8 * fwhm, fwhm / 2.3548
-    scans = _scans([(MASS, 3, 800.0, ELUTES), (MASS, 4, 2000.0, ELUTES)])
+    scans = _scans([(MASS, 3, 800.0, profile_z3), (MASS, 4, 2000.0, ELUTES)])
     for i, s in enumerate(scans):
         s.intensity = s.intensity + 1000.0 * early[i] * np.exp(-0.5 * ((s.mz - foreign) / sig) ** 2)
     x, y = _summed(scans)
@@ -133,9 +133,34 @@ def test_gate_rescues_a_state_whose_isotopologue_has_a_foreign_neighbour():
                                        compound_class="dna", resolution=50000.0, instrument=INST,
                                        profile=True, frames=FrameStack(scans), own_comb=own_comb)
 
+    return gate
+
+
+def test_gate_rescues_a_state_whose_isotopologue_has_a_foreign_neighbour():
+    """The 1.9 kDa shortmer's geometry: an ion of another elution 0.8 peak widths from the
+    strongest isotopologue of the weaker state, which is not the reference. Its window fails
+    against the reference's; its isotopologues, read on the reference's comb, co-elute."""
+    gate = _beside_a_foreign_ion(ELUTES)
     assert gate(own_comb=False) == []  # z = 3's window fails against z = 4's
     out = gate(own_comb=True)
     assert len(out) == 1 and out[0].gate_charges == {3, 4} and abs(out[0].mass - MASS) < 0.5
+
+
+def test_a_state_whose_isotopologues_coelute_in_part_is_not_rescued(monkeypatch):
+    """The rescue asks more of a state's own isotopologues than the window test asks of its
+    window: ``COMB_RESCUE_R`` (0.9), not 0.5. Half of this z = 3 envelope elutes with z = 4 and
+    half four scans later, and its isotopologues correlate with z = 4 at 0.65. Of the states
+    that fail on their windows on the four real runs a third reach 0.5 on their isotopologues,
+    most of them adduct forms of the main species beside other forms' peaks."""
+    from lcmsdeconv.deconv import coelution
+
+    later = np.exp(-0.5 * ((t - 11.0) / 2.0) ** 2)
+    gate = _beside_a_foreign_ion(0.5 * ELUTES + 0.5 * later)
+    assert gate(own_comb=True) == []
+    # at the window test's bar it would be rescued
+    monkeypatch.setattr(coelution, "COMB_RESCUE_R", 0.5)
+    out = gate(own_comb=True)
+    assert len(out) == 1 and out[0].gate_charges == {3, 4}
 
 
 def test_rescue_needs_the_comb_in_the_reference_window():
@@ -177,6 +202,34 @@ def test_rescue_needs_the_comb_in_the_reference_window():
 
     assert gate(own_comb=False) == []  # the z = 2 window's bump does not follow z = 3
     assert gate(own_comb=True) == []
+
+
+def test_adduct_evidence_reads_the_trial_windows_only(monkeypatch):
+    """``evidenced_adducts`` gates each adduct trial as detection gates a candidate - with the
+    scans, the co-elution bar and the method's z = 1 rule - but on its charge windows alone
+    (``own_comb=False``): the adduct evidence stays as it was before charge states were also
+    judged on their isotopologues."""
+    from lcmsdeconv.chem.adducts import AdductLibrary
+    from lcmsdeconv.deconv import pipeline
+
+    calls = []
+
+    def spy(cands, *args, **kw):
+        calls.append(kw)
+        return []
+
+    monkeypatch.setattr(pipeline, "refine_candidate_masses", spy)
+    scans = _scans([(MASS, 3, 800.0, ELUTES), (MASS, 4, 1000.0, ELUTES)])
+    x, y = _summed(scans)
+    frames = FrameStack(scans)
+    lib = AdductLibrary.from_mode("iprp", -1)
+    params = pipeline.DeconvParams(singly_charged_species=False, coelution_r=0.6)
+    names = pipeline.evidenced_adducts([Candidate(MASS, 1.0, {3, 4})], lib, x, y, -1, 1.0, params,
+                                       "dna", INST, True, frames=frames)
+    assert names == set() and len(calls) == len(lib.adducts)
+    for kw in calls:
+        assert kw["own_comb"] is False and kw["singly_charged_ok"] is False
+        assert kw["frames"] is frames and kw["coelution_r"] == 0.6
 
 
 def test_charge_states_grow_only_while_they_coelute():

@@ -115,3 +115,36 @@ def test_a_comb_placed_species_keeps_its_measured_mass_inside_the_passes():
     report_comb_masses(comps)
     assert abs(c.mass - truth) < 0.02 and abs(c.mass * np.exp(c.template_shift) - tpos) < 1e-9
     assert abs(other.mass - (truth - 2 * ISOTOPE_DA)) < 0.05
+
+
+def test_the_pipeline_reports_a_comb_placed_species_where_its_templates_sit():
+    """deconvolve_spectrum end to end, on one spectrum: a 1.9 kDa species with a companion two
+    spacings lighter on its comb (1883.3's geometry) is measured 0.46 Da light, placed by its
+    comb, and reported where its templates sit, within 0.05 Da of the truth."""
+    from lcmsdeconv.chem.classes import class_isotope_pattern
+    from lcmsdeconv.core.model import Spectrum
+    from lcmsdeconv.deconv import pipeline
+    from lcmsdeconv.deconv.classical import CombPredictor
+
+    truth = 1884.61
+    x = np.arange(400.0, 2500.0, 0.001)
+    y = np.abs(np.random.default_rng(0).normal(0.0, 100.0, x.size))
+    for m, h in ((truth, 1.0), (truth - 2 * ISOTOPE_DA, 0.5)):
+        pat = class_isotope_pattern(m, "ps_rna")
+        for z in (2, 3):
+            mz = (pat.masses - pat.average_mass + m - z * 1.00727646688) / z
+            sig = ORBI.fwhm(float(mz.mean())) / 2.3548
+            for c, v in zip(mz, pat.abundances / pat.abundances.max()):
+                if v > 1e-4:
+                    a, b = np.searchsorted(x, [c - 5 * sig, c + 5 * sig])
+                    y[a:b] += 1e6 * h * v * np.exp(-0.5 * ((x[a:b] - c) / sig) ** 2)
+    keep = y > 600.0
+    spec = Spectrum(x[keep], y[keep], rt=5.0, polarity=-1, is_profile=True)
+    params = pipeline.DeconvParams(compound_class="ps_rna", adduct_mode="iprp",
+                                   adduct_exclude=("TEA", "DIPEA", "HFIP"), charge_range=(2, 40),
+                                   mass_range=(1000.0, 60000.0), isotope_charges=True)
+    fr = pipeline.deconvolve_spectrum(spec, CombPredictor(z_max=40, instrument=ORBI), params, ORBI)
+    (c,) = [k for k in fr.components if abs(k.mass - truth) < 1.0]
+    assert c.comb_placed
+    assert abs(c.mass - c.mass * np.exp(c.template_shift)) < 0.05
+    assert abs(c.mass - truth) < 0.05

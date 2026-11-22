@@ -155,12 +155,28 @@ def test_the_isotope_judgement_reads_the_scans_either_side():
     same = _same_molecule(run, ORBI, "ps_rna")
     a = _species(0, 4833.86, [13.06], [1.0], {4: 3.0, 5: 1.0, 6: 0.5})
     b = _species(1, 4833.14, [13.22], [1.0], {4: 3.0, 5: 1.0, 6: 0.5})
-    assert same(b, (13.17, 13.27), a, (13.01, 13.11))
+    # one molecule, at the average mass the isotopes in the second band's scans put it
+    assert abs(same(b, (13.17, 13.27), a, (13.01, 13.11)) - m) < 0.05
     c = _species(2, 4833.90, [14.08], [1.0], {4: 3.0, 5: 1.0, 6: 0.5})
     assert not same(c, (14.01, 14.15), a, (13.01, 13.11))
     assert not same(c, (15.0, 15.1), a, (13.01, 13.11))  # no scans there
     assert not _same_molecule(run, InstrumentModel("tof", 4000.0), "ps_rna")(
         b, (13.17, 13.27), a, (13.01, 13.11))  # isotopes not resolved
+
+
+def test_the_joined_species_keeps_the_mass_the_scans_isotopes_support():
+    """merge_boundary_pieces with the isotopes read in the run's scans: n-1 under IP-HILIC, its
+    band read 4833.86 Da by its region and the tail a boundary cut off 4833.14 Da, while the
+    isotopes in both bands' scans sit on the truth's tooth (4832.98 Da). The joined species keeps
+    the tail's mass, the one nearer that tooth."""
+    m = 4832.98
+    run = Run([_scan(13.02 + STEP * i, [(m, (4, 5, 6), 1e6)]) for i in range(8)])
+    zs = {4: 3.0, 5: 1.0, 6: 0.5}
+    k = _species(0, 4833.86, [13.02, 13.06, 13.10, 13.14], [5e5, 1e6, 8e5, 6e5], zs)
+    s = _species(1, 4833.14, [13.14, 13.18, 13.22], [7e5, 3e5, 1e5], zs)
+    out = merge_boundary_pieces([k, s], [(-1, 13.14)], _same_molecule(run, ORBI, "ps_rna"),
+                                {-1: STEP})
+    assert len(out) == 1 and out[0].mass == 4833.14 and out[0].time.size == 6
 
 
 def test_a_species_found_again_later_is_named_not_reported():

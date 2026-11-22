@@ -652,6 +652,35 @@ def test_an_optimum_between_the_teeth_takes_the_better_tooth():
         assert align_candidate(c, spectrum, grid, ORBI, "ps_rna") == opt
 
 
+def test_an_optimum_between_the_teeth_is_measured_against_the_better_tooth():
+    """``between_ratio`` is a share of the larger of the two teeth's overlaps. 1908.3's geometry
+    with foreign signal at its read mass: the optimum there holds 22 % of the far tooth's overlap
+    (the species' own) and 28 % of the near one's. Against the far tooth it lies between the
+    teeth on noise, and the far tooth is taken."""
+    from lcmsdeconv.deconv.refine import (
+        ISOTOPE_DA,
+        _align_charges,
+        _overlap,
+        align_candidate,
+        comb_phase_shift,
+    )
+
+    mass, zs, true = 1909.10, (2, 3), 0.546
+    grid, spectrum = _edge_case(mass, zs, true, foreign=(mass, zs, 0.0, 2e5))
+    c = Candidate(mass, 1.0, set(zs), gate_charges=set(zs))
+    gm = grid.bin_to_mz(np.arange(grid.size))
+    comb = comb_phase_shift(mass, set(zs), gm, spectrum, -1, ORBI, "ps_rna")[0]
+    zz = _align_charges(mass, set(zs), grid, ORBI)
+    near, far = (_overlap(mass + d, zz, spectrum, grid, ORBI, "ps_rna")
+                 for d in (comb, comb - np.sign(comb) * ISOTOPE_DA))
+    opt = align_template(c, spectrum, grid, ORBI, "ps_rna")
+    at_opt = _overlap(mass * np.exp(opt), zz, spectrum, grid, ORBI, "ps_rna")
+    assert abs(mass * np.expm1(opt)) < 0.05 and near < far
+    assert 0.25 * near <= at_opt < 0.25 * far
+    s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+    assert c.comb_placed and abs(mass * np.expm1(s) - true) < 0.03
+
+
 def test_the_comb_needs_its_charge_states_to_agree():
     """Two gate states whose windows hold combs half a spacing apart, or one state alone, do not
     move the template off the window's edge; a state that failed the gate is not read."""
@@ -718,6 +747,38 @@ def test_the_better_tooth_is_read_with_the_comb_neighbours():
         c = Candidate(mass, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
         s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
         assert abs(mass * np.expm1(s) - true) < 0.02
+
+
+def test_the_fit_weights_reach_every_tooth_choice(monkeypatch):
+    """refine_frame places a candidate's templates, and the adduct walk's trial's, with its fit
+    weights (``_better_tooth`` fits the two teeth and their neighbours with them)."""
+    from lcmsdeconv.deconv import refine
+    from lcmsdeconv.deconv.nnls_solve import fit_weights
+
+    base, na = 2549.80, ADDUCTS["Na"].avg_mass
+    grid = LogMzGrid(400.0, 2500.0, 2e-5, -1)
+    x = np.arange(400.0, 2500.0, 0.002)
+    y = np.zeros_like(x)
+    for m, h in ((base, 1e6), (base + na, 6e5)):
+        y += _comb_profile(m, (2, 3), 0.0, height=h, lo=400.0, hi=2500.0)[1]
+    observed = grid.resample_profile(x, y)
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
+                                  max_per_type=2, max_total=2)
+    seen = []
+    real = refine.align_candidate
+
+    def spy(cand, *args, **kw):
+        seen.append(kw.get("weights"))
+        return real(cand, *args, **kw)
+
+    monkeypatch.setattr(refine, "align_candidate", spy)
+    start, walked = base + na - 0.36, []
+    cand = Candidate(start, 10.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
+    refine.refine_frame([cand], grid, observed, 100.0, ORBI, "ps_rna", lib, raw_mz=x, raw_int=y,
+                        walked=walked)
+    assert walked == [start] and len(seen) == 2  # the candidate, then the walk's trial
+    weights = fit_weights(observed, 100.0, grid.step, float(ORBI.resolving_power(1000.0)))
+    assert all(w is not None and np.array_equal(w, weights) for w in seen)
 
 
 def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
@@ -940,6 +1001,7 @@ def test_a_deep_sodium_form_keeps_its_window_edge():
         assert abs(read * np.expm1(free) - 0.45) < 0.02  # its comb, without the ladder
         s = align_candidate(cand, spectrum, grid, ORBI, "ps_rna", ladder_of=[(parent, 0.0)])
         assert (s == edge) == guarded
+        assert cand.comb_placed is not guarded  # held at the edge, it is not reported off its comb
 
 
 def test_a_walk_anchors_the_adduct_forms_above_where_it_started():
