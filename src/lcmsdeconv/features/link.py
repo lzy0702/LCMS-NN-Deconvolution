@@ -310,7 +310,23 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
     Pieces of comparable height whose joined trace falls between their apexes below ``valley``
     of the lower apex are two elution bands of one mass - isomers either side of a boundary -
     and stay apart.
+
+    Pieces are taken strongest first, so a piece that touches only another weak piece of its
+    band, not yet joined to the strong one, is compared with the strong piece's trace before
+    that grew: the merge is repeated until nothing more joins (tails of 2653.32 and 2998.45 Da
+    of the IP-RPLC conjugate run over three regions each left their last piece apart).
     """
+    out = list(species)
+    while True:
+        merged = _merge_pass(out, tolerance_ppm, tolerance_da, max_gap_min, valley)
+        if len(merged) == len(out):
+            return merged
+        out = merged
+
+
+def _merge_pass(species: list[Species], tolerance_ppm: float, tolerance_da: float,
+                max_gap_min: float, valley: float) -> list[Species]:
+    """One pass of :func:`merge_adjacent_species`, strongest piece first."""
     out: list[Species] = []
     for s in sorted(species, key=lambda x: -x.total_intensity):
         hit = None
