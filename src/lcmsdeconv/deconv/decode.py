@@ -54,6 +54,9 @@ class Candidate:
     # the states refine.observed_charges added beyond the voted ones at this mass, each above
     # the noise, with its isotope comb and co-eluting with the voted band. None before the fit
     observed_extra: set[int] | None = None
+    # whether refine.align_candidate placed the templates on a tooth of the candidate's own
+    # isotope comb (beyond the overlap search's window)
+    comb_placed: bool = False
 
 
 def accumulate_mass_histogram(

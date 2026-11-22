@@ -177,6 +177,9 @@ class Component:
     #: the shift (ln mass) that aligns the class's isotope pattern with this species' resolved
     #: isotopologues; its templates are built at mass * exp(template_shift)
     template_shift: float = 0.0
+    #: whether :func:`lcmsdeconv.deconv.refine.align_candidate` placed the templates on a tooth
+    #: of the species' own isotope comb (:func:`lcmsdeconv.deconv.refine.report_comb_masses`)
+    comb_placed: bool = False
 
     @property
     def charge_range(self) -> tuple[int, int]:

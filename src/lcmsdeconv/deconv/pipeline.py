@@ -21,7 +21,13 @@ from .decode import (
     suppress_harmonics,
 )
 from .nnls_solve import fit_weights
-from .refine import drop_coincident_adducts, drop_multimers, drop_shared_evidence, refine_frame
+from .refine import (
+    drop_coincident_adducts,
+    drop_multimers,
+    drop_shared_evidence,
+    refine_frame,
+    report_comb_masses,
+)
 
 
 @dataclass
@@ -229,6 +235,8 @@ def deconvolve_spectrum(
                                       resolution=float(instrument.resolving_power(1000.0)),
                                       trace=trace)
     components = drop_coincident_adducts(components, mode_library, trace=trace)
+    # a species whose templates its own isotope comb placed is reported where they sit
+    report_comb_masses(components)
     snap("components", components, -1)
 
     for c in components:

@@ -423,9 +423,11 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     species and where their templates sit) whose comb lies on its parent's comb moved by the
     ladder's monoisotopic shift. The comb is read over the gate-passed states, the teeth compared
     over the middle ones of them; the overlap search reads the candidate's own states
-    (:func:`own_charges`), which also hold those added for the fit.
+    (:func:`own_charges`), which also hold those added for the fit. ``cand.comb_placed`` says
+    whether the comb placed the templates (:func:`report_comb_masses`).
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
+    cand.comb_placed = False
     gate = getattr(cand, "gate_charges", None)
     if not gate:
         return shift
@@ -474,6 +476,7 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     if ladder_of and _on_cation_ladder(cand.mass, comb, ladder_of, compound_class, form_tol_da,
                                        ladder_tol_da):
         return shift
+    cand.comb_placed = True
     return float(np.log1p(comb / cand.mass))
 
 
@@ -658,6 +661,7 @@ def refine_frame(
         )
         if raw_mz is not None:
             _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
+        comp.comb_placed = cand.comb_placed
         if comp.mass_spread_ppm > max_mass_spread_ppm and len(charges_present) > 2:
             # charge states disagree on the mass: a degenerate fit, not a real species
             decide(cand_mass0, "mass_spread", comp.mass)
@@ -685,6 +689,7 @@ def refine_frame(
                 comp.template_shift = cand.template_shift
                 if raw_mz is not None:
                     _refine_mass(comp, raw_mz, raw_int, grid.polarity, resolution=resolution)
+                comp.comb_placed = cand.comb_placed
         if full is not None:
             coeffs_full, used_full, explained_full = full
             if explained_full >= 0.8 * explained:
@@ -855,6 +860,42 @@ def _set_mass(comp: Component, mass: float) -> None:
     if comp.mass > 0 and mass > 0:
         comp.template_shift += float(np.log(comp.mass / mass))
     comp.mass = float(mass)
+
+
+def report_comb_masses(components: list[Component]) -> None:
+    """Report each species whose templates its own isotope comb placed at the templates'
+    position, ``mass * exp(template_shift)``, where that lies within half an isotope spacing of
+    the mass :func:`_refine_mass` measured; the templates stay where they are
+    (:func:`_set_mass`).
+
+    :func:`align_candidate` takes the comb where the overlap search ran into its window's edge or
+    stopped between the comb's teeth: the mean shift was pulled off by a neighbour on the same
+    comb (n-2 of the NC product read 0.49 Da light by a 4497 Da species six spacings below it,
+    0.27 Da heavy under IP-HILIC; the 1.9 kDa shortmer 1883.3 0.34 Da light by an envelope 2 Da
+    lighter). Read off the comb, the template position lies within the class pattern's
+    composition error of the truth (0.06 Da for both n-2s, 0.02 Da for 1883.3; -0.12 to +0.17 Da
+    on the four runs), but only modulo one spacing: the comb's tooth is the measured mass's
+    nearest only where the template position is taken. A tooth the gate's mass or the choice
+    between the two teeth took against the measured mass is a weak basis (FLP + K of the IP-RPLC
+    conjugate run one spacing light by the teeth's overlaps; a 13 kDa impurity of a synthetic
+    run, measured 0.27 Da heavy, whose gate mass put its templates a spacing light). Where the
+    measured mass is pulled more than half a spacing towards the wrong tooth and the templates
+    sit on it, no reading tells, and the species is reported a spacing off (the +Na form of a
+    synthetic 9.1 kDa polymer, read 0.56 Da light, at 0.98 Da light, no longer folded into its
+    parent).
+
+    Done once per frame, after every pass and the frame's adduct steps: the next pass's filter of
+    masses already found, the adduct-form exemption, the cation-ladder rule and the adduct
+    merges and drops read the measured masses. Moved inside the pass, a later pass found the
+    same envelope at its gate mass again, more than the filter's half dalton away, and fitted it
+    on the other tooth as a second species, and the adduct steps changed several species' forms.
+    """
+    for c in components:
+        if not getattr(c, "comb_placed", False):
+            continue
+        tpos = c.mass * float(np.exp(c.template_shift))
+        if abs(tpos - c.mass) <= 0.5 * ISOTOPE_DA:
+            _set_mass(c, tpos)
 
 
 def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 200.0,
