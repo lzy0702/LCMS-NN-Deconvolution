@@ -154,6 +154,7 @@ def test_a_state_whose_isotopologues_coelute_in_part_is_not_rescued(monkeypatch)
     most of them adduct forms of the main species beside other forms' peaks."""
     from lcmsdeconv.deconv import coelution
 
+    assert coelution.COMB_RESCUE_R == 0.9  # this case separates it from 0.5, not from 0.7
     later = np.exp(-0.5 * ((t - 11.0) / 2.0) ** 2)
     gate = _beside_a_foreign_ion(0.5 * ELUTES + 0.5 * later)
     assert gate(own_comb=True) == []

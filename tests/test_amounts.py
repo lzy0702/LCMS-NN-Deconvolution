@@ -764,14 +764,19 @@ def test_the_fit_weights_reach_every_tooth_choice(monkeypatch):
     observed = grid.resample_profile(x, y)
     lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP", "K"),
                                   max_per_type=2, max_total=2)
-    seen = []
-    real = refine.align_candidate
+    seen, teeth = [], []
+    real, real_tooth = refine.align_candidate, refine._better_tooth
 
     def spy(cand, *args, **kw):
         seen.append(kw.get("weights"))
         return real(cand, *args, **kw)
 
+    def tooth_spy(*args, **kw):
+        teeth.append(kw.get("weights", args[7] if len(args) > 7 else None))
+        return real_tooth(*args, **kw)
+
     monkeypatch.setattr(refine, "align_candidate", spy)
+    monkeypatch.setattr(refine, "_better_tooth", tooth_spy)
     start, walked = base + na - 0.36, []
     cand = Candidate(start, 10.0, {2, 3}, gate_charges={2, 3}, gate_failed=set())
     refine.refine_frame([cand], grid, observed, 100.0, ORBI, "ps_rna", lib, raw_mz=x, raw_int=y,
@@ -779,6 +784,10 @@ def test_the_fit_weights_reach_every_tooth_choice(monkeypatch):
     assert walked == [start] and len(seen) == 2  # the candidate, then the walk's trial
     weights = fit_weights(observed, 100.0, grid.step, float(ORBI.resolving_power(1000.0)))
     assert all(w is not None and np.array_equal(w, weights) for w in seen)
+    # and align_candidate hands them on to the tooth choice, for both (read 0.36 Da light, their
+    # combs lie beyond the 0.29 Da window)
+    assert len(teeth) == 2
+    assert all(w is not None and np.array_equal(w, weights) for w in teeth)
 
 
 def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
@@ -987,21 +996,24 @@ def test_a_deep_sodium_form_keeps_its_window_edge():
     """DA-NC + 4Na of the IP-HILIC NC run, read 0.45 Da light, sits on DA-NC's comb moved by four
     sodium: placed on its comb it was fitted whole as a false species. It keeps the window's
     edge; a species of another composition at the same mass, 0.3 Da off that comb, is placed by
-    its own comb."""
+    its own comb. The same read 0.28 Da light, its tooth 0.007 Da inside the 0.289 Da window,
+    where the overlap stops at the edge beside it and the edge's own tooth would be taken."""
     from lcmsdeconv.deconv.refine import align_candidate
 
     parent = 5163.23
     form = _on_ladder_mass(parent, 4)
     for true, guarded in ((form, True), (form + 0.3, False)):
-        read = true - 0.45
-        grid, spectrum = _edge_case(read, (3, 4), 0.45)
-        cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
-        edge = align_template(cand, spectrum, grid, ORBI, "ps_rna")
-        free = align_candidate(cand, spectrum, grid, ORBI, "ps_rna")
-        assert abs(read * np.expm1(free) - 0.45) < 0.02  # its comb, without the ladder
-        s = align_candidate(cand, spectrum, grid, ORBI, "ps_rna", ladder_of=[(parent, 0.0)])
-        assert (s == edge) == guarded
-        assert cand.comb_placed is not guarded  # held at the edge, it is not reported off its comb
+        for off in (0.45, 0.28):
+            read = true - off
+            grid, spectrum = _edge_case(read, (3, 4), off)
+            cand = Candidate(read, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+            edge = align_template(cand, spectrum, grid, ORBI, "ps_rna")
+            assert abs(read * np.expm1(edge) - 0.289) < 0.001  # pinned at the window's edge
+            free = align_candidate(cand, spectrum, grid, ORBI, "ps_rna")
+            assert abs(read * np.expm1(free) - off) < 0.005  # its comb, without the ladder
+            s = align_candidate(cand, spectrum, grid, ORBI, "ps_rna", ladder_of=[(parent, 0.0)])
+            assert (s == edge) == guarded
+            assert cand.comb_placed is not guarded  # held at the edge, it is not reported off its comb
 
 
 def test_a_walk_anchors_the_adduct_forms_above_where_it_started():

@@ -165,10 +165,13 @@ def test_a_multimer_must_coelute_with_its_monomer():
 
 
 def test_a_multimer_goes_only_where_its_coelution_is_judged():
-    """Without the scans, over fewer than four of them (the oligonucleotide methods take regions
-    of two), or where the monomer's trace carries signal in fewer than four, the co-elution test
-    cannot judge, and a species at 2M is kept: it may elute on its own. A harmonic (the
-    monomer's ions read at twice their charge) goes without the test."""
+    """Without the scans, over fewer than four of them (regions may be two scans long), or where
+    the monomer's trace carries signal in fewer than four, the co-elution test cannot judge, and
+    a species at 2M is kept: it may elute on its own. The monomer's trace decides that, not the
+    multimer's: a weak dimer above the vendor threshold only in the monomer's three apex scans
+    is judged, and goes. A harmonic (the monomer's ions read at twice their charge) goes without
+    the test, also with the test turned off (``coelution_r`` 0), which keeps every other
+    multimer."""
     from lcmsdeconv.deconv.refine import drop_multimers
 
     mono = _comp(1580.18, 8.35e6, {2: 1.0})
@@ -188,6 +191,14 @@ def test_a_multimer_goes_only_where_its_coelution_is_judged():
     four = _scan_stack([(1580.18, 2, 1e6, PEAK[3:7]), (3160.68, 3, 1e4, PEAK[3:7])], n=4)
     assert {round(c.mass, 2) for c in drop_multimers([mono, dimer], polarity=-1,
                                                      frames=four)} == {1580.18}
+    # the monomer over twelve scans, the dimer above the threshold in its three apex scans only
+    apex = np.where(PEAK >= np.sort(PEAK)[-3], PEAK, 0.0)
+    weak = _scan_stack([(1580.18, 2, 1e6, PEAK), (3160.68, 3, 1e4, apex)])
+    assert {round(c.mass, 2) for c in drop_multimers([mono, dimer], polarity=-1,
+                                                     frames=weak)} == {1580.18}
+    for multimer, out in ((dimer, {1580.18, 3160.68}), (harmonic, {1580.18})):
+        kept = drop_multimers([mono, multimer], polarity=-1, frames=weak, coelution_r=0.0)
+        assert {round(c.mass, 2) for c in kept} == out
 
 
 class _LadderEcho:

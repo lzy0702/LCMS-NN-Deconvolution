@@ -85,20 +85,21 @@ regions and with it what that inflation had hidden:
 
 ## Real Orbitrap runs
 
-Four Thermo Q Exactive runs of oligonucleotide mixtures (a GalNAc-conjugated phosphorothioate
-16-mer spiked with 2 % of each of five impurities, and its non-conjugated form spiked with its
-deaminated form; ion-pairing reversed phase and ion-pairing HILIC; negative mode, profile at 140k)
-are read directly from `.raw` (`lcmsdeconv.io.thermo.read_thermo_raw`). They are the runs of Tutiš
-et al., Anal. Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407), whose
-Table 1 gives the average masses; `scripts/validate_oligo_runs.py` scores a run against them, and
-checks every other report with extracted-ion chromatograms. Of 20 known species the original code
-found 2 among 87 reports; before the resampling fix the code found 13 among 39 (15 of 20 with
+Four Thermo Q Exactive runs of oligonucleotide mixtures (a GalNAc-conjugated phosphorothioate 16-mer
+spiked with 2 % of each of five impurities, and its non-conjugated form spiked with its deaminated
+form; ion-pairing reversed phase and ion-pairing HILIC; negative mode, profile at 140k) are read
+directly from `.raw` (`lcmsdeconv.io.thermo.read_thermo_raw`). They are the runs of Tutiš et al.,
+Anal. Chem. 2025, 97, 15717-15726 (https://doi.org/10.1021/acs.analchem.5c01407), whose Table 1
+gives the average masses; `scripts/validate_oligo_runs.py` scores a run against them, and checks
+every other report with extracted-ion chromatograms. Of 20 known species the original code found 2
+among 87 reports; before the resampling fix the code found 13 among 39 (15 of 20 with
 `deconvolution.single_charge`), after it 15, and 15 of 29 SI-listed impurities, among 198 reports,
 and the current code finds all 20, and all 29 SI-listed impurity elutions (five IP-RPLC shortmers
 among them read 0.52-0.75 Da light of their own isotopologues), among 250 reports, 127 of them
-EIC-confirmed and 58 unconfirmed, with base-form amounts within 0.88-1.19 of extracted-ion
-references for 19 of the 24 impurities in the amounts table. Details, mass errors and what is
-still wrong are in `benchmarks.md`; the defects these runs exposed, and what the truth table
+EIC-confirmed and 58 unconfirmed, with base-form amounts within 0.88-1.19 of their references for 19
+of the 24 impurities in the amounts table (extracted-ion references, two of them read on the
+species' own isotopologues: n-2 under IP-RPLC and 1883.3 under IP-HILIC). Details, mass errors and
+what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what the truth table
 changed, are in `lessons.md`, sections 11, 14, 15, 16 and 17.
 
 ## Public data
@@ -167,6 +168,8 @@ package could not reach:
   not co-elute is judged again on the species' own isotopologues); a ladder of ions that co-elute
   (a broad column wash) can still pass where the isotopes are not resolved.
 - Abundances of a minor species next to a much stronger one depend on templates matching the
-  strong species' resolved isotopologues; with the alignment step they agree with
-  extracted-ion areas to within about 25 % under IP-RPLC and a factor of two to three under
-  IP-HILIC on the real runs, where they were off by orders of magnitude before.
+  strong species' resolved isotopologues; with the alignment step and base forms compared, 19 of
+  the 24 impurities of the real runs' amounts table lie within 0.88-1.19 of their extracted-ion
+  references, and the exceptions reach 1.65 under IP-HILIC (4512.6; PO-NC 1.61, n-2 1.27) and
+  1.21 (PO-NC) and 0.84 (1883.3) under IP-RPLC (`benchmarks.md`), where they were off by orders
+  of magnitude before.

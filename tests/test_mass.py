@@ -187,3 +187,62 @@ def test_an_edge_optimum_on_a_tooth_inside_the_window_takes_the_comb():
                 assert abs(mass * np.expm1(s) - sign * own) < 0.005
             else:
                 assert s == edge
+
+
+def test_an_edge_optimum_takes_the_tooth_it_stops_beside():
+    """The edge is the tooth it stops beside, and that tooth takes the templates, not the better
+    of the two either side of the measured mass: 3207.4's geometry read heavy, with an envelope
+    three times as strong two spacings heavier on its comb. Fitted jointly, that neighbour sits
+    one spacing past the other tooth, beside the pair, and makes the other tooth carry more
+    (:func:`_better_tooth` takes it, a spacing beyond the window's other edge, where the overlap
+    search never looked); the species is placed on its own tooth."""
+    from lcmsdeconv.deconv.refine import _align_charges, _better_tooth, comb_phase_shift
+
+    mass, zs, true = 3208.40, (3, 4), -0.284
+    grid = LogMzGrid(300.0, 2500.0, 2e-5, -1)
+    spectrum = np.zeros(grid.size)
+    for m, h in ((mass + true, 1e6), (mass + true + 2 * ISOTOPE_DA, 3e6)):
+        for z in zs:
+            t = build_template(m, z, grid, ORBI, "ps_rna")
+            spectrum[t.bins] += h * t.values
+    c = Candidate(mass, 1.0, set(zs), gate_charges=set(zs), gate_failed=set())
+    edge = align_template(c, spectrum, grid, ORBI, "ps_rna")
+    assert 0.288 < -mass * np.expm1(edge) < 0.290  # pinned at the window's edge
+    comb, _coh, _n = comb_phase_shift(mass, set(zs), grid.bin_to_mz(np.arange(grid.size)),
+                                      spectrum, -1, ORBI, "ps_rna")
+    assert abs(comb - true) < 0.005
+    other = _better_tooth(mass, comb, _align_charges(mass, set(zs), grid, ORBI), spectrum, grid,
+                          ORBI, "ps_rna")
+    assert abs(other - (comb + ISOTOPE_DA)) < 1e-9  # the joint fit's choice
+    s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+    assert c.comb_placed and abs(mass * np.expm1(s) - true) < 0.005
+
+
+def test_an_edge_optimum_is_measured_against_every_tooth_in_the_window():
+    """Above about 17 kDa the window (1.5 bins, 3e-5 x mass) holds the comb's teeth either side
+    of the measured mass. A 20 kDa species read 0.52 Da off has its own tooth on the other side
+    of the one nearest the measured mass, inside the 0.6 Da window; a foreign comb under z = 17,
+    a state the gate did not pass, pulls the overlap to the edge 0.08 Da past that tooth. The
+    edge's distance from the comb is wrapped to the nearest tooth, as inside the window, and
+    the species' own tooth takes the templates, read light and read heavy."""
+    from lcmsdeconv.deconv.refine import comb_phase_shift
+
+    mass, gate = 20000.0, (14, 15, 16)
+    grid = LogMzGrid(300.0, 2500.0, 2e-5, -1)
+    for sign in (1, -1):
+        true = sign * 0.52
+        spectrum = np.zeros(grid.size)
+        for z in gate:
+            t = build_template(mass + true, z, grid, ORBI, "ps_rna")
+            spectrum[t.bins] += 1e6 * t.values
+        t = build_template(mass + sign * 0.66, 17, grid, ORBI, "ps_rna")
+        spectrum[t.bins] += 1e7 * t.values
+        c = Candidate(mass, 1.0, set(gate) | {17}, gate_charges=set(gate), gate_failed=set(),
+                      observed_extra={17})
+        edge = align_template(c, spectrum, grid, ORBI, "ps_rna")
+        assert abs(mass * np.expm1(edge) - sign * 0.6) < 1e-3  # pinned at the window's edge
+        comb, _coh, _n = comb_phase_shift(mass, set(gate), grid.bin_to_mz(np.arange(grid.size)),
+                                          spectrum, -1, ORBI, "ps_rna")
+        assert sign * comb < 0 and abs(comb - true) > 0.9  # the nearest tooth: the other side
+        s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+        assert c.comb_placed and abs(mass * np.expm1(s) - true) < 0.01

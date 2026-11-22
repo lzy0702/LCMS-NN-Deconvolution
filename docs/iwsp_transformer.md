@@ -13,13 +13,14 @@ estimates are called estimates.
 
 **Status since.** The package's resampling defect of section 2 has been fixed and the decoder
 recalibrated (`lessons.md`, section 14): a thresholded segment's edge point stands for its own
-spacing, a region's grid view is the sum of its scans resampled one by one, the envelope gate
-asks for isotopes of the predicted size and for co-eluting charge states, least-squares weights
-come from the local maximum, and templates are aligned to resolved isotopologues. The comb now
-finds 15/20 of the paper's species and 15/29 SI-listed ones among 198 reports, 43 of them
-unconfirmed. Every pipeline count below measures the package before that fix (13/20, 5/29, 39
-reports, 7 unconfirmed); the baseline the design's gains are measured against must be taken
-again on the fixed package, and stage 0's resampling item is done.
+spacing, a region's grid view is the sum of its scans resampled one by one, the envelope gate asks
+for isotopes of the predicted size and for co-eluting charge states, least-squares weights come from
+the local maximum, and templates are aligned to resolved isotopologues. After that fix the comb
+found 15/20 of the paper's species and 15/29 SI-listed ones among 198 reports, 43 of them
+unconfirmed; the package's current counts are in `benchmarks.md` (20/20 and 29/29 among 250 reports,
+58 unconfirmed). Every pipeline count below measures the package before that fix (13/20, 5/29, 39
+reports, 7 unconfirmed); the baseline the design's gains are measured against must be taken again on
+the fixed package, and stage 0's resampling item is done.
 
 **In short.**
 

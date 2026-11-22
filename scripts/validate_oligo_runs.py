@@ -255,7 +255,8 @@ def main():
                     help="charge network (.onnx) to use instead of the comb estimator")
     ap.add_argument("--coelution-r", type=float, default=None,
                     help="co-elution threshold of a species' charge states "
-                         "(deconvolution.coelution_r; 0 turns the test off)")
+                         "(deconvolution.coelution_r; 0 turns the test off, and multimers "
+                         "then go only as harmonic readings)")
     ap.add_argument("--comb-fill", type=float, default=None,
                     help="share of the predicted isotopologue height a comb position needs "
                          "(the decoder's default is 1/3; 0 asks only for signal above the noise)")

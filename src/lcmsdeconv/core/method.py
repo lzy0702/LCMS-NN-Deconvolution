@@ -91,15 +91,18 @@ class DeconvSettings:
     single_charge: bool = False
     #: a species seen only as singly charged ions counts (small molecules, glycans, polymers).
     #: Off for the Orbitrap oligonucleotide method, whose range reaches 800 Da and z = 1: its
-    #: species of 0.8-2.5 kDa show z = 1 beside z = 2, and z = 1 counts there as one of two
-    #: charge states, only where its envelope has no peaks between its isotopologues (an
-    #: envelope of any charge fills a z = 1 comb). The time-of-flight oligonucleotide method,
-    #: from 1 kDa and z = 2, keeps the default
+    #: species of 0.8-2.5 kDa show z = 1 beside z = 2. z = 1 then makes no species alone (in
+    #: the candidate pick, the gate or the fit), and the gate, the charges added for the fit
+    #: and the adduct evidence count it only where its envelope has no peaks between its
+    #: isotopologues (an envelope of any charge fills a z = 1 comb); the pick counts every z = 1
+    #: vote beside another charge, and a voted z = 1 the gate rejected is still fitted. The
+    #: time-of-flight oligonucleotide method, from 1 kDa and z = 2, keeps the default
     singly_charged_species: bool = True
     #: the charge states of a species must co-elute over the scans of a region: the Pearson
-    #: correlation of their scan-by-scan intensity traces at least this (0 = no test). Above
-    #: the noise of vendor-thresholded data this, not the noise threshold, is what tells a
-    #: species from a charge ladder assembled from other ions; see docs/benchmarks.md
+    #: correlation of their scan-by-scan intensity traces at least this (0 = no test; a
+    #: multimer then goes only as a harmonic reading, refine.drop_multimers). Above the noise
+    #: of vendor-thresholded data this, not the noise threshold, is what tells a species from a
+    #: charge ladder assembled from other ions; see docs/benchmarks.md
     coelution_r: float = 0.5
     refine_iterations: int = 2
     nn_probability_min: int | float = 0.05

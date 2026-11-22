@@ -402,10 +402,11 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     strong species slide onto that species' peaks. The comb is read off the candidate's own
     envelopes instead, and taken when (a) the overlap ran into the window's edge, (b) the comb
     lies beyond the window or at its edge and (c) at least two gate-passed charge states agree on it
-    (``min_coherence``). Of the comb's two teeth either side of the measured mass, the one whose
-    template carries more of the spectrum, fitted with its same-comb neighbours, is taken
-    (:func:`_better_tooth`): a mass read more than half a spacing off has its nearest tooth on
-    the wrong side, and the edge between them fits neither. A mass read about half a spacing off
+    (``min_coherence``). Beyond the window, of the comb's two teeth either side of the measured
+    mass the one whose template carries more of the spectrum, fitted with its same-comb
+    neighbours, is taken (:func:`_better_tooth`): a mass read more than half a spacing off has
+    its nearest tooth on the wrong side, and the edge between them fits neither (at the edge
+    the edge's own tooth is taken, below). A mass read about half a spacing off
     has both teeth beyond the window, and the overlap can peak inside it on whatever weak signal
     lies between them: 1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, had
     their templates there, 115 and 2000 times below the better tooth, and were missed. An optimum
@@ -426,16 +427,22 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     (:func:`own_charges`), which also hold those added for the fit. ``cand.comb_placed`` says
     whether the comb placed the templates (:func:`report_comb_masses`).
 
-    The comb is at the window's edge where its tooth lies inside the window and the edge optimum
-    within ``off_comb_da`` of it, the tolerance that puts an optimum inside the window on the
-    comb: that is the tooth, cut short by the window, and no parabola is fitted at the edge (on
-    the four runs four alignments end so, 0.0005-0.024 Da from their tooth, their overlaps
-    peaking past the midpoint of the last step). 3207.4 of the IP-RPLC NC run, its tooth 0.005 Da
-    inside the 0.289 Da window, was otherwise not comb-placed and was reported at its mean-shift
-    mass, 0.30 Da light. An optimum inside the window on the comb keeps its place and the
-    mean-shift mass, so the reported mass still jumps at that midpoint: 3207.4's overlap peaks
-    0.001 Da past it, and that of 3315.35 of the same run, read 0.28 Da light of its tooth,
-    0.0007 Da short of it.
+    The comb is at the window's edge where its nearest tooth lies inside the window and the edge
+    optimum within ``off_comb_da`` of one of its teeth, the tolerance that puts an optimum inside
+    the window on the comb, the distance wrapped to the nearest tooth as there (above about
+    17 kDa the window can hold the teeth either side of the measured mass, and a mass read more
+    than half a spacing off has its own tooth on the other side of the nearest one). That
+    optimum is the tooth, cut short by the window (no parabola is fitted at the edge), and that
+    tooth takes the templates, under the guards above. It is not weighed against the tooth one
+    spacing further, beyond the window's other edge, which the overlap search never reached:
+    :func:`_better_tooth` took that one for a 13.2 kDa synthetic impurity, a spacing from its
+    truth, where the edge's tooth lay 0.003 Da from it. On the four runs four alignments end
+    so, 0.0005-0.024 Da from their tooth, their overlaps peaking past the midpoint of the last
+    step. 3207.4 of the IP-RPLC NC run, its tooth 0.005 Da inside the 0.289 Da window, was
+    otherwise not comb-placed and was reported at its mean-shift mass, 0.30 Da light. An optimum
+    inside the window on the comb keeps its place and the mean-shift mass, so the reported mass
+    still jumps at that midpoint: 3207.4's overlap peaks 0.001 Da past it, and that of 3315.35
+    of the same run, read 0.28 Da light of its tooth, 0.0007 Da short of it.
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
     cand.comb_placed = False
@@ -456,6 +463,7 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
                                           instrument, compound_class)
     if n == 0 or coherence < min_coherence:
         return shift
+    tooth = None
     if interior:
         # an optimum inside the window on the comb is the species' own tooth (on the four runs
         # such optima lie within 0.09 Da of the comb, those between the teeth 0.19-0.48 Da from
@@ -475,24 +483,30 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
             return shift
     elif abs(comb) <= reach * cand.mass * grid.step:
         # the comb's nearest tooth lies inside the window: an edge optimum within ``off_comb_da``
-        # of it is that tooth, cut short by the window, and the comb is taken below; an edge
-        # further from the tooth is kept
-        if abs(cand.mass * float(np.expm1(shift)) - comb) > off_comb_da:
+        # of a tooth of the comb (wrapped, as inside the window: above about 17 kDa the window
+        # can hold the teeth either side of the measured mass) is that tooth, cut short by the
+        # window, and that tooth is taken, not the better of two (the joint fit can pick the
+        # one a spacing beyond the window's other edge, where the search never looked); an edge
+        # further from the comb is kept
+        edge = cand.mass * float(np.expm1(shift))
+        if abs(_wrap_spacing(edge - comb)) > off_comb_da:
             return shift
-    # the tooth: of the comb's two either side of the measured mass, the one fitted with its
-    # same-comb neighbours carries more of the spectrum
-    comb = _better_tooth(cand.mass, comb, zs, spectrum, grid, instrument, compound_class,
-                         weights)
+        tooth = comb + ISOTOPE_DA * round((edge - comb) / ISOTOPE_DA)
+    if tooth is None:
+        # the tooth: of the comb's two either side of the measured mass, the one fitted with its
+        # same-comb neighbours carries more of the spectrum
+        tooth = _better_tooth(cand.mass, comb, zs, spectrum, grid, instrument, compound_class,
+                              weights)
     # a sodium/potassium form deeper than the exemption's three of a type (DA-NC + 4Na and
     # NC + 6Na + K of the IP-HILIC NC run) sits exactly on its parent's comb moved by the
     # ladder's monoisotopic shift; placed there it is fitted whole as a false species, so it
     # keeps the edge like the exempt forms. A species of another composition near such a mass
     # lies on that comb only by chance
-    if ladder_of and _on_cation_ladder(cand.mass, comb, ladder_of, compound_class, form_tol_da,
+    if ladder_of and _on_cation_ladder(cand.mass, tooth, ladder_of, compound_class, form_tol_da,
                                        ladder_tol_da):
         return shift
     cand.comb_placed = True
-    return float(np.log1p(comb / cand.mass))
+    return float(np.log1p(tooth / cand.mass))
 
 
 def _template_phase(mass: float, compound_class: str) -> float:
@@ -1189,15 +1203,17 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
     the monomer's molecules as they elute. The strongest charge state of its own (not a multiple
     of n) is compared with the monomer's strongest over the scans the spectrum sums
     (:func:`~lcmsdeconv.deconv.coelution.coeluting`). Where that test cannot judge, the
-    component is kept: without ``frames`` (or with ``coelution_r <= 0``), with fewer than
+    component is kept: without ``frames`` (or with ``coelution_r <= 0``), where it has no
+    base-form state of its own or the monomer no base-form state, with fewer than
     :data:`~lcmsdeconv.deconv.coelution.MIN_SCANS` scans, or where the monomer's trace carries
-    signal in fewer scans than that (:func:`~lcmsdeconv.deconv.coelution.can_judge`). The
-    oligonucleotide methods take regions of two scans, and a species at n x M eluting apart
-    from its monomer would otherwise go there without evidence. A component whose own states
-    carry less than ``own_share`` of its fit is the monomer's ions read at n times their
-    charge, a harmonic, and goes without the test: what its own states hold is too little to
-    show an elution profile (the 1234 Da shortmer's ions read as a 2469 Da species of the
-    IP-HILIC NC run, 9 % of its fit on odd states). The bar is half of what a genuine species at
+    signal in fewer scans than that (:func:`~lcmsdeconv.deconv.coelution.can_judge`). Regions
+    can be two or three scans long (``regions.min_frames`` is 2 in every bundled method), and a
+    species at n x M eluting apart from its monomer would otherwise go there without evidence;
+    with ``coelution_r <= 0`` only harmonics (below) go. A component whose own states carry
+    less than ``own_share`` of its fit is the monomer's ions read at n times their charge, a
+    harmonic, and goes without the test: what its own states hold is too little to show an
+    elution profile (the 1234 Da shortmer's ions read as a 2469 Da species of the IP-HILIC NC
+    run, 9 % of its fit on odd states). The bar is half of what a genuine species at
     2M carries on its odd states over an even charge ladder: such a species, eluting on its own,
     is judged by its elution, not by its charge-state distribution (the dimer of the IP-RPLC NC
     run has 75 % of its fit on odd states). Methods for native and size-exclusion work, where

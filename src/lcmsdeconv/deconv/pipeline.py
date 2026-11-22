@@ -56,7 +56,8 @@ class DeconvParams:
     # (high-resolution instruments; see refine_candidate_masses)
     single_charge_isotopes: bool = False
     # a species seen as singly charged ions alone counts (small molecules, glycans, polymers);
-    # off, z = 1 is one charge state among others and counts only where singly charged
+    # off, z = 1 makes no species alone, and the gate and the charges added for the fit count it
+    # only where singly charged (a voted z = 1 the gate rejected is still fitted)
     singly_charged_species: bool = True
     # charges are read from resolved isotope spacing (Orbitrap, FT-ICR): candidates may then be
     # displaced by peaks that inherit an envelope's ladder charge, and the gate lets them climb
@@ -337,7 +338,11 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
     trial's z = 1 state is judged as detection judges it (``singly_charged_ok``, the method's
     ``singly_charged_species``): where singly charged species do not count, z = 1 counts only
     where its envelope has no peaks between its isotopologues, and a trial seen at z = 1 alone is
-    no evidence.
+    no evidence. Where they count (every bundled method but the Orbitrap oligonucleotide one),
+    the gate returns a trial whose candidate carries z = 1 alone unmeasured, at the candidate's
+    mass plus the adduct's monoisotopic shift, which lies within 0.3 Da of the average-mass
+    shift: every adduct type is then evidenced without any envelope at its mass. That is left
+    to the adduct module.
     """
     from .decode import Candidate
 
