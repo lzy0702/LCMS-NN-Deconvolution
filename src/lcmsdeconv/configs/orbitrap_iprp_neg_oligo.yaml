@@ -15,10 +15,10 @@ acquisition:
   uv_channel: null
 deconvolution:
   mass_range:
-  - 1000.0
+  - 800.0
   - 60000.0
   charge_range:
-  - 2
+  - 1
   - 40
   mz_range:
   - null
@@ -47,6 +47,7 @@ deconvolution:
   refine_iterations: 2
   nn_probability_min: 0.05
   min_charge_support: 2
+  singly_charged_species: false
   suppress_multimers: true
   grid_step: 2.0e-05
   max_components: 200

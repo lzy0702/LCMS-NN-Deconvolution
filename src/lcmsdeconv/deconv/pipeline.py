@@ -49,6 +49,9 @@ class DeconvParams:
     # accept a species seen at one charge state when resolved isotope spacing fixes the charge
     # (high-resolution instruments; see refine_candidate_masses)
     single_charge_isotopes: bool = False
+    # a species seen as singly charged ions alone counts (small molecules, glycans, polymers);
+    # off, z = 1 is one charge state among others and counts only where singly charged
+    singly_charged_species: bool = True
     # charges are read from resolved isotope spacing (Orbitrap, FT-ICR): candidates may then be
     # displaced by peaks that inherit an envelope's ladder charge, and the gate lets them climb
     # to the envelope's centre from anywhere within its half-width
@@ -125,7 +128,8 @@ def deconvolve_spectrum(
         cands = pick_candidates(lm_axis, hist, charge_support,
                                 min_charge_support=params.min_charge_support,
                                 rel_height=params.min_relative_abundance,
-                                single_charge_ok=params.single_charge_isotopes)
+                                single_charge_ok=params.single_charge_isotopes,
+                                singly_charged_ok=params.singly_charged_species)
         snap("picked", cands, it)
         if not cands:
             return []
@@ -138,7 +142,8 @@ def deconvolve_spectrum(
                                         profile=spectrum.is_profile is not False,
                                         single_charge_ok=params.single_charge_isotopes,
                                         envelope_move=params.isotope_charges,
-                                        frames=frames, coelution_r=params.coelution_r)
+                                        frames=frames, coelution_r=params.coelution_r,
+                                        singly_charged_ok=params.singly_charged_species)
         snap("gated", cands, it)
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
@@ -208,6 +213,7 @@ def deconvolve_spectrum(
             trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
             known_masses=[c.mass for c in components], walked=walked,
             known_shifts=[c.mass * float(np.expm1(c.template_shift)) for c in components],
+            singly_charged_ok=params.singly_charged_species,
         )
         if not new:
             break
@@ -337,7 +343,8 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
                                          tol_ppm=50.0, frames=frames,
                                          coelution_r=params.coelution_r,
                                          envelope_move=params.isotope_charges,
-                                         own_comb=False)
+                                         own_comb=False,
+                                         singly_charged_ok=params.singly_charged_species)
             if ok and abs(ok[0].mass - (c.mass + adduct.avg_mass)) <= max(2e-5 * c.mass, 0.3):
                 kept.add(adduct.name)
                 break

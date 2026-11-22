@@ -474,6 +474,7 @@ def refine_frame(
     known_masses: list[float] | None = None,
     walked: list[float] | None = None,
     known_shifts: list[float] | None = None,
+    singly_charged_ok: bool = True,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -484,7 +485,9 @@ def refine_frame(
     species' own (:func:`observed_charges`). ``known_masses`` are the species accepted by
     earlier passes over the same spectrum, ``known_shifts`` where their templates sit (Da from
     each mass), and ``walked`` the masses the adduct walk moved candidates from in them; the
-    masses walked from in this pass are appended to it.
+    masses walked from in this pass are appended to it. Without ``singly_charged_ok`` a fit
+    to z = 1 alone is unsupported like any other single charge state, and z = 1 is added for
+    the fit only where its envelope is singly charged (:func:`observed_charges`).
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = fit_weights(observed, noise_sigma, grid.step,
@@ -536,7 +539,8 @@ def refine_frame(
             cand.charges = observed_charges(cand.mass, cand.charges, raw_mz, raw_int,
                                             3.0 * noise_sigma, grid.polarity, compound_class,
                                             resolution, mz_range, frames=frames,
-                                            coelution_r=coelution_r, instrument=instrument)
+                                            coelution_r=coelution_r, instrument=instrument,
+                                            singly_charged_ok=singly_charged_ok)
             cand.observed_extra = set(cand.charges) - voted
         forms = list(known_masses or ()) + [c.mass for c in components] + walked_from
         ladder = ((list(zip(known_masses or (), known_shifts or ()))
@@ -553,7 +557,8 @@ def refine_frame(
             decide(cand_mass0, "no_fit")
             continue
         charges_present = {z for (z, _lab) in coeffs}
-        if (len(charges_present) < min_charge_support and charges_present != {1}
+        if (len(charges_present) < min_charge_support
+                and (charges_present != {1} or not singly_charged_ok)
                 and not getattr(cand, "single_charge", False)):
             decide(cand_mass0, "charge_support")
             continue
@@ -1106,7 +1111,7 @@ def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarr
                      polarity: int, compound_class: str, resolution: float,
                      mz_range: tuple[float, float] | None = None, max_gap: int = 1,
                      z_cap: int = 150, frames=None, coelution_r: float = 0.5,
-                     instrument=None) -> set[int]:
+                     instrument=None, singly_charged_ok: bool = True) -> set[int]:
     """Charges of a species' envelope that the spectrum shows, grown outward from ``charges``.
 
     Starting from the charge band that voted for the species, each next charge outward is kept
@@ -1119,9 +1124,11 @@ def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarr
     envelope must also co-elute with the starting band (correlation ``coelution_r`` or better):
     above the noise of a thresholded spectrum there is signal of some ion near almost every
     position, and only its isotopes and its time course tell whether it is this species.
+    Without ``singly_charged_ok`` z = 1 is observed only where its envelope has no peaks between
+    its isotopologues (:func:`~lcmsdeconv.deconv.decode.singly_charged_contradicted`).
     """
     from .coelution import correlation, shows_profile
-    from .decode import envelope_geometry, isotopes_contradict_charge
+    from .decode import envelope_geometry, isotopes_contradict_charge, singly_charged_contradicted
 
     charges = {int(z) for z in charges if z >= 1}
     if not charges:
@@ -1152,6 +1159,10 @@ def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarr
         r_here = float(instrument.resolving_power(mz)) if instrument is not None else resolution
         if isotopes_contradict_charge(mass, z, mz, raw_mz, raw_int, thr, polarity,
                                       compound_class, mz / max(r_here, 1.0), height=core):
+            return False
+        if (z == 1 and not singly_charged_ok
+                and singly_charged_contradicted(mz, max(2.0 * env_sigma, 1.5), raw_mz, raw_int,
+                                                thr, core)):
             return False
         if ref is not None:
             return correlation(ref, frames.traces([mz], [half])[0]) >= coelution_r

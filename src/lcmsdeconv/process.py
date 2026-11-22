@@ -108,6 +108,7 @@ def _deconv_params(method: Method) -> DeconvParams:
         adduct_max_per_type=d.adducts.max_per_type,
         adduct_require_evidence=getattr(d.adducts, "require_evidence", True),
         single_charge_isotopes=bool(getattr(d, "single_charge", False)),
+        singly_charged_species=bool(getattr(d, "singly_charged_species", True)),
         isotope_charges=_isotope_mode(method),
         coelution_r=float(getattr(d, "coelution_r", 0.5)),
     )

@@ -89,6 +89,11 @@ class DeconvSettings:
     #: HILIC leaves at one charge state) but added about 16 reports no extracted-ion check
     #: could confirm; see docs/benchmarks.md
     single_charge: bool = False
+    #: a species seen only as singly charged ions counts (small molecules, glycans, polymers).
+    #: Off for the oligonucleotide methods: their species of 0.8-2.5 kDa show z = 1 beside z = 2,
+    #: and z = 1 counts there as one of two charge states, only where its envelope has no peaks
+    #: between its isotopologues (an envelope of any charge fills a z = 1 comb)
+    singly_charged_species: bool = True
     #: the charge states of a species must co-elute over the scans of a region: the Pearson
     #: correlation of their scan-by-scan intensity traces at least this (0 = no test). Above
     #: the noise of vendor-thresholded data this, not the noise threshold, is what tells a

@@ -149,12 +149,14 @@ def pick_candidates(
     max_candidates: int = 200,
     smooth_da: float = 1.2,
     single_charge_ok: bool = False,
+    singly_charged_ok: bool = True,
 ) -> list[Candidate]:
     """Peak-pick the mass histogram into candidate masses.
 
     ``single_charge_ok`` keeps peaks voted for by a single charge state (z >= 2) as well; the
     gate (:func:`refine_candidate_masses`) then accepts them only when resolved isotope spacing
-    fixes that charge.
+    fixes that charge. A peak voted for by z = 1 alone is a candidate where ``singly_charged_ok``
+    (singly charged species count); otherwise z = 1 is one charge state like any other.
     """
     if hist.max() <= 0:
         return []
@@ -171,7 +173,7 @@ def pick_candidates(
         hw = max(smooth_bins * 3, int(round(0.75 * smooth_da / (np.exp(lm_axis[p]) * step))))
         lo, hi = max(0, p - hw), min(len(hist), p + hw + 1)
         support = charge_support.charges_in(lo, hi)
-        single = len(support) < min_charge_support and support != {1}
+        single = len(support) < min_charge_support and (support != {1} or not singly_charged_ok)
         if single and not (single_charge_ok and len(support) == 1):
             continue
         # sub-bin parabolic interpolation for a mass accurate to a few ppm
@@ -357,6 +359,36 @@ def isotopes_contradict_charge(mass: float, z: int, centre_mz: float, raw_mz: np
     return best < min_populated * major.sum()
 
 
+def singly_charged_contradicted(centre_mz: float, half_width: float, raw_mz: np.ndarray,
+                                raw_int: np.ndarray, thr: float, height: float,
+                                min_fill: float = 1.0 / 3.0) -> bool:
+    """True when the envelope at ``centre_mz``, read as singly charged, has peaks between its
+    isotopologues.
+
+    An envelope of any charge has an isotopologue every 1.0034 Th, so it fills the isotope comb
+    of charge one (:func:`isotopes_contradict_charge` cannot tell), and the comb estimator reads
+    z = 1 as a divisor of the true charge: the NC product's non-covalent dimer [2M-5H]5- of the
+    IP-RPLC NC run, read at z = 1, was a 2065 Da "species" at 0.8 % of NC. A charge c >= 2 puts
+    peaks between those positions - half a spacing off for even c, a third for c = 3, 0.4 and
+    0.6 for c = 5, some k/c within a third of the middle for every c - so a local maximum there
+    (a quarter to three quarters of a spacing from the envelope's strongest point) of at least
+    ``min_fill`` of the envelope's ``height``, within ``half_width`` of the centre, says the
+    ions carry more than one charge.
+    """
+    lo = int(np.searchsorted(raw_mz, centre_mz - half_width))
+    hi = int(np.searchsorted(raw_mz, centre_mz + half_width))
+    if hi - lo < 3:
+        return False
+    x, y = raw_mz[lo:hi], raw_int[lo:hi]
+    ref = float(x[int(np.argmax(y))])
+    level = max(thr, min_fill * max(height, 0.0))
+    idx = np.nonzero((y[1:-1] >= y[:-2]) & (y[1:-1] > y[2:]) & (y[1:-1] > level))[0] + 1
+    if idx.size == 0:
+        return False
+    frac = np.mod((x[idx] - ref) / ISOTOPE_SPACING, 1.0)
+    return bool(np.any((frac >= 0.25) & (frac <= 0.75)))
+
+
 def isotope_ladder_spacing(centre_mz: float, half_width: float, raw_mz: np.ndarray,
                            raw_int: np.ndarray, thr: float, fwhm: float,
                            min_rel: float = 0.2, min_peaks: int = 4) -> float | None:
@@ -513,6 +545,7 @@ def refine_candidate_masses(
     frames=None,
     coelution_r: float = 0.5,
     own_comb: bool = True,
+    singly_charged_ok: bool = True,
 ) -> list[Candidate]:
     """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
@@ -548,6 +581,12 @@ def refine_candidate_masses(
     does not co-elute is judged again on the species' own isotopologues (narrow windows on the
     comb the strongest state's envelope sets, where the isotopes are resolved) and kept if they
     co-elute at :data:`~lcmsdeconv.deconv.coelution.COMB_RESCUE_R` or better.
+
+    Without ``singly_charged_ok`` a candidate seen at z = 1 alone is unsupported like any other
+    single charge state, and a z = 1 state counts only where its envelope has no peaks between
+    its isotopologues (:func:`singly_charged_contradicted`): oligonucleotides of 0.8-2.5 kDa
+    show z = 1 beside z = 2, and only that pair puts a species below 1.2 kDa on two charge
+    states within m/z 400-2500.
     """
     from ..chem.adducts import carrier_mass
     from ..chem.classes import class_isotope_pattern
@@ -657,6 +696,11 @@ def refine_candidate_masses(
                                           compound_class, fwhm, height=core):
                 failed.add(int(z))
                 continue
+            if (z == 1 and not singly_charged_ok
+                    and singly_charged_contradicted(pos, max(2.0 * env_sigma, 1.5), raw_mz,
+                                                    raw_int, thr, core)):
+                failed.add(1)
+                continue
             if profile and ISOTOPE_SPACING / z < 2.0 * fwhm:
                 hw = env_sigma / z
                 own = frames.spacing(pos - hw, pos + hw) if frames is not None else None
@@ -671,7 +715,7 @@ def refine_candidate_masses(
         if len(masses) < min_charges:
             if len(masses) == 1 and accept_single(c, masses, matched_z, where, 0):
                 continue
-            if drop_unsupported and c.charges != {1}:
+            if drop_unsupported and (c.charges != {1} or not singly_charged_ok):
                 continue
             out.append(c)
             continue
