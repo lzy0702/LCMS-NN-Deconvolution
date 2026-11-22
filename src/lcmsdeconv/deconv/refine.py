@@ -880,9 +880,11 @@ def report_comb_masses(components: list[Component]) -> None:
     conjugate run one spacing light by the teeth's overlaps; a 13 kDa impurity of a synthetic
     run, measured 0.27 Da heavy, whose gate mass put its templates a spacing light). Where the
     measured mass is pulled more than half a spacing towards the wrong tooth and the templates
-    sit on it, no reading tells, and the species is reported a spacing off (the +Na form of a
-    synthetic 9.1 kDa polymer, read 0.56 Da light, at 0.98 Da light, no longer folded into its
-    parent).
+    sit on it, no reading tells, and the species is reported a spacing off: with the teeth
+    chosen by their overlaps alone, the +Na form of a synthetic 9.1 kDa polymer, read 0.56 Da
+    light, had its templates on the tooth below and was reported 0.98 Da light, no longer folded
+    into its parent (fitted with its same-comb neighbours, :func:`_better_tooth`, its templates
+    sit on its own tooth: its measured mass stands, and it folds).
 
     Done once per frame, after every pass and the frame's adduct steps: the next pass's filter of
     masses already found, the adduct-form exemption, the cation-ladder rule and the adduct
@@ -1171,18 +1173,22 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
     ``ratio`` times its intensity is dropped where it co-elutes with it - a multimer is made of
     the monomer's molecules as they elute. The strongest charge state of its own (not a multiple
     of n) is compared with the monomer's strongest over the scans the spectrum sums
-    (:func:`~lcmsdeconv.deconv.coelution.coeluting`, which abstains on too few scans). A
-    component whose own states carry less than ``own_share`` of its fit is the monomer's ions
-    read at n times their charge, a harmonic, and goes without the test: what its own states
-    hold is too little to show an elution profile (the 1234 Da shortmer's ions read as a
-    2469 Da species of the IP-HILIC NC run, 9 % of its fit on odd states). The bar is half of
-    what a genuine species at 2M carries on its odd states over an even charge ladder: such a
-    species, eluting on its own, is judged by its elution, not by its charge-state distribution
-    (the dimer of the IP-RPLC NC run has 75 % of its fit on odd states). Methods for native
-    and size-exclusion work, where oligomers are the point, turn this off with
-    ``suppress_multimers: false``.
+    (:func:`~lcmsdeconv.deconv.coelution.coeluting`). Where that test cannot judge, the
+    component is kept: without ``frames`` (or with ``coelution_r <= 0``), with fewer than
+    :data:`~lcmsdeconv.deconv.coelution.MIN_SCANS` scans, or where the monomer's trace carries
+    signal in fewer scans than that (:func:`~lcmsdeconv.deconv.coelution.can_judge`). The
+    oligonucleotide methods take regions of two scans, and a species at n x M eluting apart
+    from its monomer would otherwise go there without evidence. A component whose own states
+    carry less than ``own_share`` of its fit is the monomer's ions read at n times their
+    charge, a harmonic, and goes without the test: what its own states hold is too little to
+    show an elution profile (the 1234 Da shortmer's ions read as a 2469 Da species of the
+    IP-HILIC NC run, 9 % of its fit on odd states). The bar is half of what a genuine species at
+    2M carries on its odd states over an even charge ladder: such a species, eluting on its own,
+    is judged by its elution, not by its charge-state distribution (the dimer of the IP-RPLC NC
+    run has 75 % of its fit on odd states). Methods for native and size-exclusion work, where
+    oligomers are the point, turn this off with ``suppress_multimers: false``.
     """
-    from .coelution import coeluting
+    from .coelution import can_judge, coeluting
     from .decode import envelope_geometry
 
     if len(components) < 2:
@@ -1208,8 +1214,10 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
             return True  # the monomer's ions at n times their charge: a harmonic
         own, mono = window(c, n), window(k)
         if own is None or mono is None or frames is None or coelution_r <= 0:
-            return True
+            return False  # nothing to judge its elution by
         tr = frames.traces([mono[0], own[0]], [mono[1], own[1]])
+        if not can_judge(tr, 0):
+            return False  # fewer than four scans, or no profile in the monomer's trace
         return bool(coeluting(tr, 0, coelution_r)[1])
 
     kept: list[Component] = []

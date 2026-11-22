@@ -242,16 +242,17 @@ def process_run(
         tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0))
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
                                          method.linking.mass_tolerance_da)
-    # a piece of a band that its region read up to a dalton off, and a species found again later
-    # in the run (its tail beyond its band, the column wash): judged by their isotopes, read in
-    # the scans themselves
+    # a piece of a band that its region read up to a dalton off, and, where the method sets them
+    # aside, the main species found again later in the run (its tail beyond its band, the column
+    # wash): judged by their isotopes, read in the scans themselves
     same = _same_molecule(run, instrument, params.compound_class)
     all_species = merge_boundary_pieces(all_species, boundaries, same, steps,
                                         method.linking.mass_tolerance_ppm,
                                         method.linking.mass_tolerance_da)
-    all_species = set_aside_later_elutions(all_species, same, steps,
-                                           method.linking.mass_tolerance_ppm,
-                                           method.linking.mass_tolerance_da)
+    if getattr(method.linking, "set_aside_later_elutions", False):
+        all_species = set_aside_later_elutions(all_species, same, steps,
+                                               method.linking.mass_tolerance_ppm,
+                                               method.linking.mass_tolerance_da)
     if len(polarities) > 1:
         all_species = merge_species_across_polarity(all_species)
     all_species.sort(key=lambda s: -s.base_intensity)

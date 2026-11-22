@@ -486,9 +486,15 @@ def set_aside_later_elutions(species: list[Species], same_species, steps,
     a later elution that rises and falls in its own trace (its highest reading ``min_rise``
     times its first and last) is such an event; a slice of the tail has its highest reading
     wherever a region boundary cut it (NC's at 20.01 min, three scans after its region's start,
-    1.01 times its first), and nothing else leaves the column with it there. Isomers of the
-    main species that elute later at less than ``1 / min_ratio`` of it are set aside too, so the
-    flags name every species set aside.
+    1.01 times its first), and nothing else leaves the column with it there. The flags name
+    every species set aside.
+
+    An isomer of the main species that elutes later, at most ``1 / min_ratio`` of it, is set
+    aside too: its isotopes cannot tell it from the main species (an isoAsp or
+    disulfide-scrambled variant of a protein, a branched polymer beside a linear one). That is
+    why a method turns this on (``linking.set_aside_later_elutions``, off by default) only where
+    the main species' tail and its re-elution in the column wash are the concern: the
+    oligonucleotide methods.
     """
     parent: dict[int, Species] = {}
 

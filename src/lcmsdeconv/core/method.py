@@ -90,9 +90,11 @@ class DeconvSettings:
     #: could confirm; see docs/benchmarks.md
     single_charge: bool = False
     #: a species seen only as singly charged ions counts (small molecules, glycans, polymers).
-    #: Off for the oligonucleotide methods: their species of 0.8-2.5 kDa show z = 1 beside z = 2,
-    #: and z = 1 counts there as one of two charge states, only where its envelope has no peaks
-    #: between its isotopologues (an envelope of any charge fills a z = 1 comb)
+    #: Off for the Orbitrap oligonucleotide method, whose range reaches 800 Da and z = 1: its
+    #: species of 0.8-2.5 kDa show z = 1 beside z = 2, and z = 1 counts there as one of two
+    #: charge states, only where its envelope has no peaks between its isotopologues (an
+    #: envelope of any charge fills a z = 1 comb). The time-of-flight oligonucleotide method,
+    #: from 1 kDa and z = 2, keeps the default
     singly_charged_species: bool = True
     #: the charge states of a species must co-elute over the scans of a region: the Pearson
     #: correlation of their scan-by-scan intensity traces at least this (0 = no test). Above
@@ -119,7 +121,9 @@ class RegionSettings:
     #: peak about four times the noise)
     min_snr: float = 10.0
     #: and stands this share of the tallest peak's height (a guard against ripple on the tails of
-    #: the main peak; the oligonucleotide methods, whose noise floor of 3 decides, use 0.1 %)
+    #: the main peak). The oligonucleotide methods use 0.1 %: on three of the four real runs their
+    #: noise floor of 3 lies higher (0.17-0.49 % of the tallest peak) and decides; on the IP-RPLC
+    #: conjugate run it lies at 0.076 %, and the 0.1 % floor binds
     min_rel_height: float = 0.002
 
 
@@ -130,6 +134,16 @@ class LinkSettings:
     min_frames: int = 2
     max_gap_frames: int = 2
     noise_peak_ratio: float = 3.0  # EIC max/median below which a species is chemical noise
+    #: name the main species' later elutions in its flags instead of reporting them as species:
+    #: a species of its mass at most a twentieth of it, starting more than 0.2 min after its
+    #: band and the same molecule by its resolved isotopes - the tail it leaves past its band and
+    #: its re-elution when the column is washed (NC of the IP-RPLC NC run, reported again at
+    #: 20.0 and 25.4 min) - and the forms leaving the column with it
+    #: (:func:`lcmsdeconv.features.link.set_aside_later_elutions`). Off by default: an isomer
+    #: eluting later at that share (an isoAsp or disulfide-scrambled protein variant, a branched
+    #: polymer beside a linear one) is set aside the same way. The oligonucleotide methods turn
+    #: it on
+    set_aside_later_elutions: bool = False
 
 
 @dataclass

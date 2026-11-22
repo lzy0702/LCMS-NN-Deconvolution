@@ -64,6 +64,7 @@ linking:
   min_frames: 2
   max_gap_frames: 2
   noise_peak_ratio: 3.0
+  set_aside_later_elutions: true
 integration:
   tic:
     slope_sensitivity: 1.0

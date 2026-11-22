@@ -333,7 +333,11 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
     strongest species shows an adduct form that this test misses reports that form as a
     species of its own, while other regions attach the same adduct to their species. The
     co-elution test reads the trial's charge windows only (``own_comb=False``): the adduct
-    evidence stays as it was before charge states were also judged on their isotopologues.
+    evidence stays as it was before charge states were also judged on their isotopologues. A
+    trial's z = 1 state is judged as detection judges it (``singly_charged_ok``, the method's
+    ``singly_charged_species``): where singly charged species do not count, z = 1 counts only
+    where its envelope has no peaks between its isotopologues, and a trial seen at z = 1 alone is
+    no evidence.
     """
     from .decode import Candidate
 

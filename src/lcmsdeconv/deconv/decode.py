@@ -55,7 +55,8 @@ class Candidate:
     # the noise, with its isotope comb and co-eluting with the voted band. None before the fit
     observed_extra: set[int] | None = None
     # whether refine.align_candidate placed the templates on a tooth of the candidate's own
-    # isotope comb (beyond the overlap search's window)
+    # isotope comb (where the overlap search ran into its window's edge, or stopped between the
+    # comb's teeth)
     comb_placed: bool = False
 
 

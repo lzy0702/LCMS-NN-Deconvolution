@@ -82,17 +82,23 @@ def correlation(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.corrcoef(a, b)[0, 1])
 
 
+def can_judge(traces: np.ndarray, ref: int, min_scans: int = MIN_SCANS) -> bool:
+    """Whether :func:`coeluting` judges ``traces`` against row ``ref``: at least ``min_scans``
+    scans, and signal in that many of them in the reference (:func:`shows_profile`)."""
+    return traces.shape[1] >= min_scans and shows_profile(traces[ref], min_scans)
+
+
 def coeluting(traces: np.ndarray, ref: int, r_min: float = COELUTION_R,
               min_scans: int = MIN_SCANS) -> np.ndarray:
     """Which rows of ``traces`` co-elute with row ``ref`` (which always does).
 
     When the reference itself shows no profile (signal in fewer than ``min_scans`` scans, or
-    fewer scans than that in all) the test abstains and keeps every row: it does not veto what
-    it cannot see. A weak row is still judged: if the few scans that carry it are the
-    reference's strongest, it correlates.
+    fewer scans than that in all; :func:`can_judge`) the test abstains and keeps every row: it
+    does not veto what it cannot see. A weak row is still judged: if the few scans that carry
+    it are the reference's strongest, it correlates.
     """
     keep = np.ones(traces.shape[0], dtype=bool)
-    if traces.shape[1] < min_scans or not shows_profile(traces[ref], min_scans):
+    if not can_judge(traces, ref, min_scans):
         return keep
     for k in range(traces.shape[0]):
         if k != ref:

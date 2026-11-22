@@ -99,58 +99,95 @@ def _comp(mass, intensity, cols):
                      columns={(z, ""): intensity * v / total for z, v in cols.items()})
 
 
+MP = 1.00727646688
+T12 = np.arange(12)
+PEAK = np.exp(-0.5 * ((T12 - 5.0) / 1.5) ** 2)  # the monomer's elution over a region's scans
+LATE = np.exp(-0.5 * ((T12 - 9.5) / 1.0) ** 2)  # a species eluting apart from it
+
+
+def _scan_stack(ions, n=12):
+    """The scans of a region: narrow peaks ``ions`` = [(mass, z, height, profile over the
+    scans)] at their m/z, on one axis."""
+    from lcmsdeconv.deconv.coelution import FrameStack
+
+    x = np.arange(780.0, 1060.0, 0.01)
+    out = []
+    for k in range(n):
+        y = np.zeros_like(x)
+        for mass, z, height, profile in ions:
+            y[np.abs(x - (mass - z * MP) / z) < 0.02] += height * profile[k]
+        out.append(Spectrum(x, y, rt=4.0 + 0.04 * k, polarity=-1, is_profile=True))
+    return FrameStack(out)
+
+
 def test_multimers_go_by_their_fitted_amount():
     from lcmsdeconv.deconv.refine import drop_multimers
 
-    # the IP-RPLC NC run's 1580 Da shortmer and its [2M-3H]3- dimer, as fitted
+    # the IP-RPLC NC run's 1580 Da shortmer and its [2M-3H]3- dimer, as fitted, and a trimer;
+    # the multimers' own states (z = 3 of the dimer, z = 5 of the trimer) co-elute with z = 2
     mono = _comp(1580.18, 8.35e6, {1: 0.014, 2: 0.977, 3: 0.009})
     dimer = _comp(3160.68, 6.3e4, {2: 0.1, 3: 0.61, 4: 0.1, 5: 0.1, 6: 0.04, 7: 0.04})
     trimer = _comp(4740.9, 2e4, {4: 0.5, 5: 0.5})
     other = _comp(3171.8, 6.3e4, {3: 0.6, 4: 0.4})
-    kept = drop_multimers([dimer, other, mono, trimer], polarity=-1)
+    frames = _scan_stack([(1580.18, 2, 1e6, PEAK), (3160.68, 3, 1e4, PEAK),
+                          (4740.9, 5, 5e3, PEAK)])
+    kept = drop_multimers([dimer, other, mono, trimer], polarity=-1, frames=frames)
     assert {round(c.mass, 2) for c in kept} == {1580.18, 3171.8}
     # a multimer with most of its monomer's amount is a species of its own
-    assert len(drop_multimers([mono, _comp(3160.68, 0.7 * 8.35e6, {3: 1.0})], polarity=-1)) == 2
+    assert len(drop_multimers([mono, _comp(3160.68, 0.7 * 8.35e6, {3: 1.0})], polarity=-1,
+                              frames=frames)) == 2
 
 
 def test_a_multimer_must_coelute_with_its_monomer():
     """The monomer's strongest state and the multimer's strongest state of its own (odd for a
     dimer) are compared over the scans: a species at 2M that elutes on its own is kept."""
-    from lcmsdeconv.deconv.coelution import FrameStack
     from lcmsdeconv.deconv.refine import drop_multimers
 
     mono = _comp(1580.18, 8.35e6, {2: 1.0})
     dimer = _comp(3160.68, 6.3e4, {3: 0.7, 4: 0.3})
-    mz2, mz3 = (1580.18 - 2 * 1.00727646688) / 2, (3160.68 - 3 * 1.00727646688) / 3
-    t = np.arange(12)
-    peak = np.exp(-0.5 * ((t - 5.0) / 1.5) ** 2)
-    late = np.exp(-0.5 * ((t - 9.5) / 1.0) ** 2)
-    x = np.arange(780.0, 1060.0, 0.01)
-
-    def frames(dimer_profile):
-        out = []
-        for k in range(t.size):
-            y = np.zeros_like(x)
-            y[np.abs(x - mz2) < 0.02] = 1e6 * peak[k]
-            y[np.abs(x - mz3) < 0.02] = 1e4 * dimer_profile[k]
-            out.append(Spectrum(x, y, rt=4.0 + 0.04 * k, polarity=-1, is_profile=True))
-        return FrameStack(out)
 
     def kept(profile, multimer=dimer):
+        frames = _scan_stack([(1580.18, 2, 1e6, PEAK), (3160.68, 3, 1e4, profile)])
         return {round(c.mass, 2) for c in drop_multimers([mono, multimer], polarity=-1,
-                                                          frames=frames(profile))}
+                                                          frames=frames)}
 
-    assert kept(peak ** 2) == {1580.18}
-    assert kept(late) == {1580.18, 3160.68}
+    assert kept(PEAK ** 2) == {1580.18}
+    assert kept(LATE) == {1580.18, 3160.68}
     # the monomer's ions read at twice their charge, with little on odd states (the 1234 Da
     # shortmer's 2469 Da reading of the IP-HILIC NC run): a harmonic, whatever that little does
     harmonic = _comp(3160.68, 6.3e4, {2: 0.45, 3: 0.05, 4: 0.5})
-    assert kept(late, harmonic) == {1580.18}
+    assert kept(LATE, harmonic) == {1580.18}
     # a genuine species at 2M has about half its fit on odd states: one whose charge states lean
     # to even ones is still judged by its elution
     even_leaning = _comp(3160.68, 6.3e4, {3: 0.4, 4: 0.6})
-    assert kept(late, even_leaning) == {1580.18, 3160.68}
-    assert kept(peak ** 2, even_leaning) == {1580.18}
+    assert kept(LATE, even_leaning) == {1580.18, 3160.68}
+    assert kept(PEAK ** 2, even_leaning) == {1580.18}
+
+
+def test_a_multimer_goes_only_where_its_coelution_is_judged():
+    """Without the scans, over fewer than four of them (the oligonucleotide methods take regions
+    of two), or where the monomer's trace carries signal in fewer than four, the co-elution test
+    cannot judge, and a species at 2M is kept: it may elute on its own. A harmonic (the
+    monomer's ions read at twice their charge) goes without the test."""
+    from lcmsdeconv.deconv.refine import drop_multimers
+
+    mono = _comp(1580.18, 8.35e6, {2: 1.0})
+    dimer = _comp(3160.68, 6.3e4, {3: 0.7, 4: 0.3})
+    harmonic = _comp(3160.68, 6.3e4, {2: 0.45, 3: 0.05, 4: 0.5})
+    band = [0.5, 1.0, 0.5]
+    spike = np.zeros(12)
+    spike[4:7] = band  # the monomer in three scans of twelve: no profile
+    two = _scan_stack([(1580.18, 2, 1e6, [1.0, 0.6]), (3160.68, 3, 1e4, [0.2, 1.0])], n=2)
+    three = _scan_stack([(1580.18, 2, 1e6, band), (3160.68, 3, 1e4, band)], n=3)
+    few = _scan_stack([(1580.18, 2, 1e6, spike), (3160.68, 3, 1e4, spike)])
+    for frames in (None, two, three, few):
+        for multimer, out in ((dimer, {1580.18, 3160.68}), (harmonic, {1580.18})):
+            kept = drop_multimers([mono, multimer], polarity=-1, frames=frames)
+            assert {round(c.mass, 2) for c in kept} == out
+    # judged over four scans, the co-eluting dimer goes
+    four = _scan_stack([(1580.18, 2, 1e6, PEAK[3:7]), (3160.68, 3, 1e4, PEAK[3:7])], n=4)
+    assert {round(c.mass, 2) for c in drop_multimers([mono, dimer], polarity=-1,
+                                                     frames=four)} == {1580.18}
 
 
 class _LadderEcho:
@@ -174,7 +211,9 @@ def test_a_non_covalent_dimer_is_not_reported():
     """A shortmer's dimer made in the source ([2M-3H]3-, ...) is fitted, its odd charge states
     being its own. Its candidate scored 0.74 of the shortmer's on the IP-RPLC NC run, the
     shortmer's isotopologues read at twice their charge voting for teeth two daltons apart,
-    past the candidate-stage harmonic test; the fitted amounts decide instead."""
+    past the candidate-stage harmonic test; the fitted amounts decide instead, and the dimer's
+    own states co-elute with the shortmer over the region's scans."""
+    from lcmsdeconv.core.model import Run
     from lcmsdeconv.deconv.classical import make_predictor
 
     orbi = InstrumentModel("orbitrap", 140000.0, mz_ref=200.0)
@@ -195,7 +234,12 @@ def test_a_non_covalent_dimer_is_not_reported():
                     lo, hi = np.searchsorted(x, [c - 5 * sig, c + 5 * sig])
                     y[lo:hi] += h * v * np.exp(-0.5 * ((x[lo:hi] - c) / sig) ** 2)
     keep = y > 1500.0
-    spec = Spectrum(x[keep], y[keep], rt=4.14, polarity=-1, is_profile=True)
+    # the region's scans, which sum to that spectrum: the dimer elutes with the shortmer, made of
+    # its molecules in the source
+    elution = np.exp(-0.5 * ((np.arange(6) - 2.5) / 1.2) ** 2)
+    scans = [Spectrum(x[keep], y[keep] * (h / elution.sum()), rt=4.04 + 0.04 * k, polarity=-1,
+                      is_profile=True) for k, h in enumerate(elution)]
+    spec = Run(scans).sum_frames(scans)
     pred = _LadderEcho(make_predictor(None, z_max=40, instrument=orbi), 785.0, 793.0)
     params = DeconvParams(compound_class="ps_rna", mass_range=(1000.0, 60000.0),
                           charge_range=(2, 40), adduct_mode="iprp", isotope_charges=True,

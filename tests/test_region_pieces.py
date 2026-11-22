@@ -1,12 +1,14 @@
 """Pieces of one species that region boundaries leave apart: a chain of tail pieces, a front or
 tail its region read up to a dalton off (joined to its band only where the isotopes say it is the
-same molecule), and a species found again later in the run (its tail beyond its band, the column
-wash), named in its flags, not reported."""
+same molecule), and the main species found again later in the run (its tail beyond its band, the
+column wash), named in its flags, not reported, by the methods that set later elutions aside."""
 
 import numpy as np
+import pytest
 
 from lcmsdeconv.chem.classes import class_isotope_pattern
 from lcmsdeconv.chem.instrument import InstrumentModel
+from lcmsdeconv.core.method import Method, bundled_methods
 from lcmsdeconv.core.model import Run, Species, Spectrum
 from lcmsdeconv.deconv.refine import tooth_position
 from lcmsdeconv.features.link import (
@@ -22,28 +24,28 @@ ORBI = InstrumentModel("orbitrap", 140000.0)
 STEP = 0.04
 
 
-def _species(sid, mass, t, y, charges=None):
+def _species(sid, mass, t, y, charges=None, cls="ps_rna", polarity=-1):
     y = np.asarray(y, dtype=float)
-    return Species(sid, mass, "average", -1, "ps_rna", np.asarray(t, dtype=float), y,
+    return Species(sid, mass, "average", polarity, cls, np.asarray(t, dtype=float), y,
                    {"base": y.copy()}, charges or {4: float(y.sum())})
 
 
-def _scan(rt, parts, lo=750.0, hi=1800.0, step=0.002):
+def _scan(rt, parts, lo=750.0, hi=1800.0, step=0.002, cls="ps_rna", polarity=-1, inst=ORBI):
     """A profile scan holding the envelopes ``parts`` = [(average mass, charges, height)]."""
     x = np.arange(lo, hi, step)
     y = np.zeros_like(x)
     for mass, charges, height in parts:
-        pat = class_isotope_pattern(mass, "ps_rna")
+        pat = class_isotope_pattern(mass, cls)
         masses = pat.masses - pat.average_mass + mass
         ab = pat.abundances / pat.abundances.max()
         for z in charges:
-            mz = (masses - z * MP) / z
-            sig = float(ORBI.fwhm(mz.mean())) / 2.3548
+            mz = (masses + polarity * z * MP) / z
+            sig = float(inst.fwhm(mz.mean())) / 2.3548
             for c, h in zip(mz, ab):
                 a, b = np.searchsorted(x, [c - 5 * sig, c + 5 * sig])
                 y[a:b] += height * h * np.exp(-0.5 * ((x[a:b] - c) / sig) ** 2)
     keep = y > 1e-3 * max(y.max(), 1e-300)  # thresholded, as vendor software writes profiles
-    return Spectrum(x[keep], y[keep], rt=rt, polarity=-1, is_profile=True)
+    return Spectrum(x[keep], y[keep], rt=rt, polarity=polarity, is_profile=True)
 
 
 def test_merging_repeats_until_a_chain_of_pieces_is_joined():
@@ -222,3 +224,82 @@ def test_a_slice_of_the_main_species_tail_carries_nothing_off_the_column():
     assert sorted(s.id for s in out) == [0, 2, 3]
     assert any(f.startswith(LATER_FLAG) and "5162.23 Da at 19.89 min" in f for f in main.flags)
     assert not minor.flags
+
+
+def test_only_the_oligonucleotide_methods_set_later_elutions_aside():
+    on = {"iprp_neg_oligo", "orbitrap_iprp_neg_oligo"}
+    names = bundled_methods()
+    assert on < set(names)
+    for name in names:
+        assert Method.load(name).linking.set_aside_later_elutions is (name in on), name
+    assert Method().linking.set_aside_later_elutions is False
+
+
+def _process(monkeypatch, run, method, species=(), regions=()):
+    """process_run on ``run`` with the regions ``regions``, deconvolved to nothing, and with
+    ``species`` entering the cross-region steps as the regions' linked species would. Returns
+    the result and the calls (positional and keyword arguments) of find_regions and of the two
+    cross-region joins."""
+    from lcmsdeconv import process
+    from lcmsdeconv.core.model import FrameResult
+
+    calls: dict[str, list] = {}
+
+    def spy(name, real):
+        def call(*args, **kw):
+            calls.setdefault(name, []).append((args, kw))
+            return real(*args, **kw)
+        return call
+
+    monkeypatch.setattr(process, "find_regions", spy("find_regions", lambda *a, **k: list(regions)))
+    monkeypatch.setattr(process, "deconvolve_spectrum",
+                        lambda spec, *a, **k: FrameResult(spec.rt, spec.polarity, []))
+    monkeypatch.setattr(process, "fold_adduct_forms", lambda sp, *a, **k: list(species))
+    for name in ("merge_boundary_pieces", "set_aside_later_elutions"):
+        monkeypatch.setattr(process, name, spy(name, getattr(process, name)))
+    return process.process_run(run, method, predictor=object()), calls
+
+
+@pytest.mark.parametrize("name, mass, charges", [("orbitrap_topdown", 12000.0, (11, 12, 13)),
+                                                 ("orbitrap_iprp_neg_oligo", 5162.25, (4, 5, 6))])
+def test_a_later_species_of_the_main_mass_is_set_aside_only_where_the_method_says(
+        monkeypatch, name, mass, charges):
+    """A species of the main species' mass and isotopes, a minute after its band at 3 % of it: in
+    a protein run an isomer (isoAsp, a disulfide-scrambled variant), in an oligonucleotide run
+    the main species' tail or its re-elution in the column wash. process_run sets it aside,
+    naming it in the main species' flags, only where the method turns that on (the
+    oligonucleotide methods do), and joins the pieces a region boundary cut off for every
+    method."""
+    from lcmsdeconv.features.regions import Region
+
+    method = Method.load(name)
+    inst, cls = method.instrument, method.deconvolution.compound_class
+    pol = -1 if method.acquisition.polarity == "negative" else 1
+    g = lambda t, c, h: h * np.exp(-0.5 * ((t - c) / 0.08) ** 2)  # noqa: E731
+    t0, t1 = np.arange(9.6, 10.4 + 1e-9, STEP), np.arange(10.8, 11.2 + 1e-9, STEP)
+    run = Run([_scan(t, [(mass, charges, g(t, 10.0, 1e8))], cls=cls, polarity=pol, inst=inst)
+               for t in t0]
+              + [_scan(t, [(mass, charges, g(t, 11.0, 3e6))], cls=cls, polarity=pol, inst=inst)
+                 for t in t1])
+    # two regions sharing a boundary at 10.6 min
+    regions = [Region(0, 9.58, 10.6, pol, run.frames(pol, (9.58, 10.6))),
+               Region(1, 10.6, 11.22, pol, run.frames(pol, (10.6, 11.22)))]
+    for on in (method.linking.set_aside_later_elutions, not method.linking.set_aside_later_elutions):
+        method.linking.set_aside_later_elutions = on
+        zs = {z: 1.0 for z in charges}
+        main = _species(0, mass, t0, g(t0, 10.0, 1e8), dict(zs), cls=cls, polarity=pol)
+        late = _species(1, mass + 0.05, t1, g(t1, 11.0, 3e6), dict(zs), cls=cls, polarity=pol)
+        result, calls = _process(monkeypatch, run, method, [main, late], regions)
+        ((args, _kw),) = calls["merge_boundary_pieces"]
+        assert args[1] == [(pol, 10.6)] and args[3] == {pol: pytest.approx(STEP)}
+        assert args[4:] == (method.linking.mass_tolerance_ppm, method.linking.mass_tolerance_da)
+        if on:
+            ((set_aside, _kw),) = calls["set_aside_later_elutions"]
+            assert set_aside[1] is args[2] and set_aside[2] is args[3]  # one isotope judgement
+            assert [s.id for s in result.species] == [0]
+            flag = next(f for f in main.flags if f.startswith(LATER_FLAG))
+            assert f"{mass + 0.05:.2f} Da at 11.00 min" in flag
+        else:
+            assert "set_aside_later_elutions" not in calls
+            assert sorted(s.id for s in result.species) == [0, 1]
+            assert not any(f.startswith(LATER_FLAG) for f in main.flags)
