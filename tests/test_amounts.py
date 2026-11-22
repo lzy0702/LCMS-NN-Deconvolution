@@ -692,6 +692,34 @@ def test_the_comb_needs_its_charge_states_to_agree():
     assert abs(mass * np.expm1(s) - 0.356) < 0.01
 
 
+def test_the_better_tooth_is_read_with_the_comb_neighbours():
+    """A same-comb neighbour three or four spacings off (an envelope a few daltons lighter or
+    heavier: oligonucleotide impurities share their parent's comb) favours, compared alone, the
+    tooth on its side - FLP + K of the IP-RPLC conjugate run went one spacing light under a
+    species 3-4 Da lighter on its comb. Fitted together with templates two to seven spacings past
+    the pair, the species' own tooth carries the envelope, whichever side of the read mass it is."""
+    from lcmsdeconv.deconv.refine import ISOTOPE_DA, _overlap, align_candidate, comb_phase_shift
+
+    grid = LogMzGrid(300.0, 2500.0, 2e-5, -1)
+    gmz = grid.bin_to_mz(np.arange(grid.size))
+    for mass, true, k in ((6831.56, 0.469, -4), (4503.16, -0.62, 3), (4503.16, 0.62, -3)):
+        spectrum = np.zeros(grid.size)
+        for z in (3, 4):
+            for shift, h in ((true, 1e6), (true + k * ISOTOPE_DA, 5e5)):
+                t = build_template(mass + shift, z, grid, ORBI, "ps_rna")
+                spectrum[t.bins] += h * t.values
+        comb = comb_phase_shift(mass, (3, 4), gmz, spectrum, -1, ORBI, "ps_rna")[0]
+        other = comb - np.sign(comb) * ISOTOPE_DA
+        wrong = other if abs(comb - true) < 0.05 else comb
+        right = comb if wrong is other else other
+        # the overlaps alone favour the neighbour's side
+        assert (_overlap(mass + wrong, (3, 4), spectrum, grid, ORBI, "ps_rna")
+                > _overlap(mass + right, (3, 4), spectrum, grid, ORBI, "ps_rna"))
+        c = Candidate(mass, 1.0, {3, 4}, gate_charges={3, 4}, gate_failed=set())
+        s = align_candidate(c, spectrum, grid, ORBI, "ps_rna")
+        assert abs(mass * np.expm1(s) - true) < 0.02
+
+
 def test_the_adduct_walk_reads_only_the_candidates_own_envelopes():
     """n-2 of the NC product voted on z = 3, 4 and 9, with no envelope of its own at z = 9: the
     gate passes 3 and 4 and cannot measure 9, which stays in the candidate's set. An unrelated

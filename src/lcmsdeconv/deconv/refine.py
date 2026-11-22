@@ -202,6 +202,56 @@ def _overlap(mass: float, zs, spectrum: np.ndarray, grid, instrument: Instrument
     return total
 
 
+def _better_tooth(mass: float, near: float, zs, spectrum: np.ndarray, grid,
+                  instrument: InstrumentModel, compound_class: str,
+                  weights: np.ndarray | None = None, beyond=(2, 3, 4, 5, 6, 7)) -> float:
+    """Of the comb's two teeth either side of ``mass`` - ``near`` Da from it and one spacing
+    further on the other side - the one whose template carries more of the spectrum.
+
+    Both teeth's base templates (charges ``zs``) are fitted together, by NNLS with the fit's
+    ``weights``, with templates ``beyond`` spacings past the pair on either side: oligonucleotide
+    impurities share their parent's comb to within a tenth of a dalton (an envelope 2 Da
+    lighter or a deaminated form to 0.02 Da, a desulfurized or sodium form to 0.08-0.09 Da), and
+    an envelope of the same comb two to seven spacings off overlaps the candidate's and favours
+    the tooth on its side of it.
+    Compared alone, by their overlaps, the two teeth differ by 0.03-26 %, and right and wrong
+    picks share that range: FLP + K of the IP-RPLC conjugate run went one spacing light, under a
+    species 3-4 Da lighter on its comb; fitted with it, its own tooth carries four times the
+    other's. A neighbour beside the pair (one spacing past either tooth) cannot be told from it
+    and is left to the pair. The templates reach seven spacings past the pair: a neighbour just
+    past the outermost one is absorbed by it, which over-predicts the pair's flank on that side
+    and pushes the choice away from the neighbour (with four, n-2 of the IP-HILIC NC run went to
+    the other tooth for its comb read 0.005-0.02 Da heavier; with seven it keeps its tooth over
+    +-0.03 Da). Where neither tooth carries anything (the candidate's envelope lies further
+    along the comb), the larger overlap decides, as before."""
+    other = near - np.sign(near) * ISOTOPE_DA
+    step = -1 if near > 0 else 1  # the other tooth, in spacings from the nearest
+    lo, hi = min(0, step), max(0, step)
+    teeth = [0, step] + [lo - k for k in beyond] + [hi + k for k in beyond]
+    cols, keys = [], []
+    for z in zs:
+        for n in teeth:
+            t = build_template(mass + near + n * ISOTOPE_DA, z, grid, instrument, compound_class)
+            if t is not None:
+                cols.append(t)
+                keys.append(n)
+    if cols:
+        support = np.unique(np.concatenate([c.bins for c in cols]))
+        A = np.zeros((support.size, len(cols)))
+        for j, c in enumerate(cols):
+            A[np.searchsorted(support, c.bins), j] = c.values
+        x = weighted_nnls(A, np.clip(spectrum[support], 0.0, None),
+                          None if weights is None else weights[support])
+        keys = np.asarray(keys)
+        c_near, c_other = float(x[keys == 0].sum()), float(x[keys == step].sum())
+        if c_near + c_other > 0:
+            return near if c_near >= c_other else other
+    if (_overlap(mass + other, zs, spectrum, grid, instrument, compound_class)
+            > _overlap(mass + near, zs, spectrum, grid, instrument, compound_class)):
+        return other
+    return near
+
+
 def comb_phase_shift(mass: float, charges, mz: np.ndarray, intensity: np.ndarray,
                      polarity: int, instrument: InstrumentModel, compound_class: str,
                      width_sigmas: float = 2.5, min_share: float = 0.1,
@@ -338,7 +388,7 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
                     forms_of: list[float] | None = None, form_shifts=(),
                     form_tol_da: float = 1.0, grid_mz: np.ndarray | None = None,
                     ladder_of=None, ladder_tol_da: float = 0.03, off_comb_da: float = 0.15,
-                    between_ratio: float = 0.25) -> float:
+                    between_ratio: float = 0.25, weights: np.ndarray | None = None) -> float:
     """:func:`align_template`, and where its best shift is the window's edge or lies between the
     teeth of the candidate's own isotope comb on noise, that comb (:func:`comb_phase_shift` over
     the charge states that passed the gate, read on ``spectrum`` - the residual, so that species
@@ -353,15 +403,16 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     envelopes instead, and taken when (a) the overlap ran into the window's edge, (b) the comb
     lies beyond the window and (c) at least two gate-passed charge states agree on it
     (``min_coherence``). Of the comb's two teeth either side of the measured mass, the one whose
-    template fits the envelope better is taken: a mass read more than half a spacing off has its
-    nearest tooth on the wrong side, and the edge between them fits neither. A mass read about
-    half a spacing off has both teeth beyond the window, and the overlap can peak inside it on
-    whatever weak signal lies between them: 1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54
-    and 0.53 Da light, had their templates there, 115 and 2000 times below the better tooth, and
-    were missed. An optimum inside the window is therefore kept where it lies on the comb (within
-    ``off_comb_da`` of a tooth: the species' own isotopologues, as for nearly every species) or
-    holds at least ``between_ratio`` of the better tooth's overlap (real signal), and otherwise
-    the better tooth is taken, under (c) and the guards below. A candidate whose gate measured
+    template carries more of the spectrum, fitted with its same-comb neighbours, is taken
+    (:func:`_better_tooth`): a mass read more than half a spacing off has its nearest tooth on
+    the wrong side, and the edge between them fits neither. A mass read about half a spacing off
+    has both teeth beyond the window, and the overlap can peak inside it on whatever weak signal
+    lies between them: 1908.3 and 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, had
+    their templates there, 115 and 2000 times below the better tooth, and were missed. An optimum
+    inside the window is therefore kept where it lies on the comb (within ``off_comb_da`` of a
+    tooth: the species' own isotopologues, as for nearly every species) or holds at least
+    ``between_ratio`` of the larger of the two teeth's overlaps (real signal), and otherwise the
+    better tooth is taken, under (c) and the guards below. A candidate whose gate measured
     another mass's envelopes (renamed by the adduct dedupe) has no gate charges and is not
     touched, and neither is one within ``form_tol_da`` of an adduct form of an accepted
     species (masses ``forms_of``: accepted species, and masses the adduct walk moved candidates
@@ -399,20 +450,22 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
         # two teeth's overlaps do not tell that apart reliably
         if abs(_wrap_spacing(cand.mass * float(np.expm1(shift)) - comb)) <= off_comb_da:
             return shift
+        # an optimum off the comb is kept unless it holds under ``between_ratio`` of the larger
+        # of the two teeth's overlaps: then it lies between the teeth on noise (1908.3 and
+        # 2887.4 of the IP-RPLC NC run, read 0.54 and 0.53 Da light, 115 and 2000 times below
+        # their tooth; on the four runs such optima hold at most 15 % of it)
+        other = comb - np.sign(comb) * ISOTOPE_DA
+        teeth = max(_overlap(cand.mass + comb, zs, spectrum, grid, instrument, compound_class),
+                    _overlap(cand.mass + other, zs, spectrum, grid, instrument, compound_class))
+        if (_overlap(cand.mass * float(np.exp(shift)), zs, spectrum, grid, instrument,
+                     compound_class) >= between_ratio * teeth):
+            return shift
     elif abs(comb) <= reach * cand.mass * grid.step:
         return shift
-    other = comb - np.sign(comb) * ISOTOPE_DA
-    ov_comb = _overlap(cand.mass + comb, zs, spectrum, grid, instrument, compound_class)
-    ov_other = _overlap(cand.mass + other, zs, spectrum, grid, instrument, compound_class)
-    if ov_other > ov_comb:
-        comb, ov_comb = other, ov_other
-    # an optimum inside the window off the comb is kept unless it holds under ``between_ratio``
-    # of the better tooth's overlap: then it lies between the teeth on noise (1908.3 and 2887.4
-    # of the IP-RPLC NC run, read 0.54 and 0.53 Da light, 115 and 2000 times below their tooth;
-    # on the four runs such optima hold at most 15 % of it)
-    if interior and (_overlap(cand.mass * float(np.exp(shift)), zs, spectrum, grid, instrument,
-                              compound_class) >= between_ratio * ov_comb):
-        return shift
+    # the tooth: of the comb's two either side of the measured mass, the one fitted with its
+    # same-comb neighbours carries more of the spectrum
+    comb = _better_tooth(cand.mass, comb, zs, spectrum, grid, instrument, compound_class,
+                         weights)
     # a sodium/potassium form deeper than the exemption's three of a type (DA-NC + 4Na and
     # NC + 6Na + K of the IP-HILIC NC run) sits exactly on its parent's comb moved by the
     # ladder's monoisotopic shift; placed there it is fitted whole as a false species, so it
@@ -573,7 +626,8 @@ def refine_frame(
                   if sodium else None)
         cand.template_shift = align_candidate(
             cand, residual, grid, instrument, compound_class,
-            forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz, ladder_of=ladder)
+            forms_of=forms, form_shifts=form_shifts, grid_mz=grid_mz, ladder_of=ladder,
+            weights=weights)
         coeffs, used, explained = _fit_candidate(
             cand, residual, weights, grid, instrument, compound_class, states_fast,
             mz_range=mz_range,
@@ -765,7 +819,8 @@ def _recenter_base(cand, full, residual, weights, grid, instrument, compound_cla
     # (NC + 3Na of the IP-HILIC NC run, guarded at its edge, joined NC this way)
     trial.template_shift = align_candidate(trial, residual, grid, instrument, compound_class,
                                            forms_of=forms_of, form_shifts=form_shifts,
-                                           grid_mz=grid_mz, ladder_of=ladder_of)
+                                           grid_mz=grid_mz, ladder_of=ladder_of,
+                                           weights=weights)
     full2 = _fit_candidate(trial, residual, weights, grid, instrument, compound_class,
                            states_full, mz_range=mz_range)
     if full2[2] >= full[2] * (1.0 + min_gain):
