@@ -711,18 +711,18 @@ reviews (the code, the outputs, the scope and these documents) and two follow-up
    1.10. What n-2 does lose is 10-11 % of its IP-RPLC elution, in the next region, where its
    candidate's envelope search climbs 5.2 Da onto the 4497.7 Da species; recovering it needs that
    region's bank to carry its neighbour's species across the boundary, and would add 0.008 %.
-2. **A floor tied to the tallest peak deleted a species again.** 3206.4 of the IP-RPLC NC run had
-   no region: its TIC peak stood 3.47 times above the noise, enough for the oligonucleotide
-   methods' floor of three, but at 0.197 % of the tallest peak, 1.7 % under the relative floor of
-   0.2 % that section 6 had kept as a guard against ripple. The floor is now a method setting
-   (`regions.min_rel_height`), 0.1 % for the two oligonucleotide methods and 0.2 % for the
-   others, whose noise floor of ten decides anyway and which nothing here could validate: the
-   synthetic generator makes impurities co-elute with their parent, and none of 112 synthetic runs
-   changed a region at 0.1 %. On the real runs the noise floor then decides on three of four
-   (0.17-0.49 % of the tallest peak); on the IP-RPLC conjugate run, whose noise floor lies at
-   0.076 %, 0.1 % binds and admits two more peaks. 3206.4 is found (3207.18 Da at 0.020 % against
-   0.042 % by its own isotopologues; 13 % of its elution falls before the new region), with a
-   shortmer, its PO form and, in the conjugate run, a 2559 Da shortmer at 1.08 times its reference.
+2. **A floor tied to the tallest peak deleted a species again.** 3206.4 of the IP-RPLC NC run had no
+   region: its TIC peak stood 3.47 times above the noise, enough for the oligonucleotide methods'
+   floor of three, but at 0.197 % of the tallest peak, 1.7 % under the relative floor of 0.2 % that
+   section 6 had kept as a guard against ripple. The floor is now a method setting
+   (`regions.min_rel_height`), 0.1 % for the two oligonucleotide methods and 0.2 % for the others,
+   whose noise floor of ten decides anyway and which nothing here could validate: the synthetic
+   generator makes impurities co-elute with their parent, and none of 112 synthetic runs changed a
+   region at 0.1 %. On the real runs the noise floor then decides on three of four (0.17-0.49 % of
+   the tallest peak); on the IP-RPLC conjugate run, whose noise floor lies at 0.076 %, 0.1 % binds
+   and admits two more peaks. 3206.4 is found (3207.18 Da at 0.020 % against 0.042 % by extracted
+   ions; 13 % of its elution falls before the new region), with a shortmer, its PO form and, in the
+   conjugate run, a 2559 Da shortmer at 1.08 times its reference.
 3. **A merge taken strongest first is order-dependent.** Pieces of one species in adjacent regions
    are merged strongest first, so a weak tail piece that touched only a middle piece not yet
    joined was compared with the strong piece's trace before it grew (a gap of 0.21 min against the
@@ -750,12 +750,13 @@ reviews (the code, the outputs, the scope and these documents) and two follow-up
    probe a slice of NC's tail had carried a later isomer of n-1 off with it.
 5. **A window's trace judges whatever lies in it; a species' own isotopologues judge the species.**
    1883.3 under IP-HILIC was dropped by the co-elution test: its z = 3 window held one of its
-   isotopologues and, 0.006 m/z beside it, an ion of the 1234.2 Da 4-mer's +Na form eluting
-   earlier, so that window's trace correlated at 0.36 with z = 2 while its own isotopologues did at
-   0.97. A state that fails on its window is now judged again on narrow windows on the species' own
-   major isotopologues and kept at r >= 0.9; rescues at 0.5 and 0.8 added 21 to 29 reports, mostly
-   adduct forms of the main species (FLP + DIPEA at 1.78 %). The verifier found the rescue pairing
-   the 1580 Da shortmer's z = 1 ion with its dimer's z = 3 - 99 % of the reference's comb trace lay
+   isotopologues and, 0.006 m/z beside it, an ion of the 1234.2 Da 4-mer's +Na form eluting earlier,
+   so that window's trace correlated at 0.36 with z = 2 while its own isotopologues did at 0.97. A
+   state that fails on its window is now judged again on narrow windows on the species' own major
+   isotopologues and kept at r >= 0.9; judging the windows' failures on isotopologues at r >= 0.5
+   reported 25 species more than at 0.9, mostly adduct forms of the main species (FLP + DIPEA at
+   1.78 %), and at 0.8 a 0.30 % form of n+1 came in. The verifier found the rescue pairing the
+   1580 Da shortmer's z = 1 ion with its dimer's z = 3 - 99 % of the reference's comb trace lay
    outside its own window - and added an anchor: the reference's comb positions inside its window
    must carry a quarter of the share the pattern predicts there. 1883.3 is found at 1884.51 Da and
    0.33 %, against 0.33 % by its own isotopologues, with two small species whose isotopologues
@@ -792,24 +793,23 @@ reviews (the code, the outputs, the scope and these documents) and two follow-up
 8. **The comb takes over where the overlap's optimum lies between its teeth, and chooses its tooth
    with its neighbours.** Section 16 consulted the comb only where the overlap search ended on the
    window's edge. A mass read about half a spacing off (an envelope 2 Da lighter on the same comb
-   pulls the mean shift) has both teeth beyond the 0.29 Da window, and the optimum sits between
-   them on whatever weak signal is there, 115-2000 times below the better tooth: 1908.3 and 2887.4
-   were missed, the 2980.4 Da species was lost and a 2602.07 Da species was reported at 0.0003 %
-   at a time where its windows are empty. An interior optimum is now kept where it lies on the comb
+   pulls the mean shift) has both teeth beyond the 0.29 Da window, and the optimum sits between them
+   on whatever weak signal is there, 115-2000 times below the better tooth: 1908.3 and 2887.4 were
+   missed, the 2980.4 Da species was lost and a 2602.07 Da species was reported at 0.0003 % at a
+   time where its windows are empty. An interior optimum is now kept where it lies on the comb
    (within 0.15 Da of a tooth; on the four runs such optima lie within 0.093 Da, those between the
-   teeth 0.19-0.48 Da off) or holds a quarter of the larger tooth's overlap (those between the
-   teeth hold at most 15 %), and otherwise the better tooth is taken: 1908.3 and 2887.4 are found
-   at 0.82 and 0.98 times their own-isotopologue references, the 2980.4 and 2602.07 Da species at
-   their times. The better tooth was section 16's weak point: compared alone, the two teeth's
-   overlaps differ by 0.03-26 %, right and wrong picks sharing that range, because an envelope of
-   the same comb two to seven spacings away overlaps the candidate's and favours the tooth on its
-   side. Fitted together with same-comb templates two to seven spacings beyond the pair, the teeth
-   are right on 49 of the 50 placements that composition or the raw scans decide, the overlaps also
-   on 49 - but the joint fit's miss, NC + 6Na + K, is held at the window's edge by the cation-ladder
-   rule either way, while the overlaps' miss, FLP + K, is placed a spacing light. The verifier
-   widened the joint fit from four spacings to seven when n-2 under IP-HILIC flipped to the wrong
-   tooth for a comb read 0.005-0.02 Da heavier; strong same-comb neighbours on both sides still
-   defeat it.
+   teeth 0.19-0.48 Da off) or holds a quarter of the larger tooth's overlap (those between the teeth
+   hold at most 15 %), and otherwise the better tooth is taken: 1908.3 and 2887.4 are found at 0.82
+   and 0.98 times their extracted-ion references, the 2980.4 and 2602.07 Da species at their times.
+   The better tooth was section 16's weak point: compared alone, the two teeth's overlaps differ by
+   0.03-26 %, right and wrong picks sharing that range, because an envelope of the same comb two to
+   seven spacings away overlaps the candidate's and favours the tooth on its side. Fitted together
+   with same-comb templates two to seven spacings beyond the pair, the teeth are right on 49 of the
+   50 placements that composition or the raw scans decide, the overlaps also on 49 - but the joint
+   fit's miss, NC + 6Na + K, is held at the window's edge by the cation-ladder rule either way,
+   while the overlaps' miss, FLP + K, is placed a spacing light. The verifier widened the joint fit
+   from four spacings to seven when n-2 under IP-HILIC flipped to the wrong tooth for a comb read
+   0.005-0.02 Da heavier; strong same-comb neighbours on both sides still defeat it.
 9. **The reported mass follows the templates where the comb placed them.** A comb-placed species
    kept its mean-shift mass, 0.3-0.5 Da off its own isotopologues: n-2 was read 0.49 Da light and
    0.27 Da heavy while its templates sat 0.06 Da from the truth. Read off the comb, the template
