@@ -401,7 +401,7 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     Searching the overlap past the edge finds those shifts too, but lets a candidate beside a
     strong species slide onto that species' peaks. The comb is read off the candidate's own
     envelopes instead, and taken when (a) the overlap ran into the window's edge, (b) the comb
-    lies beyond the window and (c) at least two gate-passed charge states agree on it
+    lies beyond the window or at its edge and (c) at least two gate-passed charge states agree on it
     (``min_coherence``). Of the comb's two teeth either side of the measured mass, the one whose
     template carries more of the spectrum, fitted with its same-comb neighbours, is taken
     (:func:`_better_tooth`): a mass read more than half a spacing off has its nearest tooth on
@@ -425,6 +425,17 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
     over the middle ones of them; the overlap search reads the candidate's own states
     (:func:`own_charges`), which also hold those added for the fit. ``cand.comb_placed`` says
     whether the comb placed the templates (:func:`report_comb_masses`).
+
+    The comb is at the window's edge where its tooth lies inside the window and the edge optimum
+    within ``off_comb_da`` of it, the tolerance that puts an optimum inside the window on the
+    comb: that is the tooth, cut short by the window, and no parabola is fitted at the edge (on
+    the four runs four alignments end so, 0.0005-0.024 Da from their tooth, their overlaps
+    peaking past the midpoint of the last step). 3207.4 of the IP-RPLC NC run, its tooth 0.005 Da
+    inside the 0.289 Da window, was otherwise not comb-placed and was reported at its mean-shift
+    mass, 0.30 Da light. An optimum inside the window on the comb keeps its place and the
+    mean-shift mass, so the reported mass still jumps at that midpoint: 3207.4's overlap peaks
+    0.001 Da past it, and that of 3315.35 of the same run, read 0.28 Da light of its tooth,
+    0.0007 Da short of it.
     """
     shift = align_template(cand, spectrum, grid, instrument, compound_class)
     cand.comb_placed = False
@@ -463,7 +474,11 @@ def align_candidate(cand: Candidate, spectrum: np.ndarray, grid, instrument: Ins
                      compound_class) >= between_ratio * teeth):
             return shift
     elif abs(comb) <= reach * cand.mass * grid.step:
-        return shift
+        # the comb's nearest tooth lies inside the window: an edge optimum within ``off_comb_da``
+        # of it is that tooth, cut short by the window, and the comb is taken below; an edge
+        # further from the tooth is kept
+        if abs(cand.mass * float(np.expm1(shift)) - comb) > off_comb_da:
+            return shift
     # the tooth: of the comb's two either side of the measured mass, the one fitted with its
     # same-comb neighbours carries more of the spectrum
     comb = _better_tooth(cand.mass, comb, zs, spectrum, grid, instrument, compound_class,
