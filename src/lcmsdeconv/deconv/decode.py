@@ -457,6 +457,39 @@ def envelope_discontinuous(centre_mz: float, half_width: float, raw_mz: np.ndarr
     return float(dx[above].sum()) < min_coverage * 2.0 * half_width
 
 
+def comb_phase(z: int, centre_mz: float, half_width: float, raw_mz: np.ndarray,
+               raw_int: np.ndarray, carrier: float) -> float | None:
+    """Where the isotopologues of the envelope at ``centre_mz`` (charge ``z``) sit in neutral
+    mass, modulo one isotope spacing (Da): the phase of the points within ``half_width`` folded
+    onto one spacing, weighted by their intensity. None without points to fold."""
+    lo, hi = np.searchsorted(raw_mz, [centre_mz - half_width, centre_mz + half_width])
+    if hi - lo < 3:
+        return None
+    w = raw_int[lo:hi]
+    p = complex(np.sum(w * np.exp(2j * np.pi * z * (raw_mz[lo:hi] - carrier) / ISOTOPE_SPACING)))
+    if abs(p) <= 0:
+        return None
+    return float(np.angle(p)) / (2.0 * np.pi) * ISOTOPE_SPACING
+
+
+def comb_positions(mass: float, z: int, phase: float, carrier: float, compound_class: str,
+                   min_rel: float = 0.3) -> np.ndarray:
+    """The m/z of the major isotopologues (at least ``min_rel`` of the largest) of a species of
+    average mass about ``mass`` at charge ``z``, its comb placed at ``phase`` (Da, modulo one
+    spacing, :func:`comb_phase`) within half a spacing of where the class template puts it."""
+    from ..chem.classes import class_isotope_pattern
+
+    pat = class_isotope_pattern(mass, compound_class)
+    a = pat.abundances / max(float(pat.abundances.sum()), 1e-300)
+    t = pat.masses - float((a * pat.masses).sum()) + mass
+    phi_t = float(np.angle(np.sum(a * np.exp(2j * np.pi * t / ISOTOPE_SPACING)))) / (
+        2.0 * np.pi) * ISOTOPE_SPACING
+    d = phase - phi_t
+    d = (d / ISOTOPE_SPACING - round(d / ISOTOPE_SPACING)) * ISOTOPE_SPACING
+    major = pat.abundances >= min_rel * float(pat.abundances.max())
+    return (t[major] + d + z * carrier) / z
+
+
 def refine_candidate_masses(
     candidates: list[Candidate],
     raw_mz: np.ndarray,
@@ -479,6 +512,7 @@ def refine_candidate_masses(
     envelope_move: bool = False,
     frames=None,
     coelution_r: float = 0.5,
+    own_comb: bool = True,
 ) -> list[Candidate]:
     """Measure candidate masses on the raw spectrum and drop unsupported candidates.
 
@@ -509,10 +543,15 @@ def refine_candidate_masses(
     traces of their envelope cores correlating at ``coelution_r`` or better,
     :func:`~lcmsdeconv.deconv.coelution.coeluting`). A state that does not is another
     species' envelope under this one's window and leaves the cluster, which must still have
-    ``min_charges`` members. ``coelution_r <= 0`` turns the test off.
+    ``min_charges`` members. ``coelution_r <= 0`` turns the test off. A window holds the
+    species' envelope and whatever else lies within it, so with ``own_comb`` a state whose window
+    does not co-elute is judged again on the species' own isotopologues (narrow windows on the
+    comb the strongest state's envelope sets, where the isotopes are resolved) and kept if they
+    co-elute at :data:`~lcmsdeconv.deconv.coelution.COMB_RESCUE_R` or better.
     """
     from ..chem.adducts import carrier_mass
-    from .coelution import coeluting
+    from ..chem.classes import class_isotope_pattern
+    from .coelution import COMB_RESCUE_R, coeluting, shows_profile
 
     carrier = carrier_mass(polarity)
     thr = snr * noise_sigma
@@ -520,6 +559,50 @@ def refine_candidate_masses(
     order = np.argsort(raw_mz)
     raw_mz = raw_mz[order]
     raw_int = np.clip(raw_int[order].astype(float), 0, None)
+
+    def own_traces(members, ref: int, masses, matched_z, where, env_sigma):
+        """Traces of the species' own isotopologues in the states ``members`` (indices into the
+        per-state lists): narrow windows, half a peak width either side, on the major
+        isotopologues of the comb that the reference state's envelope sets, summed. Every
+        charge state of a molecule has its isotopologues at the same neutral masses, so the
+        windows of a state of another species miss its peaks. A state whose isotopes are not
+        resolved keeps its window's trace. None where the reference's isotopes are not resolved
+        or its own comb shows no elution profile: then its window holds no comb of its charge,
+        and the test would abstain on nothing."""
+        i_ref = int(members[ref])
+        z_ref = int(matched_z[i_ref])
+        pos_ref, fwhm_ref = where[i_ref][0], where[i_ref][1]
+        if ISOTOPE_SPACING / z_ref < 2.0 * fwhm_ref:
+            return None
+        phase = comb_phase(z_ref, pos_ref, 2.5 * env_sigma / z_ref + 2.0 * fwhm_ref, raw_mz,
+                           raw_int, carrier)
+        if phase is None:
+            return None
+        rows = []
+        anchored = True
+        for i in members:
+            z_i = int(matched_z[i])
+            pos_i, fwhm_i, half_i = where[i][0], where[i][1], where[i][2]
+            if ISOTOPE_SPACING / z_i < 2.0 * fwhm_i:
+                rows.append(frames.traces([pos_i], [half_i])[0])
+                continue
+            cm = comb_positions(float(masses[i]), z_i, phase, carrier, compound_class)
+            per = frames.traces(cm, np.full(cm.size, 0.5 * fwhm_i))
+            rows.append(per.sum(0))
+            if i == i_ref:
+                # the comb reaches past the reference's window, which must hold its share of
+                # the comb (a quarter of what the pattern puts there will do; another ion beside
+                # it adds): a window between the isotopologues of an ion of another charge (a
+                # 1.6 kDa shortmer's z = 1, read at z = 2 for its dimer) holds 1 % of a comb
+                # that is that ion's
+                pat = class_isotope_pattern(float(masses[i]), compound_class)
+                a = pat.abundances[pat.abundances >= 0.3 * float(pat.abundances.max())]
+                inside = np.abs(cm - pos_i) <= half_i
+                total = float(per.sum())
+                expected = float(a[inside].sum() / a.sum()) if a.size == cm.size else 0.0
+                anchored = total > 0 and float(per[inside].sum()) >= 0.25 * expected * total
+        rows = np.vstack(rows)
+        return rows if anchored and shows_profile(rows[ref]) else None
 
     def accept_single(c: Candidate, masses, matched_z, where, i: int) -> bool:
         """Keep ``c`` on its one charge state ``i`` if resolved isotopes fix that charge."""
@@ -603,8 +686,17 @@ def refine_candidate_masses(
         best = max(groups, key=lambda g: ws[g].sum())
         if frames is not None and coelution_r > 0 and best.size >= 2:
             members = srt[best]
+            ref = int(np.argmax(ws[best]))
             traces = frames.traces([where[i][0] for i in members], [where[i][2] for i in members])
-            best = best[coeluting(traces, int(np.argmax(ws[best])), coelution_r)]
+            keep = coeluting(traces, ref, coelution_r)
+            if own_comb and not keep.all():
+                # an ion of another elution beside one isotopologue made the z = 3 window of the
+                # 1.9 kDa shortmer of the IP-HILIC NC run correlate at 0.36 with its z = 2; its
+                # isotopologues there correlate at 0.97
+                own = own_traces(members, ref, masses, matched_z, where, env_sigma)
+                if own is not None:
+                    keep |= coeluting(own, ref, max(coelution_r, COMB_RESCUE_R))
+            best = best[keep]
         if best.size < min_charges or ws[best].sum() < min_cluster_weight * ws.sum():
             if (best.size == 1 and ws[best].sum() >= min_cluster_weight * ws.sum()
                     and accept_single(c, masses, matched_z, where, int(srt[best[0]]))):

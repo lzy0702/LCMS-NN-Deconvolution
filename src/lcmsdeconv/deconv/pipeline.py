@@ -310,7 +310,9 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
     measures them - at the candidate's average mass plus the adduct's average-mass shift (for
     K - H it is 0.13 Da more than the monoisotopic shift, half the tolerance). A region whose
     strongest species shows an adduct form that this test misses reports that form as a
-    species of its own, while other regions attach the same adduct to their species.
+    species of its own, while other regions attach the same adduct to their species. The
+    co-elution test reads the trial's charge windows only (``own_comb=False``): the adduct
+    evidence stays as it was before charge states were also judged on their isotopologues.
     """
     from .decode import Candidate
 
@@ -327,7 +329,8 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
                                          instrument=instrument, profile=profile,
                                          tol_ppm=50.0, frames=frames,
                                          coelution_r=params.coelution_r,
-                                         envelope_move=params.isotope_charges)
+                                         envelope_move=params.isotope_charges,
+                                         own_comb=False)
             if ok and abs(ok[0].mass - (c.mass + adduct.avg_mass)) <= max(2e-5 * c.mass, 0.3):
                 kept.add(adduct.name)
                 break

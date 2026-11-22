@@ -17,6 +17,12 @@ import numpy as np
 COELUTION_R = 0.5
 #: fewer scans carrying signal than this and a trace cannot show a profile: the test abstains
 MIN_SCANS = 4
+#: a charge state whose window does not co-elute is kept when the species' own isotopologues in
+#: it do, this well (:func:`lcmsdeconv.deconv.decode.refine_candidate_masses`). On their
+#: isotopologues the charge states that pass on their windows on the four real runs correlate at
+#: a median 0.96, 70 % of them at 0.9 or better; of those that fail, 4 % reach 0.9 and a third
+#: reach 0.5 - most of them adduct forms of the main species beside other forms' peaks
+COMB_RESCUE_R = 0.9
 
 
 class FrameStack:

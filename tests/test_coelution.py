@@ -89,6 +89,96 @@ def test_gate_rejects_a_ladder_of_ions_that_elute_apart():
     assert _gate(scans, FrameStack(scans)) == []
 
 
+def test_gate_judges_a_state_on_its_own_isotopologues():
+    """An ion of another elution between two isotopologues in a charge state's window: the
+    window's trace no longer follows the species, its isotopologues still do (the 1.9 kDa
+    shortmer of the IP-HILIC NC run lost its z = 3 this way)."""
+    early = np.exp(-0.5 * ((t - 1.0) / 2.0) ** 2)
+    mz4, _h = _envelope_peaks(MASS, 4, 1.0)
+    k = int(np.argmin(np.abs(mz4 - (MASS - 4 * MP) / 4)))
+    foreign = mz4[k] + 0.5 * 1.0033548 / 4  # half a spacing from the isotopologues
+    sig = foreign / float(INST.resolving_power(foreign)) / 2.3548
+    scans = _scans([(MASS, 3, 800.0, ELUTES), (MASS, 4, 1000.0, ELUTES)])
+    for i, s in enumerate(scans):
+        s.intensity = s.intensity + 2000.0 * early[i] * np.exp(-0.5 * ((s.mz - foreign) / sig) ** 2)
+    x, y = _summed(scans)
+
+    def gate(own_comb):
+        return refine_candidate_masses([Candidate(MASS, 1.0, {3, 4})], x, y, -1, noise_sigma=1.0,
+                                       compound_class="dna", resolution=50000.0, instrument=INST,
+                                       profile=True, frames=FrameStack(scans), own_comb=own_comb)
+
+    # z = 4, whose window holds the foreign ion, is the reference: z = 3 fails against it
+    assert gate(own_comb=False) == []
+    out = gate(own_comb=True)
+    assert len(out) == 1 and out[0].gate_charges == {3, 4} and abs(out[0].mass - MASS) < 0.5
+
+
+def test_gate_rescues_a_state_whose_isotopologue_has_a_foreign_neighbour():
+    """The 1.9 kDa shortmer's geometry: an ion of another elution 0.8 peak widths from the
+    strongest isotopologue of the weaker state, which is not the reference. Its window fails
+    against the reference's; its isotopologues, read on the reference's comb, co-elute."""
+    early = np.exp(-0.5 * ((t - 1.0) / 2.0) ** 2)
+    mz3, h3 = _envelope_peaks(MASS, 3, 1.0)
+    k = int(np.argmax(h3))
+    fwhm = mz3[k] / float(INST.resolving_power(mz3[k]))
+    foreign, sig = mz3[k] + 0.8 * fwhm, fwhm / 2.3548
+    scans = _scans([(MASS, 3, 800.0, ELUTES), (MASS, 4, 2000.0, ELUTES)])
+    for i, s in enumerate(scans):
+        s.intensity = s.intensity + 1000.0 * early[i] * np.exp(-0.5 * ((s.mz - foreign) / sig) ** 2)
+    x, y = _summed(scans)
+
+    def gate(own_comb):
+        return refine_candidate_masses([Candidate(MASS, 1.0, {3, 4})], x, y, -1, noise_sigma=1.0,
+                                       compound_class="dna", resolution=50000.0, instrument=INST,
+                                       profile=True, frames=FrameStack(scans), own_comb=own_comb)
+
+    assert gate(own_comb=False) == []  # z = 3's window fails against z = 4's
+    out = gate(own_comb=True)
+    assert len(out) == 1 and out[0].gate_charges == {3, 4} and abs(out[0].mass - MASS) < 0.5
+
+
+def test_rescue_needs_the_comb_in_the_reference_window():
+    """A non-covalent dimer's z = 3 beside its monomer's z = 1, which sits on every other
+    position of the dimer's z = 2 comb: a mean shift for that z = 2 lands between the monomer's
+    isotopologues, and its window holds only a stray bump. The comb the rescue reads past that
+    window is the monomer's; it must not pair the monomer's z = 1 with the dimer's z = 3 (the
+    3160 Da dimer of the IP-HILIC NC run's 1580 Da shortmer)."""
+    md = 3200.0
+    pat = class_isotope_pattern(md, "dna")
+    avg = float((pat.abundances * pat.masses).sum() / pat.abundances.sum())
+    mono = float(pat.masses.min()) - avg + md
+    rel = pat.abundances / pat.abundances.max()
+    bump = np.zeros(N_SCANS)
+    bump[[2, 5, 9, 12, 13]] = [0.2, 1.0, 0.1, 0.15, 0.1]  # no elution profile of its own
+    x = np.arange(900.0, 1800.0, 0.002)
+
+    def add(y, centre, height):
+        sig = centre / float(INST.resolving_power(centre)) / 2.3548
+        a, b = np.searchsorted(x, [centre - 5 * sig, centre + 5 * sig])
+        y[a:b] += height * np.exp(-0.5 * ((x[a:b] - centre) / sig) ** 2)
+
+    scans = []
+    for i in range(N_SCANS):
+        y = np.zeros_like(x)
+        for j, h in enumerate((1.0, 1.0, 0.3)):  # the monomer at z = 1
+            add(y, mono / 2 - MP + j * 1.0033548, 3000.0 * h * ELUTES[i])
+        add(y, mono / 2 - MP + 0.5016774, 40.0 * bump[i])  # in the z = 2 window
+        for m, a in zip((pat.masses - avg + md - 3 * MP) / 3, rel):  # the dimer at z = 3
+            if a > 1e-3:
+                add(y, m, 1500.0 * a * ELUTES[i])
+        scans.append(Spectrum(x, y, 10.0 + 0.02 * i, -1, is_profile=True))
+    xs, ys = _summed(scans)
+
+    def gate(own_comb):
+        return refine_candidate_masses([Candidate(md, 1.0, {2, 3})], xs, ys, -1, noise_sigma=1.0,
+                                       compound_class="dna", resolution=50000.0, instrument=INST,
+                                       profile=True, frames=FrameStack(scans), own_comb=own_comb)
+
+    assert gate(own_comb=False) == []  # the z = 2 window's bump does not follow z = 3
+    assert gate(own_comb=True) == []
+
+
 def test_charge_states_grow_only_while_they_coelute():
     # the species shows z = 3, 4, 5; at z = 6's position sits an ion with its own profile
     scans = _scans([(MASS, 3, 800.0, ELUTES), (MASS, 4, 1000.0, ELUTES),
