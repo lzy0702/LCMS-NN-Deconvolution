@@ -17,7 +17,14 @@ from .config import SynthConfig
 from .impurities import sample_contaminant, sample_impurities
 from .labels import build_labels
 from .noise import NoiseConfig, add_noise
-from .render import ComponentInstance, Scene, build_sticks, render_grid_by_charge
+from .render import (
+    ComponentInstance,
+    Scene,
+    build_sticks,
+    render_grid_by_charge,
+    stick_parts,
+    sticks_from_parts,
+)
 from .spec import ComponentTruth
 
 
@@ -132,15 +139,21 @@ def _background_ions(rng: np.random.Generator, n: int, mz_lo: float, mz_hi: floa
     from .spec import Compound
 
     out = []
+    # the same bounds every ion (computed once), the same draws in the same order
+    log_lo, log_hi = np.log(max(mz_lo, 100.0)), np.log(max(mz_hi, 101.0))
+    log_a, log_b = np.log(1e-4), np.log(3e-2)
+    average: dict[int, tuple] = {}  # pattern -> its average mass (the pattern kept alive)
     for _ in range(n):
-        mz = float(np.exp(rng.uniform(np.log(max(mz_lo, 100.0)), np.log(max(mz_hi, 101.0)))))
+        mz = float(np.exp(rng.uniform(log_lo, log_hi)))
         mass = mz - float(polarity) * 1.00727646688
         if mass <= 50:
             continue
         pat = class_isotope_pattern(mass, "small_molecule")
-        comp = Compound(mass, "small_molecule", pat.shifted(mass - pat.average_mass),
+        if id(pat) not in average:
+            average[id(pat)] = (pat, pat.average_mass)
+        comp = Compound(mass, "small_molecule", pat.shifted(mass - average[id(pat)][1]),
                         name="background", kind="contaminant")
-        inten = scale * float(np.exp(rng.uniform(np.log(1e-4), np.log(3e-2))))
+        inten = scale * float(np.exp(rng.uniform(log_a, log_b)))
         out.append(ComponentInstance(comp, inten, {1: 1.0}, {1: {AdductState(): 1.0}}))
     return out
 
@@ -166,13 +179,13 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     evaluated on data it has never seen. Labels come from per-charge renders of the same scans
     through the same resampling, so they stay consistent with the features.
     """
-    from ..nn.features import featurize
-    from ..nn.grid import spectrum_to_grid
+    from .fast import ProfileRows, featurize, noisy_scan, positive_points, spectrum_to_grid
     from .render import render_profile
 
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
-    sticks = build_sticks(scene)
+    parts = stick_parts(scene.components, scene.polarity)
+    sticks = sticks_from_parts(parts)
     polarity = cfg.polarity
     if len(sticks):
         lo = max(60.0, float(sticks.mz.min()) * 0.98)
@@ -190,8 +203,10 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         base = max((c.intensity for c in scene.components), default=1e5)
         bg = _background_ions(rng, n_bg, lo, hi, base, polarity)
         if bg:
+            # the sticks of the larger scene are those already built followed by the ions'
+            parts += stick_parts(bg, polarity, first_id=len(scene.components))
             scene = Scene(scene.components + bg, polarity, library, meta=scene.meta)
-            sticks = build_sticks(scene)
+            sticks = sticks_from_parts(parts)
 
     axis = inst.profile_axis(lo, hi)
     clean = render_profile(sticks, axis, inst) if len(sticks) else np.zeros(axis.size)
@@ -205,28 +220,19 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     thr = esig * float(rng.uniform(*cfg.threshold_sigmas_range))
     saturate = rng.random() < cfg.saturation_prob
     sat_level = float(clean.max() * weights.max() * rng.uniform(0.3, 0.8)) if saturate else None
-    frames_int = []
-    for w in weights:
-        lam = np.clip(clean * w / gain, 0.0, None)
-        scan = rng.poisson(lam).astype(np.float64) * gain + np.abs(rng.normal(0.0, esig, axis.size))
-        if sat_level is not None:
-            scan = np.minimum(scan, sat_level)
-        if thr > 0:
-            # vendor thresholding writes every point above the threshold together with its
-            # neighbours, as segments of at least five points (cfg.vendor_pad), never noise
-            # points one by one
-            above = scan >= thr
-            keep = np.convolve(above, np.ones(2 * cfg.vendor_pad + 1), mode="same") > 0
-            scan[~keep] = 0.0
-        frames_int.append(scan)
+    # each scan: shot noise on its share of the signal, electronic noise, saturation, and vendor
+    # thresholding, which writes every point above the threshold together with its neighbours,
+    # as segments of at least five points (cfg.vendor_pad), never noise points one by one
+    frames_int = [noisy_scan(rng, clean, w, gain, esig, sat_level, thr, cfg.vendor_pad)
+                  for w in weights]
 
     # exactly the grid view inference builds for this summed spectrum: each scan resampled on
     # its own points (what it kept after thresholding) and added, as for a region's scans
-    total = np.sum(frames_int, axis=0)
-    kept = total > 0
-    scans = [(axis[s > 0], s[s > 0]) for s in frames_int]
-    grid, observed, noise_sigma = spectrum_to_grid(axis[kept], total[kept], polarity,
-                                                   cfg.grid_step, cfg.grid_mz_max, True,
+    total = _sum_scans(frames_int)
+    raw = positive_points(axis, total)  # (axis[total > 0], total[total > 0])
+    scans = [positive_points(axis, s) for s in frames_int]
+    grid, observed, noise_sigma = spectrum_to_grid(raw[0], raw[1], polarity,
+                                                   cfg.grid_step, cfg.grid_mz_max,
                                                    frames=scan_spectra(scans, polarity))
     g_lo = grid.mz_min
 
@@ -237,7 +243,10 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     seg = observed[b0:min(b1, grid.size)]
     window[: seg.size] = seg
 
-    # per-charge noise-free signal through the same resampling, on the crop only
+    # per-charge noise-free signal through the same resampling, on the crop only. (Labels stay
+    # unclipped: saturation does not change the charge.) The sticks near the crop, grouped by
+    # charge in their own order, are what ``(sticks.z == z) & near`` selects for each charge, and
+    # ProfileRows is ``grid.resample_profile(sub_axis, prof)[b0:b1]`` with the axis work done once.
     crop_lo = float(grid.bin_to_mz(b0)) * 0.999
     crop_hi = float(grid.bin_to_mz(min(b1, grid.size) - 1)) * 1.001
     charges = np.unique(sticks.z) if len(sticks) else np.array([], dtype=int)
@@ -245,21 +254,21 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     a0 = int(np.searchsorted(axis, crop_lo))
     a1 = int(np.searchsorted(axis, crop_hi))
     sub_axis = axis[max(0, a0 - 2):min(axis.size, a1 + 2)]
-    for z in charges:
-        sel = (sticks.z == z) & (sticks.mz > crop_lo * 0.995) & (sticks.mz < crop_hi * 1.005)
-        if not sel.any() or sub_axis.size < 2:
-            continue
-        sub = type(sticks)(sticks.mz[sel], sticks.intensity[sel], sticks.comp_id[sel],
-                           sticks.z[sel], sticks.adduct_mass[sel])
-        prof = render_profile(sub, sub_axis, inst)
-        if sat_level is not None:
-            prof = prof * 1.0  # labels stay unclipped: saturation does not change the charge
-        row = np.zeros(L)
-        res = grid.resample_profile(sub_axis, prof)[b0:min(b1, grid.size)]
-        row[: res.size] = res
-        if row.max() > 0:
-            rows.append(row)
-            zs.append(int(z))
+    if charges.size and sub_axis.size >= 2:
+        near = np.flatnonzero((sticks.mz > crop_lo * 0.995) & (sticks.mz < crop_hi * 1.005))
+        near = near[np.argsort(sticks.z[near], kind="stable")]
+        z_near = sticks.z[near]
+        resampled = ProfileRows(grid, sub_axis, b0, L)
+        for z in charges:
+            sel = near[np.searchsorted(z_near, z, "left"):np.searchsorted(z_near, z, "right")]
+            if not sel.size:
+                continue
+            sub = type(sticks)(sticks.mz[sel], sticks.intensity[sel], sticks.comp_id[sel],
+                               sticks.z[sel], sticks.adduct_mass[sel])
+            row = resampled.row(render_profile(sub, sub_axis, inst))
+            if row.max() > 0:
+                rows.append(row)
+                zs.append(int(z))
     cmat = np.array(rows) if rows else np.zeros((0, L))
     # shares of the observed intensity: y * c_z / max(y, sum c), the remainder is non-ion
     signal = cmat.sum(axis=0) if cmat.shape[0] else np.zeros(L)
@@ -272,5 +281,14 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
                        scene.truths(), {"resolution": inst.resolution, "kind": inst.kind,
                                         "noise_sigma": noise_sigma, "n_sum": n_sum,
                                         "gain": gain, "grid_lo": g_lo,
-                                        "raw": (axis[kept], total[kept]),
+                                        "raw": raw,
                                         "scans": scans})
+
+
+def _sum_scans(scans: list) -> np.ndarray:
+    """``np.sum(scans, axis=0)`` without stacking them: numpy adds the rows of a stack one after
+    another, element by element, which is what this does."""
+    total = scans[0].copy()
+    for s in scans[1:]:
+        total += s
+    return total

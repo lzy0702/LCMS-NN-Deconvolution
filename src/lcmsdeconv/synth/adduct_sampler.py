@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 from ..chem.adducts import AdductLibrary, AdductState
@@ -51,8 +53,123 @@ def adduct_fractions_for_charge(
     """Fractions over adduct states for one charge state.
 
     The number of each adduct is drawn from Binomial(z, lambda) truncated at max_per_type; the
-    resulting states' fractions are the products of per-type binomial weights.
+    resulting states' fractions are the products of per-type binomial weights. (``rng`` is not
+    used: the fractions are expected values, not a draw.)
     """
+    return adduct_fractions_by_charge([z], propensities, library)[z]
+
+
+def adduct_fractions_by_charge(charges, propensities: dict[str, float],
+                               library: AdductLibrary) -> dict[int, dict[AdductState, float]]:
+    """:func:`adduct_fractions_for_charge` for every charge of ``charges``, in their order.
+
+    Equal, value for value and in the same dict order, to the step-by-step construction of
+    :func:`_adduct_fractions_reference`: every state is reached along exactly one path (its count
+    of each adduct type), so its fraction is the product of its per-type weights taken in the
+    library's order, and the states come in the lexicographic order of their counts. The states
+    allowed for a library and charge are enumerated once (:func:`_state_table`); per charge only
+    the per-type weights (computed as the reference computes them, the powers shared between
+    charges) and one product per state remain.
+    """
+    names = library.names()
+    if not names:
+        return {z: {AdductState(): 1.0} for z in charges}
+    if len(set(names)) != len(names):
+        # a type listed twice reaches some states along two paths, which the reference adds up;
+        # the one-path construction below does not, so such a library takes the reference
+        return {z: _adduct_fractions_reference(z, propensities, library, None) for z in charges}
+    weights = [_TypeWeights(propensities.get(name, 0.0)) for name in names]
+    out = {}
+    for z in charges:
+        kmax = min(library.max_per_type, z)
+        ks = np.arange(0, kmax + 1)
+        ws = [tw.weights(z, ks, kmax) for tw in weights]
+        counts, states = _state_table(tuple(names), int(kmax), int(library.max_total))
+        p = ws[0][counts[:, 0]]
+        ok = ~(p <= 0)
+        for j in range(1, len(names)):
+            wj = ws[j][counts[:, j]]
+            ok &= ~(wj <= 0)
+            p = p * wj
+        idx = np.flatnonzero(ok)
+        if idx.size == 0:
+            out[z] = {AdductState(): 1.0}
+            continue
+        p = p[idx]
+        # the reference's sum(states.values()): its values are numpy floats, so plain additions
+        # in order, which an accumulation repeats exactly
+        total = np.add.accumulate(p)[-1]
+        if total <= 0:
+            out[z] = {AdductState(): 1.0}
+            continue
+        frac = p / total
+        keep = frac > 1e-4
+        out[z] = dict(zip([states[i] for i in idx[keep]], frac[keep]))
+    return out
+
+
+class _TypeWeights:
+    """Binomial weights of one adduct type for one propensity at any charge, each computed with
+    exactly the reference's expression ``comb(z, k) * lam**k * (1 - lam) ** (z - k)`` (numpy
+    integer exponents); the powers, which do not depend on the charge, are computed once."""
+
+    __slots__ = ("lam", "lam_pow", "rest_pow")
+
+    def __init__(self, lam: float):
+        self.lam = lam
+        self.lam_pow: dict[int, object] = {}
+        self.rest_pow: dict[int, object] = {}
+
+    def weights(self, z, ks: np.ndarray, kmax: int) -> np.ndarray:
+        from math import comb
+
+        lam = self.lam
+        if lam <= 0:
+            w = np.zeros(kmax + 1)
+            w[0] = 1.0
+            return w
+        terms = []
+        for k in ks:
+            lk = self.lam_pow.get(int(k))
+            if lk is None:
+                lk = self.lam_pow[int(k)] = lam**k
+            e = z - k
+            rest = self.rest_pow.get(int(e))
+            if rest is None:
+                rest = self.rest_pow[int(e)] = (1 - lam) ** e
+            terms.append(comb(z, int(k)) * lk * rest)
+        w = np.array(terms)
+        return w / w.sum()
+
+
+@lru_cache(maxsize=256)
+def _state_table(names: tuple[str, ...], kmax: int, max_total: int):
+    """Every adduct state with at most ``kmax`` of each type and ``max_total`` in all: the count
+    of each type, ``[n_states, n_types]``, and the states, in the order in which the reference
+    construction inserts them (lexicographic in the counts, the last type fastest)."""
+    rows: list[tuple[int, ...]] = []
+
+    def grow(prefix: tuple[int, ...], left: int) -> None:
+        if len(prefix) == len(names):
+            rows.append(prefix)
+            return
+        for k in range(0, min(kmax, left) + 1):
+            grow(prefix + (k,), left - k)
+
+    grow((), max_total)
+    counts = np.array(rows, dtype=np.int64).reshape(len(rows), len(names))
+    states = [AdductState(tuple((n, k) for n, k in zip(names, r) if k > 0)) for r in rows]
+    return counts, states
+
+
+def _adduct_fractions_reference(
+    z: int,
+    propensities: dict[str, float],
+    library: AdductLibrary,
+    rng: np.random.Generator,
+) -> dict[AdductState, float]:
+    """The original state-by-state construction, which :func:`adduct_fractions_by_charge`
+    reproduces exactly (kept for the tests)."""
     from math import comb
 
     names = library.names()
@@ -116,8 +233,7 @@ def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict
                 parent_shape, parent_mass = shape, comp.mass
         cd = distribution_from_shape(shape, cfg.z_max)
         props = run_adducts if legacy_adducts else propensities_for_component(run_adducts, cd)
-        adducts = {z: adduct_fractions_for_charge(z, props, library, rng) for z in cd}
-        out.append((cd, adducts))
+        out.append((cd, adduct_fractions_by_charge(cd, props, library)))
     return out
 
 

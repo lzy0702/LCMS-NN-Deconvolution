@@ -61,7 +61,10 @@ as the pipeline runs them too. With `ignore`, a bin partly singly charged keeps 
 as targets at proportionally lower weight; singly charged ions leave the target altogether.
 
 Install with the `fast` extra (`pip install -e ".[train,fast]"`): without numba the spectra are
-generated about 20 times slower (0.26 against 4.9 seconds per spectrum here).
+generated about 25 times slower (0.11 against 3.1 seconds for the same spectra here). The
+compiled steps (`synth/fast.py`, the stick builder and the adduct-state sampler) give exactly
+the spectra the plain numpy code gives, bit for bit; `tests/test_synth_fast.py` checks every one
+against its reference and whole training frames against the original generator.
 
 ### Running it
 

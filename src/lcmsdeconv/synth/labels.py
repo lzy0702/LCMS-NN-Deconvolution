@@ -76,12 +76,17 @@ def build_labels(
             ismax = (mid >= row[:-2]) & (mid > row[2:]) & (mid >= apex_snr * noise_level)
             apex_bins.extend((np.nonzero(ismax)[0] + 1).tolist())
         if apex_bins:
+            from .fast import HAVE_NUMBA, heat_envelope
+
             ab = np.unique(np.array(apex_bins))
             hw = int(np.ceil(3 * heat_sigma))
             x = np.arange(-hw, hw + 1)
             kernel = np.exp(-0.5 * (x / heat_sigma) ** 2)
-            for b in ab:
-                lo = max(0, b - hw)
-                hi = min(L, b + hw + 1)
-                heat[lo:hi] = np.maximum(heat[lo:hi], kernel[(lo - b + hw):(hi - b + hw)])
+            if HAVE_NUMBA and ab.dtype == np.int64:
+                heat_envelope(ab, hw, kernel, heat)  # the loop below, compiled
+            else:
+                for b in ab:
+                    lo = max(0, b - hw)
+                    hi = min(L, b + hw + 1)
+                    heat[lo:hi] = np.maximum(heat[lo:hi], kernel[(lo - b + hw):(hi - b + hw)])
     return {"topk_z": topk_z, "topk_w": topk_w, "heat": heat.astype(np.float32)}

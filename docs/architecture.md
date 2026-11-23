@@ -467,7 +467,7 @@ analyte than the source can ionise. Both raise warnings that name the affected p
 | Path | Responsibility |
 | --- | --- |
 | `chem/` | elements, formulas, isotope patterns, compound classes, adducts, modifications, instrument response |
-| `synth/` | synthetic compounds, impurities, charge and adduct distributions, rendering, labels, whole runs |
+| `synth/` | synthetic compounds, impurities, charge and adduct distributions, rendering, labels, whole runs; `synth/fast.py` holds compiled equivalents of the training-frame steps that are equal bit for bit to the shared functions they stand for (`tests/test_synth_fast.py`), which inference never calls |
 | `nn/` | grid, featurization, model, losses, training, ONNX export, inference |
 | `core/` | data model (spectra, runs, results), methods, vendor-thresholded profiles (`profile.py`) |
 | `deconv/` | templates, mass-histogram decoding, co-elution of charge states, NNLS refinement, per-spectrum pipeline |

@@ -389,8 +389,10 @@ def _warm_up(synth_config) -> None:
     every worker at the same time."""
     import numpy as _np
 
+    from ..synth.fast import warm_up
     from ..synth.frames import generate_frame
 
+    warm_up()  # every kernel, also those one frame does not reach
     configs = ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
                else [synth_config])
     for cfg in configs:
