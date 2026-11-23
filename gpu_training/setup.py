@@ -120,6 +120,38 @@ def run(cmd: list, check: bool = True, quiet: bool = False, tail: list | None = 
     return rc
 
 
+def cuda_from_driver_api() -> tuple[int, int] | None:
+    """The newest CUDA version the installed driver supports, asked of the driver itself
+    (cuDriverGetVersion in nvcuda.dll or libcuda.so; what nvidia-smi prints as "CUDA Version")."""
+    import ctypes
+
+    for name in (["nvcuda.dll"] if WINDOWS else ["libcuda.so.1", "libcuda.so"]):
+        try:
+            lib = ctypes.WinDLL(name) if WINDOWS else ctypes.CDLL(name)
+            version = ctypes.c_int(0)
+            if lib.cuDriverGetVersion(ctypes.byref(version)) == 0 and version.value > 0:
+                return version.value // 1000, version.value % 1000 // 10
+        except (OSError, AttributeError):
+            continue
+    return None
+
+
+def cuda_from_text(text: str) -> tuple[int, int] | None:
+    """The CUDA version in nvidia-smi's output, in any of the ways it has been written:
+    "CUDA Version: 13.0" in the table header, "CUDA Version : 13.0" in nvidia-smi -q, with or
+    without a word such as "Driver" between "CUDA" and "Version"."""
+    m = re.search(r"CUDA(?:[ \t]+[A-Za-z]+)?[ \t]+Version[ \t]*:[ \t]*(\d+)\.(\d+)", text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def builds_for(cuda: tuple[int, int] | None) -> list[str]:
+    """The PyTorch CUDA builds to try, newest first: those the driver supports, or all of them
+    when its CUDA version could not be read (each is then checked on the GPU)."""
+    if cuda is None:
+        return [b for b, _need in TORCH_BUILDS]
+    return [b for b, need in TORCH_BUILDS if need <= cuda]
+
+
 def driver() -> dict:
     """The NVIDIA driver as nvidia-smi reports it: GPU, memory, driver version, CUDA version."""
     smi = shutil.which("nvidia-smi")
@@ -128,17 +160,22 @@ def driver() -> dict:
         smi = str(cand) if cand.exists() else None
     if smi is None:
         return {}
+    text = dict(capture_output=True, text=True, errors="replace", timeout=60)
     try:
-        head = subprocess.run([smi], capture_output=True, text=True, timeout=60).stdout
+        head = subprocess.run([smi], **text).stdout
         query = subprocess.run([smi, "--query-gpu=name,memory.total,driver_version",
-                                "--format=csv,noheader,nounits"], capture_output=True, text=True,
-                               timeout=60).stdout.strip().splitlines()
+                                "--format=csv,noheader,nounits"], **text).stdout.strip().splitlines()
     except (OSError, subprocess.SubprocessError):
         return {}
     info = {}
-    m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", head)
-    if m:
-        info["cuda"] = (int(m.group(1)), int(m.group(2)))
+    cuda = cuda_from_driver_api() or cuda_from_text(head)
+    if cuda is None:
+        try:
+            cuda = cuda_from_text(subprocess.run([smi, "-q"], **text).stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if cuda is not None:
+        info["cuda"] = cuda
     if query:
         parts = [p.strip() for p in query[0].split(",")]
         if len(parts) >= 3:
@@ -217,17 +254,22 @@ def main() -> int:
         say("nvidia-smi was not found: install or update the NVIDIA driver "
             "(https://www.nvidia.com/Download/index.aspx), then run this again.")
         return 1
-    cuda = drv.get("cuda", (0, 0))
-    say(f"GPU {drv.get('gpu', '?')}, {drv.get('memory_mb', 0) / 1024:.1f} GB; driver "
-        f"{drv.get('driver', '?')}, supporting CUDA up to {cuda[0]}.{cuda[1]}")
-    builds = [b for b, need in TORCH_BUILDS if need <= cuda]
+    cuda = drv.get("cuda")
+    gpu = (f"GPU {drv.get('gpu', '?')}, {drv.get('memory_mb', 0) / 1024:.1f} GB; driver "
+           f"{drv.get('driver', '?')}")
+    if cuda is None:
+        say(f"{gpu}; the CUDA version it supports could not be read, so the PyTorch builds are "
+            "tried newest first and each is checked on the GPU")
+    else:
+        say(f"{gpu}, supporting CUDA up to {cuda[0]}.{cuda[1]}")
+    builds = builds_for(cuda)
     if args.torch_build:
         builds = [args.torch_build]
     if not builds:
         say("This driver is too old for current PyTorch (CUDA 12.6 or newer is needed): update "
             "the NVIDIA driver, then run this again.")
         return 1
-    if builds[0] != "cu132" and not args.torch_build:
+    if cuda is not None and builds[0] != "cu132" and not args.torch_build:
         say("Note: a driver supporting CUDA 13.2 lets PyTorch use its main build (cu132); "
             f"with this one, {builds[0]} is used. Updating the regular NVIDIA driver is enough; "
             "the CUDA toolkit is not needed.")
