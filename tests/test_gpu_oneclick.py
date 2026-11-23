@@ -165,3 +165,22 @@ def test_windows_scripts_keep_crlf_and_find_the_one_click_script():
     assert 'cd /d "%~dp0\\.."' in text
     assert "gpu_training\\setup_and_train.py %*" in text
     assert text.rstrip().endswith("exit /b %RC%")
+
+
+def test_batch_size_and_restart_reach_the_training(oneclick):
+    mod, calls, _codes = oneclick
+    assert mod.main(["--batch-size", "16", "--restart"]) == 0
+    assert calls[0][1][-1] == "--if-needed" and "--batch-size" not in calls[0][1]
+    assert calls[1][1][2:] == ["--batch-size", "16", "--restart"]
+
+
+@pytest.mark.parametrize("batch, peak, fits", [(8, 4.0, True), (16, 4.0, True), (28, 4.0, True),
+                                                (32, 4.0, False), (64, None, True), (4, 9.0, True)])
+def test_a_larger_batch_must_fit_under_the_gpu_cap(batch, peak, fits):
+    train_all = _load("train_all")
+    machine = {"gpu_peak_gb": peak} if peak else {}
+    problem = train_all.batch_problem(batch, machine, 14.0)
+    assert (problem is None) == fits
+    if not fits:
+        assert "--batch-size 28" in problem  # the largest that fits: 8 x 14 / 4
+    assert "at least 1" in train_all.batch_problem(0, machine, 14.0)

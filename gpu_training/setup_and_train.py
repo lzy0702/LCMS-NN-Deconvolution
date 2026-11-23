@@ -13,6 +13,9 @@
 Options, all optional (a double-click passes none):
   --ram-gb N, --gpu-memory-gb N   limits for setup and training (default 16 and 14)
   --workers N                      data workers for the training (default: what setup measured)
+  --batch-size N                   spectra per training step (default 8, the recipe's)
+  --restart                        train both stages from the beginning (needed after changing
+                                   the batch size of a stage already started)
   --redo-setup                     run the whole setup again even if it still holds
 """
 
@@ -57,6 +60,10 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--gpu-memory-gb", type=float, default=None,
                     help="GPU memory the training may use")
     ap.add_argument("--workers", type=int, default=None, help="data workers for the training")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="spectra per training step (default 8, the recipe's)")
+    ap.add_argument("--restart", action="store_true",
+                    help="discard the saved training states and train both stages afresh")
     ap.add_argument("--redo-setup", action="store_true",
                     help="run the whole setup again even if it still holds")
     args = ap.parse_args(argv)
@@ -97,6 +104,10 @@ def main(argv: list | None = None) -> int:
     train = [VPY, "gpu_training/train_all.py", *limits]
     if args.workers:
         train += ["--workers", str(args.workers)]
+    if args.batch_size:
+        train += ["--batch-size", str(args.batch_size)]
+    if args.restart:
+        train.append("--restart")
     rc = run(train)
     if rc == 0:
         print(f"\nFinished. Upload the zip file named above ({rel('runs', 'upload_*.zip')}).",

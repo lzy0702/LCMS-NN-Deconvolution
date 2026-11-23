@@ -80,6 +80,25 @@ networks, their ONNX exports, the training logs, `machine.json` and `setup.log`.
   A forced restart by Windows Update would interrupt the run (it then resumes from the last
   saved state). Pause updates for the day, or set active hours, before a long run.
 
+## Batch size
+
+Each training step takes 8 spectra, the recipe's size. To take more:
+`gpu_training\setup_and_train.bat --batch-size 16` (or `train_all.bat --batch-size 16`).
+
+- **Speed:** a larger batch makes the training faster only if the GPU is what waits. On most
+  computers it is the data workers: setup's measurement ends with "the GPU could take N
+  spectra/s, so the workers set the pace", and `machine.json` holds both rates
+  (`gpu_spectra_per_second` against `spectra_per_second`). Then more workers help, through a
+  larger RAM budget (`--ram-gb 24`), and a larger batch does not.
+- **GPU memory:** grows with the batch. Setup measured a step at 8 (`gpu_peak_gb` in
+  `machine.json`); that is scaled to the new size, and a batch whose estimate exceeds the GPU
+  memory cap is refused before the training starts, with the largest size that fits.
+- **The recipe:** the learning rates and the number of spectra per epoch stay the same, so a
+  batch of 16 makes half as many optimiser steps. The networks were tuned at 8; another size
+  is allowed but not validated.
+- **A stage already started** at another size cannot be resumed with a new one: finish it, or
+  start over with `--restart` (both stages begin again from nothing).
+
 ## What the output means
 
 Before the first epoch, each stage scores the comb estimator on the validation spectra (a

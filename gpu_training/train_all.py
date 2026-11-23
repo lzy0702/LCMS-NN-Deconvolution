@@ -26,7 +26,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs"
 MACHINE = ROOT / "gpu_training" / "machine.json"
-COMMON = ["--arch", "ladder", "--model-size", "full", "--val-len", "128", "--batch-size", "8"]
+COMMON = ["--arch", "ladder", "--model-size", "full", "--val-len", "128"]
+#: spectra per training step, the recipe's (setup measures the GPU memory of a step at this size)
+BATCH = 8
 #: the two stages: 240 000 spectra for stage 1, then 96 000 others (a disjoint seed range, so
 #: new molecules too) with dense background for stage 2
 STAGES = [
@@ -198,10 +200,32 @@ def pack(stages: list, tag: str) -> Path:
     return zpath
 
 
+def batch_problem(batch: int, machine: dict, gpu_gb: float) -> str | None:
+    """Why ``batch`` spectra per step would not fit under the GPU memory cap, or None. The step
+    memory setup measured at BATCH is scaled in proportion (an overestimate: part of it, the
+    network and the CUDA context, does not grow with the batch)."""
+    if batch < 1:
+        return "the batch size must be at least 1"
+    peak = machine.get("gpu_peak_gb")
+    if not peak or batch <= BATCH:
+        return None
+    need = peak * batch / BATCH
+    if need <= gpu_gb:
+        return None
+    largest = max(BATCH, int(BATCH * gpu_gb / peak))
+    return (f"{batch} spectra per step need about {need:.1f} GB of GPU memory (setup measured "
+            f"{peak:g} GB at {BATCH}), more than the cap of {gpu_gb:g} GB: use at most "
+            f"--batch-size {largest}, or raise the cap with --gpu-memory-gb")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--workers", type=int, default=None,
                     help="data workers (default: gpu_training/machine.json, from setup)")
+    ap.add_argument("--batch-size", type=int, default=BATCH,
+                    help=f"spectra per training step (default {BATCH}, the recipe's); the "
+                         "learning rates stay the recipe's, and a stage already started at "
+                         "another size needs --restart")
     ap.add_argument("--ram-gb", type=float, default=None,
                     help="RAM budget (default: machine.json, else 16)")
     ap.add_argument("--gpu-memory-gb", type=float, default=None,
@@ -218,6 +242,10 @@ def main() -> int:
     machine = json.loads(MACHINE.read_text(encoding="utf-8")) if MACHINE.exists() else {}
     ram = args.ram_gb or machine.get("ram_budget_gb") or 16.0
     gpu = args.gpu_memory_gb or machine.get("gpu_memory_gb") or 14.0
+    problem = None if args.smoke else batch_problem(args.batch_size, machine, gpu)
+    if problem:
+        print(f"[train_all] {problem}.", flush=True)
+        return 1
     sys.path.insert(0, str(ROOT / "src"))
     from lcmsdeconv.nn.machine import MARGIN_GB, auto_workers, cpu_cores
 
@@ -250,12 +278,15 @@ def main() -> int:
     limits = ["--max-ram-gb", f"{ram:g}"]
     if args.device == "cuda":
         limits += ["--max-gpu-memory-gb", f"{gpu:g}"]
+    if not args.smoke:  # the smoke stages keep their own tiny batches
+        limits += ["--batch-size", str(args.batch_size)]
     RUNS.mkdir(exist_ok=True)
     for f in pause_files():  # left from an earlier pause; a new one pauses this run
         f.unlink()
         print(f"[train_all] removed {f.name} left from the last pause", flush=True)
-    print(f"[train_all] GPU training, {workers} data workers, RAM budget {ram:g} GB, GPU memory "
-          f"cap {gpu:g} GB", flush=True)
+    batch = "" if args.smoke else f", {args.batch_size} spectra per step"
+    print(f"[train_all] GPU training, {workers} data workers{batch}, RAM budget {ram:g} GB, GPU "
+          f"memory cap {gpu:g} GB", flush=True)
     measured_workers = machine.get("workers") or workers
     rates = [machine.get(f"spectra_per_second_stage{k}") or machine.get("spectra_per_second")
              for k in (1, 2)]
