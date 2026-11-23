@@ -29,6 +29,16 @@ this folder was trained on the old grid views: start a new run rather than resum
   Windows 11 PCs, the Desktop and Documents): syncing slows checkpoint writing and can lock files.
 - **Disk.** About 10 GB free (PyTorch with CUDA is large).
 
+**The easy way: one double-click.** Double-click `gpu_training\setup_and_train.bat`. The first
+time, it does the setup of step 1 and then starts the training of step 2 in the same window;
+at the end it names the file to upload (step 3). Double-click it again after a pause, a crash
+or a reboot: the training continues where it stopped, and the setup is skipped as long as it
+still holds (`gpu_training\setup_done.json` records it; it runs again by itself if the package
+has changed, `.venv` or `machine.json` is missing, or PyTorch no longer computes on the GPU).
+Other limits are passed on to both steps: `gpu_training\setup_and_train.bat --ram-gb 12
+--gpu-memory-gb 12`; `--redo-setup` runs the whole setup again. The two steps can also be run
+one at a time:
+
 **1. Set up (once, 10-20 minutes):** double-click `gpu_training\setup_windows.bat`, or run it
 from a terminal in the `lcmsdeconv` folder. It:
 
@@ -109,7 +119,8 @@ The best checkpoint is saved whenever it improves. Logs of every epoch are writt
   Ctrl+C, Windows then asks "Terminate batch job (Y/N)?": the state is already saved, so either
   answer is safe (N keeps the window open so you can read the last messages). The PAUSE file
   pauses without that question.
-- **Continue:** run `gpu_training\train_all.bat` again. A finished stage is skipped, and an
+- **Continue:** double-click `gpu_training\setup_and_train.bat` (or run
+  `gpu_training\train_all.bat`) again. A finished stage is skipped, and an
   interrupted one continues from the saved epoch and step with the same learning-rate schedule.
   The same works after a crash, a reboot or a power cut. The state is saved every 10 minutes
   and after every epoch, so at most a few minutes are lost.
@@ -158,14 +169,20 @@ stopped at the memory budget.
 ## Linux
 
 ```bash
+bash gpu_training/setup_and_train.sh   # setup where needed, then training (as the .bat)
+```
+
+or the two steps one at a time:
+
+```bash
 bash gpu_training/setup_linux.sh
 bash gpu_training/train_all.sh
 ```
 
 ## Troubleshooting
 
-- **"Python 3.12 was not found"** (from `setup_windows.bat`): install it as in the quick start,
-  then open a new terminal so that PATH is updated.
+- **"Python 3.12 was not found"** (from `setup_windows.bat` or `setup_and_train.bat`): install it
+  as in the quick start, then open a new terminal so that PATH is updated.
 - **"nvidia-smi was not found"** or **"No PyTorch CUDA build worked with this driver"**:
   install or update the NVIDIA driver and run the setup again.
 - **"pip could not download or install PyTorch"**: the setup downloads PyTorch from

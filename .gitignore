@@ -19,3 +19,4 @@ htmlcov/
 src/lcmsdeconv/models/*.pt
 /models/
 gpu_training/machine.json
+gpu_training/setup_done.json

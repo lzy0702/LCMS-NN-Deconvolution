@@ -17,12 +17,18 @@ Every step is skipped when it is already done, so running it again is safe:
    workers that keeps everything within the RAM budget (gpu_training/machine.json);
 6. runs a two-minute training on the GPU to check everything end to end.
 
+A setup that finishes records itself in gpu_training/setup_done.json. With --if-needed (what
+setup_and_train.bat uses) the whole setup is skipped while that record still holds: the same
+package files, the environment and machine.json present, and PyTorch computing on the GPU.
+
 Output is also written to gpu_training/setup.log.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -36,6 +42,12 @@ LOG = ROOT / "gpu_training" / "setup.log"
 WINDOWS = sys.platform == "win32"
 VENV = ROOT / ".venv"
 VPY = VENV / ("Scripts/python.exe" if WINDOWS else "bin/python")
+MACHINE = ROOT / "gpu_training" / "machine.json"
+#: the record of the last setup that finished (read by --if-needed)
+DONE = ROOT / "gpu_training" / "setup_done.json"
+#: files whose change makes --if-needed run the setup again: the package's dependencies and the
+#: setup and the measurement themselves
+SETUP_INPUTS = ("pyproject.toml", "gpu_training/setup.py", "gpu_training/probe.py")
 #: PyTorch CUDA builds, newest first, with the CUDA version the driver must support
 TORCH_BUILDS = [("cu132", (13, 2)), ("cu130", (13, 0)), ("cu128", (12, 8)), ("cu126", (12, 6))]
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"
@@ -52,6 +64,37 @@ def say(msg: str = "") -> None:
     print(msg, flush=True)
     with open(LOG, "a", encoding="utf-8") as fh:
         fh.write(msg + "\n")
+
+
+def fingerprint() -> dict:
+    """The first 16 hex digits of the sha256 of each file in SETUP_INPUTS ('' if missing)."""
+    out = {}
+    for rel in SETUP_INPUTS:
+        path = ROOT / rel
+        out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.exists() else ""
+    return out
+
+
+def setup_is_current() -> tuple[bool, str]:
+    """Whether the last finished setup still holds, and why (or why not)."""
+    if not VPY.exists():
+        return False, "the environment .venv does not exist yet"
+    try:
+        done = json.loads(DONE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, "no setup has finished in this folder yet"
+    except (OSError, ValueError):
+        return False, f"{DONE.name} cannot be read"
+    if not (done.get("probe") and done.get("smoke")):
+        return False, "the last setup skipped the measurement or the test run"
+    if done.get("fingerprint") != fingerprint():
+        return False, "the package has changed since the last setup"
+    if not MACHINE.exists():
+        return False, "gpu_training/machine.json is missing"
+    current, reason = torch_on_gpu()
+    if not current:
+        return False, "PyTorch no longer computes on the GPU: " + reason.strip()[-300:]
+    return True, f"finished {done.get('finished', '?')}, {current}"
 
 
 def run(cmd: list, check: bool = True, quiet: bool = False, tail: list | None = None) -> int:
@@ -148,9 +191,19 @@ def main() -> int:
     ap.add_argument("--reinstall-torch", action="store_true")
     ap.add_argument("--skip-probe", action="store_true")
     ap.add_argument("--skip-smoke", action="store_true")
+    ap.add_argument("--if-needed", action="store_true",
+                    help="skip everything while the last finished setup still holds "
+                         "(setup_and_train.bat uses this)")
     args = ap.parse_args()
     LOG.parent.mkdir(parents=True, exist_ok=True)
     say(f"=== setup {time.strftime('%Y-%m-%d %H:%M')} in {ROOT}")
+    if args.if_needed:
+        holds, why = setup_is_current()
+        if holds:
+            say(f"Setup is already done ({why}): skipping it.")
+            return 0
+        say(f"Setting up, because {why}.")
+    DONE.unlink(missing_ok=True)  # a setup that stops part-way leaves no record behind
 
     # 1. Python and the driver
     v = sys.version_info
@@ -256,15 +309,20 @@ def main() -> int:
     if not args.skip_smoke:
         say("A two-minute training run on the GPU ...")
         workers = []
-        machine = ROOT / "gpu_training" / "machine.json"
-        if machine.exists():
-            import json
-
-            workers = ["--workers", str(json.loads(machine.read_text(encoding="utf-8"))["workers"])]
+        if MACHINE.exists():
+            workers = ["--workers", str(json.loads(MACHINE.read_text(encoding="utf-8"))["workers"])]
         run([VPY, "scripts/train_charge_net.py", "--smoke", "--max-ram-gb", str(args.ram_gb),
              "--max-gpu-memory-gb", str(args.gpu_memory_gb), *workers])
 
+    DONE.write_text(json.dumps({
+        "finished": time.strftime("%Y-%m-%d %H:%M"), "torch": current,
+        "probe": not args.skip_probe, "smoke": not args.skip_smoke,
+        "ram_gb": args.ram_gb, "gpu_memory_gb": args.gpu_memory_gb,
+        "fingerprint": fingerprint()}, indent=1) + "\n", encoding="utf-8")
     say("")
+    if args.if_needed:
+        say("Setup finished.")
+        return 0
     say("Setup finished. Start the training with:")
     say("    gpu_training\\train_all.bat" if WINDOWS else "    bash gpu_training/train_all.sh")
     return 0
