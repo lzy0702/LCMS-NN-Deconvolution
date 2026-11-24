@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..nn.features import shifted
+from ..nn.features import isotope_reading, shifted
 from ..nn.grid import LogMzGrid
 from ..nn.infer import ChargePrediction
 
@@ -111,7 +111,10 @@ class CombPredictor:
         the evidence is the bin's log-SNR times the mean log-SNR one spacing either side. A z
         envelope also scores at the divisors of z (two or more isotopes away) but not at 2z,
         whose half-spacing positions fall between its peaks; the largest charge scoring within
-        ``isotope_agreement`` of the best is therefore the answer.
+        ``isotope_agreement`` of the best is therefore the answer
+        (:func:`lcmsdeconv.nn.features.isotope_reading`, which the charge network's isotope
+        channels share). It counts only where the neighbours carry a real share of the bin's
+        signal (best evidence at least a quarter of the bin's own log-SNR squared).
         """
         B = s.size
         zout = np.zeros(B, dtype=np.int16)
@@ -119,41 +122,10 @@ class CombPredictor:
         idx = np.nonzero(active)[0]
         if idx.size == 0:
             return zout, conf
-        mz = grid.bin_to_mz(idx)
-        fwhm = mz / np.asarray(self.instrument.resolving_power(mz), dtype=float)
-        off = np.abs(mz - grid.carrier)
-        # a peak is never narrower on the grid than about two bins, whatever the instrument
-        width_bins = np.maximum(np.log1p(fwhm / off) / grid.step, 2.0)
-
-        def at(x):  # linear interpolation of s at fractional bin positions
-            x = np.clip(x, 0, B - 1.000001)
-            i0 = np.floor(x).astype(np.int64)
-            f = x - i0
-            return s[i0] * (1.0 - f) + s[np.minimum(i0 + 1, B - 1)] * f
-
-        best = np.zeros(idx.size)
-        ev_all = []
-        for z in range(1, self.z_max + 1):
-            spacing = 1.0033548 / z
-            n = np.log1p(spacing / off) / grid.step  # spacing in (fractional) bins
-            resolved = n >= self.isotope_resolution_factor * width_bins
-            if not resolved.any():
-                break
-            # neighbours read at their exact fractional position: a hypothesis whose spacing is
-            # off by a bin or two lands on the flank of the next isotope, not on its top
-            up = at(idx + n)
-            dn = at(idx - n)
-            # the first and last isotopologue have a neighbour on one side only
-            near = 0.75 * np.maximum(up, dn) + 0.25 * np.minimum(up, dn)
-            ev = np.where(resolved, s[idx] * near, 0.0)
-            ev_all.append((z, ev))
-            best = np.maximum(best, ev)
-        if not ev_all:
-            return zout, conf
-        chosen = np.zeros(idx.size, dtype=np.int16)
-        for z, ev in ev_all:  # ascending z: the last one that agrees wins
-            ok = (ev >= self.isotope_agreement * best) & (best > 0)
-            chosen[ok] = z
+        zraw, best_all = isotope_reading(grid, s, active, self.instrument, self.z_max,
+                                         self.isotope_resolution_factor, self.isotope_agreement)
+        chosen = zraw[idx]
+        best = best_all[idx]
         strong = best >= 0.25 * s[idx] ** 2  # neighbours carry a real share of the bin's signal
         chosen[~strong] = 0
         zout[idx] = chosen
@@ -166,6 +138,8 @@ def make_predictor(model_path: str | None, providers=None, z_max: int = 60, inst
 
     ``model_path`` of ``"comb"`` or ``"none"`` selects the deterministic estimator; ``None``
     uses the bundled model and falls back to the comb estimator if no model is installed.
+    ``instrument`` turns on the comb's isotope-spacing charges and is handed to a network too,
+    whose isotope-charge input channels (if it has them) need its resolving power.
     """
     from ..nn.infer import ChargePredictor, bundled_model_path
 
@@ -173,4 +147,4 @@ def make_predictor(model_path: str | None, providers=None, z_max: int = 60, inst
         return CombPredictor(z_max=z_max, instrument=instrument)
     if model_path is None and bundled_model_path() is None:
         return CombPredictor(z_max=z_max, instrument=instrument)
-    return ChargePredictor(model_path, providers=providers)
+    return ChargePredictor(model_path, providers=providers, instrument=instrument)

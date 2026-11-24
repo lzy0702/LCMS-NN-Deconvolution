@@ -141,6 +141,11 @@ def process_run(
                                    providers=list(method.deconvolution.providers),
                                    z_max=min(int(method.deconvolution.charge_range[1]), 60),
                                    instrument=instrument if _isotope_mode(method) else None)
+    if getattr(predictor, "iso_channels", False) and getattr(predictor, "instrument", None) is None:
+        # a network's isotope-charge input channels need the instrument whether or not the comb
+        # reads isotope charges: its kind decides whether they are read (as in training), its
+        # resolving power what they read
+        predictor.instrument = instrument
 
     polarities = run.polarities
     if method.acquisition.polarity == "positive":

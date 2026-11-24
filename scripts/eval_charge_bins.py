@@ -3,14 +3,16 @@ runs it, on the same spectra.
 
 Every estimator reads the same freshly generated spectra of the training mixture
 (scripts/train_charge_net.py) the way ``process_run`` would - over the whole spectrum, a network
-in its 32 768-bin tiles, the comb all at once - and is scored on the frame's labelled crop:
+in windows of the length it was trained at (32 768 bins; 131 072 for the whole-spectrum recipe),
+the comb all at once - and is scored on the frame's labelled crop:
 
     comb                        the CombPredictor the pipeline uses (charges up to 60, the
                                 pipeline's ceiling; the oligonucleotide methods stop at 40),
                                 with charges read from resolved isotope spacing on Orbitrap
                                 spectra (isotope mode)
     comb, no isotope charges    the same without them (Orbitrap spectra)
-    <model file>                a trained network (.onnx or .pt) through ChargePredictor
+    <model file>                a trained network (.onnx or .pt) through ChargePredictor (one
+                                with isotope-charge channels gets the frame's instrument)
 
 The spectra are drawn as training draws its validation spectra (synth.dataset.FrameDataset).
 The score is the share of the ion bins whose charge an estimator reads correctly (a network's

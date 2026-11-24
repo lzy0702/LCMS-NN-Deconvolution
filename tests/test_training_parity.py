@@ -11,26 +11,49 @@ from lcmsdeconv.synth.frames import generate_frame
 
 def test_training_features_equal_inference_features():
     """The frame's scans summed as a region's are and gridded as deconvolve_spectrum grids them:
-    same grid, same noise estimate, same features."""
+    same grid, same noise estimate, same features; with isotope-charge channels, the same
+    channels too (computed over the whole grid with the instrument, then cut to the window; on
+    Orbitrap spectra, empty on time-of-flight ones)."""
+    from lcmsdeconv.chem.instrument import InstrumentModel
     from lcmsdeconv.core.model import Run
+    from lcmsdeconv.nn.features import isotope_channels
     from lcmsdeconv.synth.frames import scan_spectra
 
-    for polarity, classes, mode in ((1, [ClassConfig("peptide", (8000.0, 30000.0))], "rplc"),
-                                    (-1, [ClassConfig("ps_rna", (4000.0, 12000.0))], "iprp")):
-        cfg = SynthConfig(classes=classes, mode=mode, polarity=polarity, crop_size=8192)
-        for seed in (0, 1):
-            fs = generate_frame(cfg, np.random.default_rng(seed))
-            scans = [s for s in scan_spectra(fs.meta["scans"], polarity) if s.mz.size]
-            summed = Run(scans).sum_frames(scans)
-            grid, observed, sigma = spectrum_to_grid(summed.mz, summed.intensity, polarity,
-                                                     cfg.grid_step, cfg.grid_mz_max, True,
-                                                     frames=summed.meta["frames"])
-            assert np.isclose(sigma, fs.meta["noise_sigma"], rtol=1e-9)
-            window = np.zeros(cfg.crop_size)
-            seg = observed[fs.b0:fs.b0 + cfg.crop_size]
-            window[:seg.size] = seg
-            feats = featurize(window, sigma, cfg.grid_step, z_max=min(cfg.z_max, 64))
-            np.testing.assert_allclose(feats, fs.features, rtol=0, atol=1e-6)
+    for polarity, classes, mode, kind in (
+            (1, [ClassConfig("peptide", (8000.0, 30000.0))], "rplc", "tof"),
+            (-1, [ClassConfig("ps_rna", (4000.0, 12000.0))], "iprp", "tof"),
+            (-1, [ClassConfig("ps_rna", (2000.0, 8000.0))], "iprp", "orbitrap")):
+        for iso in (False, True):
+            if kind == "orbitrap" and not iso:
+                continue
+            cfg = SynthConfig(classes=classes, mode=mode, polarity=polarity, crop_size=8192,
+                              instrument_kind=kind, iso_channels=iso,
+                              resolution_range=(8000.0, 60000.0) if kind == "tof"
+                              else (60000.0, 240000.0))
+            for seed in (0, 1):
+                fs = generate_frame(cfg, np.random.default_rng(seed))
+                scans = [s for s in scan_spectra(fs.meta["scans"], polarity) if s.mz.size]
+                summed = Run(scans).sum_frames(scans)
+                grid, observed, sigma = spectrum_to_grid(summed.mz, summed.intensity, polarity,
+                                                         cfg.grid_step, cfg.grid_mz_max, True,
+                                                         frames=summed.meta["frames"])
+                assert np.isclose(sigma, fs.meta["noise_sigma"], rtol=1e-9)
+                window = np.zeros(cfg.crop_size)
+                seg = observed[fs.b0:fs.b0 + cfg.crop_size]
+                window[:seg.size] = seg
+                feats = featurize(window, sigma, cfg.grid_step, z_max=min(cfg.z_max, 64))
+                if iso:
+                    inst = InstrumentModel(fs.meta["kind"], fs.meta["resolution"])
+                    whole = isotope_channels(grid, observed, sigma, inst)
+                    part = np.zeros((2, cfg.crop_size), dtype=np.float32)
+                    cut = whole[:, fs.b0:fs.b0 + cfg.crop_size]
+                    part[:, :cut.shape[1]] = cut
+                    feats = np.concatenate([feats, part])
+                    if kind == "orbitrap":
+                        assert part[0].max() > 0  # charges are read in the window
+                    else:
+                        assert not part.any()
+                np.testing.assert_allclose(feats, fs.features, rtol=0, atol=1e-6)
 
 
 def test_training_labels_are_shares_of_observed_intensity():

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .constants import DOWNSAMPLE
-from .features import featurize
+from .features import N_ISOTOPE_CHANNELS, featurize, isotope_channels
 from .grid import LogMzGrid
 
 
@@ -38,8 +38,20 @@ def bundled_model_path() -> Path | None:
 
 
 class ChargePredictor:
+    """A trained charge network run over a whole grid spectrum, in windows of its own length.
+
+    A LadderNet reads windows of the length it was trained at (recorded with it): the whole grid
+    in one zero-padded window when it fits, else windows overlapping by ``overlap``, each bin
+    read from the window it is most central in. A network with isotope-charge input channels
+    (``iso_channels``) needs ``instrument``, whose resolving power those channels are computed
+    with (:func:`lcmsdeconv.nn.features.isotope_channels`, over the whole grid, then cut to each
+    window; empty for a time-of-flight instrument, as in training); it can also be set on the
+    predictor before ``predict_grid`` is called.
+    """
+
     def __init__(self, model_path: str | Path | None = None,
-                 providers: list[str] | None = None, window: int = 32768, overlap: float = 0.25):
+                 providers: list[str] | None = None, window: int = 32768, overlap: float = 0.25,
+                 instrument=None):
         self.window = window
         self.overlap = overlap
         self.backend = None
@@ -47,6 +59,11 @@ class ChargePredictor:
         self.evidence_channels = 0
         #: grid step a model's fixed offsets assume (LadderNet), None when it does not matter
         self.grid_step: float | None = None
+        #: whether the network reads the isotope-charge channels, which need ``instrument``
+        self.iso_channels = False
+        #: the LadderNet's active-bin cap (recorded with the model; informational)
+        self.active_top: int | None = None
+        self.instrument = instrument
         path = Path(model_path) if model_path else bundled_model_path()
         self.model_path = path
         if path is not None and str(path).endswith((".onnx",)):
@@ -75,6 +92,8 @@ class ChargePredictor:
             if info.get("arch") == "ladder":
                 self.grid_step = float(info.get("grid_step", 2e-5))
                 self.window = int(info.get("window", self.window))
+                self.active_top = info.get("active_top")
+                self.iso_channels = bool(info.get("iso_channels", False))
 
     def _init_torch(self, path: Path):
         from .export import load_torch_model
@@ -84,6 +103,10 @@ class ChargePredictor:
         self.evidence_channels = int(ckpt.get("evidence_channels", 0))
         if ckpt.get("arch") == "ladder":
             self.grid_step = float(ckpt.get("grid_step", 2e-5))
+            # the network's own window: its ladder offsets and active-bin cap are fixed for it
+            self.window = int(self.torch_model.window)
+            self.active_top = int(self.torch_model.active_top)
+            self.iso_channels = bool(self.torch_model.iso)
         self.backend = "torch"
 
     # ------------------------------------------------------------- run
@@ -105,6 +128,16 @@ class ChargePredictor:
                 f"this charge model reads charge ladders at offsets fixed for a grid step of "
                 f"{self.grid_step:g}; the method's grid step is {grid.step:g}. Use a method with "
                 f"grid_step {self.grid_step:g}, or another model.")
+        iso = None
+        if self.iso_channels:
+            if self.instrument is None:
+                raise ValueError(
+                    "this charge model reads charges from resolved isotope spacing, which needs "
+                    "the instrument's resolving power: pass instrument= to ChargePredictor "
+                    "(make_predictor and process_run do), or set predictor.instrument before "
+                    "calling predict_grid")
+            # over the whole grid (absolute m/z), once; each window takes its slice
+            iso = isotope_channels(grid, intensity, noise_sigma, self.instrument)
         B = intensity.size
         top1_z = np.zeros(B, dtype=np.int16)
         top1_p = np.zeros(B, dtype=np.float32)
@@ -132,6 +165,10 @@ class ChargePredictor:
             pad = (-W) % DOWNSAMPLE
             feats = featurize(seg, noise_sigma, grid.step, z_max=min(self.z_max, 64),
                               evidence_channels=self.evidence_channels)
+            if iso is not None:
+                part = np.zeros((N_ISOTOPE_CHANNELS, W), dtype=np.float32)
+                part[:, : s1 - s0] = iso[:, s0:s1]
+                feats = np.concatenate([feats, part])
             if pad:
                 feats = np.pad(feats, ((0, 0), (0, pad)))
             logits, apx = self._run(feats)

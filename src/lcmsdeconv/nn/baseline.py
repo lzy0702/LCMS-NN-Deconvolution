@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 
-#: instrument kinds whose spectra the pipeline reads with isotope-spacing charges by default
-ISOTOPE_KINDS = ("orbitrap", "fticr")
+# the instrument kinds whose spectra the pipeline reads with isotope-spacing charges by default
+from .features import ISOTOPE_KINDS
+
 #: display names of the two kinds of spectra the comparisons keep apart
 KIND_NAMES = {"tof": "time-of-flight", "orbitrap": "Orbitrap"}
 
@@ -44,22 +45,31 @@ def pipeline_comb(meta: dict, z_max: int = 60, isotope_charges: bool | None = No
     """The CombPredictor ``process_run`` builds for a spectrum of this instrument: isotope-spacing
     charges on Orbitrap and FT-ICR spectra unless ``isotope_charges`` says otherwise. It is given
     the frame's true resolving power, which favours it slightly over a method's nominal one."""
-    from ..chem.instrument import InstrumentModel
     from ..deconv.classical import CombPredictor
 
     iso = spectrum_kind(meta) == "orbitrap" if isotope_charges is None else isotope_charges
-    inst = InstrumentModel(meta["kind"], float(meta["resolution"])) if iso else None
-    return CombPredictor(z_max=z_max, instrument=inst)
+    return CombPredictor(z_max=z_max, instrument=frame_instrument(meta) if iso else None)
+
+
+def frame_instrument(meta: dict):
+    """The instrument a frame was measured with, as far as its resolving power goes (what the
+    isotope-spacing reader and a network's isotope-charge channels use)."""
+    from ..chem.instrument import InstrumentModel
+
+    return InstrumentModel(meta["kind"], float(meta["resolution"]))
 
 
 def charges_on_crop(predictor, cfg, fs, grid=None) -> np.ndarray | None:
     """``predictor``'s charge per bin over the frame's whole spectrum, cut to the frame's crop
     (0 where it gives none); None for a frame without a whole spectrum. ``grid`` is
-    :func:`frame_grid`'s result when the caller already has it."""
+    :func:`frame_grid`'s result when the caller already has it. A network reading isotope-charge
+    channels is given the frame's instrument, as training gave it."""
     g = grid if grid is not None else frame_grid(cfg, fs)
     if g is None:
         return None
     full, intensity, noise = g
+    if getattr(predictor, "iso_channels", False):
+        predictor.instrument = frame_instrument(fs.meta)
     top = predictor.predict_grid(full, intensity, noise).top1_z
     length = fs.features.shape[1]
     out = np.zeros(length, dtype=np.int64)

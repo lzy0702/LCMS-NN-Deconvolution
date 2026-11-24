@@ -25,6 +25,13 @@ class ChargeShape:
     single: dict[int, float] | None = None
 
 
+#: oligonucleotide classes, and the apex charge ``A * M**B`` of ion-pairing oligonucleotides in
+#: real runs (fitted on the Thermo runs of ``docs/benchmarks.md``): the real-like charge model
+OLIGO_CLASSES = ("dna", "rna", "ps_dna", "ps_rna")
+REAL_LIKE_A = 0.0769
+REAL_LIKE_B = 0.445
+
+
 def apex_charge(mass: float, cls: str, mode: str, rng: np.random.Generator | None = None) -> float:
     """Mean apex charge z ~ a * mass**b, with class- and mode-dependent coefficients."""
     c = get_class(cls)
@@ -37,8 +44,20 @@ def apex_charge(mass: float, cls: str, mode: str, rng: np.random.Generator | Non
     return max(1.0, z)
 
 
-def sample_charge_shape(mass: float, cls: str, mode: str, rng: np.random.Generator) -> ChargeShape:
-    """Draw the envelope parameters for one analyte."""
+def sample_charge_shape(mass: float, cls: str, mode: str, rng: np.random.Generator,
+                        real_like: bool = False) -> ChargeShape:
+    """Draw the envelope parameters for one analyte.
+
+    ``real_like``: an oligonucleotide (:data:`OLIGO_CLASSES`, 900 Da and up) charges as in real
+    ion-pairing runs, with one to three charge states: apex ``0.0769 M**0.445 x U(0.9, 1.1)``,
+    width U(0.35, 0.6) charges, skew U(-0.4, 0.4) and no second mode. Every other analyte, and
+    every analyte without it, is drawn as before, with the same draws.
+    """
+    if real_like and cls in OLIGO_CLASSES and mass >= 900:
+        zc = max(1.0, REAL_LIKE_A * mass ** REAL_LIKE_B * rng.uniform(0.9, 1.1))
+        width = rng.uniform(0.35, 0.6)
+        skew = rng.uniform(-0.4, 0.4)
+        return ChargeShape(zc, width, skew, None)
     if cls == "small_molecule" or mass < 900:
         # mostly singly charged, occasional 2+
         if rng.random() < 0.9 or mass < 400:
@@ -80,24 +99,28 @@ def distribution_from_shape(shape: ChargeShape, z_max: int = 100,
 
 
 def related_shape(parent: ChargeShape, parent_mass: float, mass: float, cls: str,
-                  rng: np.random.Generator, jitter: float = 0.03) -> ChargeShape:
+                  rng: np.random.Generator, jitter: float = 0.03,
+                  real_like: bool = False) -> ChargeShape:
     """Envelope of a product-related impurity, derived from its parent's envelope.
 
     Oxidation, deamidation, a clipped lysine or an n-1 deletion barely change how a molecule
     charges, so an impurity's envelope is its parent's, with the apex moved by the mass ratio
     (z ~ M**b) and a few percent of jitter. Sampling it independently instead would give a 1 %
-    impurity charge states its parent never shows, which no real spectrum does.
+    impurity charge states its parent never shows, which no real spectrum does. ``real_like``
+    (the parent drew the real-like ion-pairing model): an oligonucleotide impurity follows with
+    that model's exponent, 0.445, and width floor, 0.35 charges.
     """
     if parent.single is not None:
         return parent
-    b = get_class(cls).charge_b
+    oligo_real = real_like and cls in OLIGO_CLASSES
+    b = REAL_LIKE_B if oligo_real else get_class(cls).charge_b
     scale = (max(mass, 1.0) / max(parent_mass, 1.0)) ** b * rng.uniform(1.0 - jitter, 1.0 + jitter)
     second = None
     if parent.second is not None:
         zc2, w2, a2 = parent.second
         second = (zc2 * scale, w2 * scale, a2)
     return replace(parent, centre=max(1.0, parent.centre * scale),
-                   width=max(0.6, parent.width * scale), second=second)
+                   width=max(0.35 if oligo_real else 0.6, parent.width * scale), second=second)
 
 
 def mean_charge(distribution: dict[int, float]) -> float:
@@ -116,6 +139,9 @@ def charge_distribution(
     rng: np.random.Generator,
     z_max: int = 100,
     min_fraction: float = 1e-3,
+    real_like: bool = False,
 ) -> dict[int, float]:
-    """Sample a normalized charge-state distribution {z: fraction}."""
-    return distribution_from_shape(sample_charge_shape(mass, cls, mode, rng), z_max, min_fraction)
+    """Sample a normalized charge-state distribution {z: fraction} (``real_like``: see
+    :func:`sample_charge_shape`)."""
+    return distribution_from_shape(sample_charge_shape(mass, cls, mode, rng, real_like=real_like),
+                                   z_max, min_fraction)

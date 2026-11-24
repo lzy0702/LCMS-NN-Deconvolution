@@ -210,12 +210,14 @@ def _adduct_fractions_reference(
 
 
 def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict[str, float],
-                         rng: np.random.Generator) -> list[tuple[dict[int, float], dict]]:
+                         rng: np.random.Generator,
+                         real_like: bool = False) -> list[tuple[dict[int, float], dict]]:
     """Charge and adduct distributions for a main compound followed by its impurities.
 
     ``run_adducts`` is either a per-ion adduct load (default) or, when ``cfg.adduct_max_lambda``
     is set, the legacy per-charge propensities. Impurities inherit their parent's charge
-    envelope unless ``cfg.impurity_charge_from_parent`` is off.
+    envelope unless ``cfg.impurity_charge_from_parent`` is off. ``real_like``: oligonucleotides
+    charge as in real ion-pairing runs (``synth.charge.sample_charge_shape``).
     """
     from .charge import distribution_from_shape, related_shape, sample_charge_shape
 
@@ -226,9 +228,11 @@ def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict
     for idx, (comp, _rel) in enumerate(members):
         if (idx > 0 and parent_shape is not None and cfg.impurity_charge_from_parent
                 and comp.kind == "impurity"):
-            shape = related_shape(parent_shape, parent_mass, comp.mass, comp.compound_class, rng)
+            shape = related_shape(parent_shape, parent_mass, comp.mass, comp.compound_class, rng,
+                                  real_like=real_like)
         else:
-            shape = sample_charge_shape(comp.mass, comp.compound_class, cfg.esi_mode, rng)
+            shape = sample_charge_shape(comp.mass, comp.compound_class, cfg.esi_mode, rng,
+                                        real_like=real_like)
             if idx == 0:
                 parent_shape, parent_mass = shape, comp.mass
         cd = distribution_from_shape(shape, cfg.z_max)

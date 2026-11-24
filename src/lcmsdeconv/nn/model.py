@@ -14,7 +14,12 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .constants import DOWNSAMPLE  # noqa: F401  (re-exported for callers)
+from .constants import (
+    DOWNSAMPLE,  # noqa: F401  (re-exported for callers)
+    LADDER_ACTIVE_TOP,
+    LADDER_WINDOW,
+    ladder_active_top,
+)
 
 
 def _gn(ch: int) -> nn.GroupNorm:
@@ -154,12 +159,27 @@ class LadderNet(nn.Module):
     learned constant logit. Training uses a sparse gather over those bins; ``dense = True`` computes the same
     function with static shifts over the whole window, which is what is exported to ONNX.
     Charges above ``z_ladder`` get a constant low logit. The offsets are fixed for one grid
-    step and window length, which inference uses throughout.
+    step and window length, which inference uses throughout; an offset is kept only if it is
+    shorter than the window, so a window of 131 072 bins reads z = 1 <-> 2, 3, 4 (34 657, 54 931
+    and 69 315 bins), which a 32 768-bin window never holds.
+
+    With ``iso`` the input has two more channels (4 and 5): the charge read from resolved
+    isotope spacing at each bin (0 = none; empty on time-of-flight spectra) and the strength of
+    that reading (:func:`lcmsdeconv.nn.features.isotope_channels`). For each ladder charge z the
+    scorer then
+    also reads ``oh = relu(1 - |zc - z|)`` (1 exactly when the isotopes read z), ``oh * strength``
+    and ``(zc >= 0.5) * (1 - oh)`` (the isotopes read another charge), and the charge-z logit
+    gets ``iso_scale * oh * clip((strength - 0.2) * 10, 0, 1)``, with ``iso_scale`` learnable and
+    starting at 10, above the comb prior's ceiling of ``prior_scale`` (8): the untrained network
+    reads charges as the comb with isotope charges does, the isotope charge where the spacing is
+    resolved and its neighbours are strong, the ladder elsewhere. Without ``iso`` the network is
+    exactly the one trained before these channels existed.
     """
 
     def __init__(self, in_ch: int = 4, z_max: int = 100, z_ladder: int = 64, step: float = 2e-5,
                  width: int = 16, proj: int = 4, hidden: int = 16, ks: tuple[int, ...] = (1, 2, 3),
-                 window: int = 32768, active_level: float = 0.5, active_top: int = 6144):
+                 window: int = LADDER_WINDOW, active_level: float = 0.5,
+                 active_top: int = LADDER_ACTIVE_TOP, iso: bool = False):
         super().__init__()
         import math
 
@@ -170,6 +190,10 @@ class LadderNet(nn.Module):
         self.window = window
         self.active_level = active_level
         self.active_top = active_top
+        self.iso = bool(iso)
+        if self.iso and in_ch < 6:
+            raise ValueError("a LadderNet reading isotope channels needs six input channels "
+                             f"(the four base features, then charge and strength), not {in_ch}")
         self.dense = False
 
         def shift(z_from: float, z_to: float) -> int | None:
@@ -203,6 +227,10 @@ class LadderNet(nn.Module):
         self.comb_count = comb_n
         self.n_pos = len(offsets[0])
         big = 10 * window  # sentinel: outside any window
+        self._absent = big
+        #: the longest offset read (the sparse path pads its input by this much)
+        self.reach = max([abs(v) for o in offsets for v in o if v is not None]
+                         + [abs(v) for c in comb for v in c] + [1])
         self.register_buffer("off_t", torch.tensor([[big if v is None else v for v in o]
                                                     for o in offsets], dtype=torch.long),
                              persistent=False)
@@ -215,7 +243,8 @@ class LadderNet(nn.Module):
         self.encoder = nn.Sequential(ConvBlock(2, width, 9), ConvBlock(width, width, 9, 2),
                                      ConvBlock(width, width, 9, 4), ConvBlock(width, width, 9, 8))
         self.proj = nn.Conv1d(width, proj, 1)
-        self.mlp1 = nn.Linear(self.n_pos * proj, hidden)
+        # with isotope channels three more inputs per charge follow the ladder's J x P features
+        self.mlp1 = nn.Linear(self.n_pos * proj + (3 if self.iso else 0), hidden)
         self.z_bias = nn.Parameter(torch.zeros(self.z_ladder, hidden))
         self.mlp2 = nn.Linear(hidden, 1)
         nn.init.zeros_(self.mlp2.weight)
@@ -236,39 +265,75 @@ class LadderNet(nn.Module):
         # focal loss's negative term over 32 768 bins swamps the charge loss at first
         nn.init.zeros_(self.apex_head.weight)
         nn.init.constant_(self.apex_head.bias, -4.6)
+        if self.iso:
+            # above the ladder prior's ceiling (prior_scale x 1): a strong isotope reading wins
+            self.iso_scale = nn.Parameter(torch.tensor(10.0))
+            self.register_buffer("z_ids", torch.arange(1, self.z_ladder + 1, dtype=torch.float32),
+                                 persistent=False)
 
     # ------------------------------------------------------------------ ladder scores
-    def _sparse(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor) -> torch.Tensor:
-        """Ladder logits ``[N, z_ladder, L]``: scored at active bins, constant elsewhere."""
+    def _sparse(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor,
+                iso: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
+        """Ladder logits ``[N, z_ladder, L]``: scored at active bins, constant elsewhere.
+        ``iso``: the isotope charge and strength ``[N, L]`` (networks built with ``iso``)."""
         n_b, n_p, length = q.shape
         out = self.inactive.expand(n_b, self.z_ladder, length).clone()
         b_idx, i_idx = active.nonzero(as_tuple=True)
         if b_idx.numel() == 0:
             return out
-        qf = q.permute(0, 2, 1).reshape(n_b * length, n_p)
-        t = i_idx[:, None, None] + self.off_t[None]  # [n, Z, J]
-        valid = ((t >= 0) & (t < length)).to(q.dtype)
-        rows = b_idx[:, None, None] * length + t.clamp(0, length - 1)
-        g = qf[rows] * valid[..., None]  # [n, Z, J, P]
-        hid = self.mlp1(g.reshape(g.shape[0], self.z_ladder, -1)) + self.z_bias[None]
+        # every position outside the window reads zero: the window is padded with zeros by the
+        # longest offset on the left and by one window more on the right, where the absent
+        # positions (sentinel offsets) are sent, so no index needs clamping or masking
+        m = self.reach
+        lp = 2 * length + 2 * m
+        start = b_idx * lp + i_idx + m  # [n]: each active bin in the padded rows
+        qf = nn.functional.pad(q, (m, length + m)).permute(0, 2, 1).reshape(n_b * lp, n_p)
+        off = torch.where(self.off_t == self._absent, length + m, self.off_t)
+        g = qf[start[:, None, None] + off[None]]  # [n, Z, J, P]
+        feats = g.reshape(g.shape[0], self.z_ladder, -1)
+        if iso is None:
+            hid = self.mlp1(feats) + self.z_bias[None]
+        else:
+            zc = iso[0][b_idx, i_idx][:, None]  # [n, 1]
+            st = iso[1][b_idx, i_idx][:, None]
+            oh = torch.relu(1.0 - torch.abs(zc - self.z_ids[None]))  # [n, Z]
+            other = (zc >= 0.5).to(q.dtype) * (1.0 - oh)
+            # mlp1 over [ladder features, oh, oh * st, other], its last three inputs applied
+            # apart so that the ladder features are not copied to append them
+            jp = feats.shape[-1]
+            w1 = self.mlp1.weight
+            extra = torch.stack([oh, oh * st, other], dim=-1)  # [n, Z, 3]
+            hid = (nn.functional.linear(feats, w1[:, :jp], self.mlp1.bias)
+                   + nn.functional.linear(extra, w1[:, jp:]) + self.z_bias[None])
+        del g, feats
         learned = self.mlp2(nn.functional.silu(hid)).squeeze(-1)  # [n, Z]
-        sf = s0.reshape(n_b * length)
-        tc = i_idx[:, None, None] + self.comb_t[None]
-        vc = ((tc >= 0) & (tc < length)).to(q.dtype)
-        nb = sf[b_idx[:, None, None] * length + tc.clamp(0, length - 1)] * vc
-        centre = sf[b_idx * length + i_idx]
+        sf = nn.functional.pad(s0, (m, length + m)).reshape(n_b * lp)
+        off_c = torch.where(self.comb_t == self._absent, length + m, self.comb_t)
+        nb = sf[start[:, None, None] + off_c[None]]  # [n, Z, C]
+        centre = sf[start]
         comb = centre[:, None] * nb.sum(-1) / self.comb_den[None]
-        out[b_idx, :, i_idx] = learned + self.prior_scale * comb
+        val = learned + self.prior_scale * comb
+        if iso is not None:
+            val = val + self.iso_scale * oh * torch.clamp((st - 0.2) * 10.0, 0.0, 1.0)
+        out[b_idx, :, i_idx] = val
         return out
 
-    def _dense(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor) -> torch.Tensor:
+    def _dense(self, q: torch.Tensor, s0: torch.Tensor, active: torch.Tensor,
+               iso: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         """The same function with static shifts over every bin (ONNX export)."""
-        w1 = self.mlp1.weight  # [H, J*P]
+        w1 = self.mlp1.weight  # [H, J*P (+3)]
         n_p = q.shape[1]
         zero_q = torch.zeros_like(q)
+        if iso is not None:
+            zc, st = iso[0][:, None, :], iso[1][:, None, :]  # [N, 1, L]
+            has = (zc >= 0.5).to(q.dtype)
+            gate = torch.clamp((st - 0.2) * 10.0, 0.0, 1.0)
         rows = []
         for zi in range(self.z_ladder):
             parts = [zero_q if s is None else _shift(q, s) for s in self.offsets[zi]]
+            if iso is not None:
+                oh = torch.relu(1.0 - torch.abs(zc - float(zi + 1)))
+                parts += [oh, oh * st, has * (1.0 - oh)]
             hid = nn.functional.conv1d(torch.cat(parts, dim=1), w1[:, :, None], self.mlp1.bias)
             hid = hid + self.z_bias[zi][None, :, None]
             learned = nn.functional.conv1d(nn.functional.silu(hid), self.mlp2.weight[:, :, None],
@@ -281,7 +346,10 @@ class LadderNet(nn.Module):
                 comb = s0 * acc / float(self.comb_count[zi])
             else:
                 comb = torch.zeros_like(s0)
-            rows.append(learned + self.prior_scale * comb)
+            row = learned + self.prior_scale * comb
+            if iso is not None:
+                row = row + self.iso_scale * oh * gate
+            rows.append(row)
         del n_p
         dense = torch.cat(rows, dim=1)
         return torch.where(active[:, None, :], dense, self.inactive.expand_as(dense))
@@ -293,7 +361,8 @@ class LadderNet(nn.Module):
         level = x[:, 0, :]
         kth = torch.topk(level, min(self.active_top, level.shape[-1]), dim=-1).values[:, -1:]
         active = (level > self.active_level) & (level >= kth)
-        ladder = (self._dense if self.dense else self._sparse)(q, s0, active)
+        iso = (x[:, 4, :], x[:, 5, :]) if self.iso else None
+        ladder = (self._dense if self.dense else self._sparse)(q, s0, active, iso)
         background = self.background(h) + self.prior_background * (1.0 - s0)
         logits = self.smooth(torch.cat([background, ladder], dim=1))
         rest = self.n_classes - 1 - self.z_ladder
@@ -311,14 +380,24 @@ LADDER_SIZES = {"small": (8, 4, 12, 48), "proof": (16, 4, 16, 64), "full": (24, 
 
 
 def build_model(size: str = "proof", z_max: int = 100, in_ch: int = 4,
-                comb_prior: bool = False, arch: str = "unet"):
+                comb_prior: bool = False, arch: str = "unet", window: int = LADDER_WINDOW,
+                active_top: int | None = None, iso: bool = False):
+    """A charge network. For ``arch="ladder"``: ``window`` is the number of grid bins it reads
+    at once (its ladder keeps every offset shorter than that), ``active_top`` the number of
+    strongest bins whose ladders it reads (default 6 144 per 32 768 bins of window) and ``iso``
+    adds the isotope-charge input channels (``in_ch`` 6). The U-Net reads any length and has
+    neither."""
     if arch == "ladder":
         if size not in LADDER_SIZES:
             raise ValueError(f"Unknown model size {size!r}")
         width, proj, hidden, z_ladder = LADDER_SIZES[size]
-        return LadderNet(in_ch, z_max, z_ladder=z_ladder, width=width, proj=proj, hidden=hidden)
+        top = ladder_active_top(window) if active_top is None else int(active_top)
+        return LadderNet(in_ch, z_max, z_ladder=z_ladder, width=width, proj=proj, hidden=hidden,
+                         window=int(window), active_top=top, iso=iso)
     if arch != "unet":
         raise ValueError(f"Unknown architecture {arch!r}")
+    if iso:
+        raise ValueError("isotope-charge channels are read by LadderNet only (arch='ladder')")
     if size == "proof":
         return ChargeUNet(in_ch, z_max, channels=(8, 16, 24, 32, 48, 64, 80), comb_prior=comb_prior)
     if size == "full":

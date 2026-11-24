@@ -8,7 +8,7 @@ import numpy as np
 
 from ..chem.adducts import AdductLibrary, AdductState
 from ..chem.instrument import InstrumentModel
-from ..nn.features import featurize
+from ..nn.features import featurize, isotope_channels
 from ..nn.grid import LogMzGrid
 from .adduct_sampler import member_distributions, run_adduct_draw
 from .charge import charge_distribution
@@ -48,6 +48,9 @@ def sample_instrument(cfg: SynthConfig, rng: np.random.Generator) -> InstrumentM
 
 
 def sample_scene(cfg: SynthConfig, rng: np.random.Generator, library: AdductLibrary) -> Scene:
+    # the real-like ion-pairing charge model, for every oligonucleotide of the frame (one draw,
+    # and only when the option is on: frames without it are drawn exactly as before)
+    real_like = bool(cfg.oligo_real_like_prob > 0 and rng.random() < cfg.oligo_real_like_prob)
     n_main = int(rng.integers(cfg.n_main_range[0], cfg.n_main_range[1] + 1))
     props = run_adduct_draw(cfg, library, rng)
     components: list[ComponentInstance] = []
@@ -60,16 +63,21 @@ def sample_scene(cfg: SynthConfig, rng: np.random.Generator, library: AdductLibr
         members = [(main, 1.0)]
         members += sample_impurities(rng, main, cid, cfg.max_impurities, cfg.impurity_abundance)
         for (comp, rel), (cd, adducts) in zip(members,
-                                              member_distributions(cfg, members, library, props, rng)):
+                                              member_distributions(cfg, members, library, props, rng,
+                                                                   real_like=real_like)):
             components.append(ComponentInstance(comp, main_intensity * rel, cd, adducts))
         cid = len(components)
     if rng.random() < cfg.contaminant_prob:
         comp, rel = sample_contaminant(rng, cfg.classes)
-        cd = charge_distribution(comp.mass, comp.compound_class, cfg.esi_mode, cfg.polarity, rng, z_max=cfg.z_max)
+        cd = charge_distribution(comp.mass, comp.compound_class, cfg.esi_mode, cfg.polarity, rng,
+                                 z_max=cfg.z_max, real_like=real_like)
         adducts = {z: {AdductState(): 1.0} for z in cd}
         base = components[0].intensity if components else 1e5
         components.append(ComponentInstance(comp, base * rel, cd, adducts))
-    return Scene(components, cfg.polarity, library, meta={"propensities": props})
+    meta = {"propensities": props}
+    if cfg.oligo_real_like_prob > 0:
+        meta["oligo_real_like"] = real_like
+    return Scene(components, cfg.polarity, library, meta=meta)
 
 
 def _choose_crop(scene: Scene, grid: LogMzGrid, cfg: SynthConfig, rng: np.random.Generator) -> int:
@@ -87,6 +95,26 @@ def _choose_crop(scene: Scene, grid: LogMzGrid, cfg: SynthConfig, rng: np.random
     return int(np.clip(b0, 0, max(0, grid.size - L)))
 
 
+def instrument_scan_range(cfg: SynthConfig, rng: np.random.Generator, lo: float,
+                          hi: float) -> tuple[float, float]:
+    """The scan range of a frame measured as an instrument records it (``scan_range =
+    "instrument"``): the ions' range ``lo .. hi`` widened to a range drawn per frame, low end
+    U(250, 600) and high end U(1500, 3500) m/z, capped at ``0.995 grid_mz_max``; where the ions
+    allow, the widening is shortened (both ends in proportion) so that ``ln(hi / lo)`` stays
+    within ``0.98 crop_size grid_step`` and the frame's grid fits one crop."""
+    new_lo = min(lo, float(rng.uniform(250.0, 600.0)))
+    new_hi = min(max(hi, float(rng.uniform(1500.0, 3500.0))), cfg.grid_mz_max * 0.995)
+    span = 0.98 * cfg.crop_size * cfg.grid_step
+    if np.log(new_hi / new_lo) <= span:
+        return new_lo, new_hi
+    base = float(np.log(hi / lo))
+    if base >= span:  # the ions themselves span more than a crop: measure just them
+        return lo, hi
+    below, above = float(np.log(lo / new_lo)), float(np.log(new_hi / hi))
+    keep = (span - base) / (below + above)
+    return float(lo * np.exp(-below * keep)), float(hi * np.exp(above * keep))
+
+
 def _without_singly_charged(sticks):
     """The sticks of every charge state but z = 1."""
     keep = sticks.z != 1
@@ -100,6 +128,9 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     )
     if cfg.render_path == "profile":
         return generate_frame_profile(cfg, rng, library)
+    if cfg.iso_channels:
+        raise ValueError("isotope-charge channels are computed on the whole measured grid, which "
+                         "only the profile render path builds (render_path='profile')")
     grid = LogMzGrid(50.0, cfg.grid_mz_max, cfg.grid_step, cfg.polarity)
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
@@ -194,6 +225,10 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         lo, hi = 300.0, 3000.0
     if hi <= lo * 1.05:
         lo, hi = max(60.0, lo / 1.5), min(cfg.grid_mz_max * 0.995, hi * 1.5)
+    if cfg.scan_range == "instrument":
+        lo, hi = instrument_scan_range(cfg, rng, lo, hi)
+    elif cfg.scan_range != "sticks":
+        raise ValueError(f"scan_range must be 'sticks' or 'instrument', not {cfg.scan_range!r}")
     # chemical background across the measured range
     n_bg = int(rng.integers(cfg.background_ions_range[0], cfg.background_ions_range[1] + 1))
     if cfg.singly_charged == "drop":
@@ -201,6 +236,9 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         sticks = _without_singly_charged(sticks)
     if n_bg:
         base = max((c.intensity for c in scene.components), default=1e5)
+        if cfg.background_strong_prob > 0 and rng.random() < cfg.background_strong_prob:
+            # strong background: ions at about 0.1-300 % of the strongest component
+            base *= float(np.exp(rng.uniform(np.log(10.0), np.log(100.0))))
         bg = _background_ions(rng, n_bg, lo, hi, base, polarity)
         if bg:
             # the sticks of the larger scene are those already built followed by the ions'
@@ -235,6 +273,9 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
                                                    cfg.grid_step, cfg.grid_mz_max,
                                                    frames=scan_spectra(scans, polarity))
     g_lo = grid.mz_min
+    # isotope-charge channels: absolute m/z and the instrument's resolving power, over the
+    # whole grid as the predictor computes them (nn.features.isotope_channels), then cropped
+    iso = isotope_channels(grid, observed, noise_sigma, inst) if cfg.iso_channels else None
 
     L = cfg.crop_size
     b0 = _choose_crop(scene, grid, cfg, rng) if grid.size > L else 0
@@ -275,14 +316,21 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     noise_part = np.clip(window - signal, 0.0, None)
     feats = featurize(window, noise_sigma, cfg.grid_step, z_max=min(cfg.z_max, 64),
                       evidence_channels=cfg.evidence_channels)
+    if iso is not None:
+        part = np.zeros((iso.shape[0], L), dtype=np.float32)
+        piece = iso[:, b0:min(b1, grid.size)]
+        part[:, : piece.shape[1]] = piece
+        feats = np.concatenate([feats, part])
     labels = build_labels(cmat, np.array(zs, dtype=int), noise_part, noise_level=noise_sigma,
                           observed=window)
+    meta = {"resolution": inst.resolution, "kind": inst.kind, "noise_sigma": noise_sigma,
+            "n_sum": n_sum, "gain": gain, "grid_lo": g_lo, "raw": raw, "scans": scans}
+    if cfg.scan_range != "sticks":
+        meta["scan_range"] = (lo, hi)
+    if "oligo_real_like" in scene.meta:
+        meta["oligo_real_like"] = scene.meta["oligo_real_like"]
     return FrameSample(feats, labels["topk_z"], labels["topk_w"], labels["heat"], b0,
-                       scene.truths(), {"resolution": inst.resolution, "kind": inst.kind,
-                                        "noise_sigma": noise_sigma, "n_sum": n_sum,
-                                        "gain": gain, "grid_lo": g_lo,
-                                        "raw": raw,
-                                        "scans": scans})
+                       scene.truths(), meta)
 
 
 def _sum_scans(scans: list) -> np.ndarray:

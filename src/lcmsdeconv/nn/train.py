@@ -63,6 +63,14 @@ class TrainConfig:
     #: remove PAUSE files left over at the start; gpu_training/train_all.py clears them itself
     #: and turns this off, so that a pause asked for while a stage starts up is not lost
     clear_pause_files: bool = True
+    #: LadderNet: grid bins read at once, in training (every frame's crop) and at inference. A
+    #: window of 131 072 bins holds a whole region's grid and the ladder's far rungs (z = 1 <-> 2
+    #: is 34 657 bins); the active-bin cap scales with it (6 144 per 32 768 bins)
+    window: int = 32768
+    #: LadderNet: two more input channels, the charge read from resolved isotope spacing and its
+    #: strength (``lcmsdeconv.nn.features.isotope_channels``), computed over the whole spectrum
+    #: of Orbitrap and FT-ICR frames (empty on time-of-flight ones)
+    iso_channels: bool = False
 
 
 def _device(name: str):
@@ -111,11 +119,20 @@ def train(config: TrainConfig, synth_config=None):
     from .model import build_model
 
     synth_config = synth_config or SynthConfig(z_max=config.z_max)
+    if config.iso_channels and config.arch != "ladder":
+        raise ValueError("isotope-charge channels are read by LadderNet only (arch='ladder')")
+    if config.iso_channels and config.evidence_channels:
+        raise ValueError("isotope-charge channels and comb evidence channels cannot be combined")
     for sc in ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
                else [synth_config]):
         sc.evidence_channels = config.evidence_channels
         sc.singly_charged = config.singly_charged
-    in_ch = 4 + config.evidence_channels
+        sc.iso_channels = config.iso_channels
+        if config.arch == "ladder":
+            # the frames are read at the network's window: its offsets and active-bin cap are
+            # fixed for that length (the U-Net reads any length, so its crops stay as set)
+            sc.crop_size = config.window
+    in_ch = 4 + config.evidence_channels + (2 if config.iso_channels else 0)
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
@@ -128,13 +145,17 @@ def train(config: TrainConfig, synth_config=None):
     if device.startswith("cuda") and config.max_gpu_memory_gb:
         _cap_gpu_memory(torch, config.max_gpu_memory_gb)
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
-                        comb_prior=config.comb_prior, arch=config.arch).to(device)
+                        comb_prior=config.comb_prior, arch=config.arch, window=config.window,
+                        iso=config.iso_channels).to(device)
     if config.init:
         state = torch.load(config.init, map_location=device, weights_only=False)["state_dict"]
         model.load_state_dict(state)
         print(f"started from {config.init}")
     print(f"model {config.arch}/{config.model_size}: {model.num_params()/1e6:.3f}M params "
           f"on {device}; singly charged ions: {config.singly_charged}")
+    if config.arch == "ladder" and (config.window != 32768 or config.iso_channels):
+        print(f"  window {model.window} bins, ladders read at up to {model.active_top} bins"
+              + ("; isotope-charge channels" if config.iso_channels else ""))
 
     if config.num_workers > 0:
         _warm_up(synth_config)
@@ -177,9 +198,12 @@ def train(config: TrainConfig, synth_config=None):
             f"continue it, or --restart to discard it and start again (this overwrites "
             f"{out_path} too).")
     synth_key = synth_fingerprint(synth_config)
+    active_top = getattr(model, "active_top", None)
     if config.resume and resume_path.exists():
         st = torch.load(resume_path, map_location=device, weights_only=False)
-        _check_same_run(st.get("config", {}), asdict(config))
+        saved = dict(st.get("config", {}))
+        saved["active_top"] = st.get("active_top", _default_active_top(saved))
+        _check_same_run(saved, {**asdict(config), "active_top": active_top})
         if st.get("synth") != synth_key:
             why = ("was written by an earlier version of this package, which did not record its "
                    "synthetic spectra (and whose training mixture differed)"
@@ -241,7 +265,8 @@ def train(config: TrainConfig, synth_config=None):
                  "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
-                 "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason}
+                 "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason,
+                 "active_top": active_top}
         _atomic_save(state, resume_path)
         _write_status(out_path, epoch, step, config.epochs, stop_reason)
 
@@ -529,18 +554,39 @@ def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epo
 
 def synth_fingerprint(synth_config) -> str:
     """A short digest of the synthetic-data settings (the whole mixture), kept in the resume
-    state so that a run is never continued on other spectra than it started with."""
+    state so that a run is never continued on other spectra than it started with. Settings added
+    later count only once they leave their defaults (:func:`lcmsdeconv.synth.config.
+    settings_repr`), so a run paused by an earlier version still resumes on the same spectra."""
     import hashlib
 
-    return hashlib.sha256(repr(synth_config).encode()).hexdigest()[:16]
+    from ..synth.config import settings_repr
+
+    return hashlib.sha256(settings_repr(synth_config).encode()).hexdigest()[:16]
+
+
+#: settings a resume state written before they existed was trained with
+_LATER_RUN_DEFAULTS = {"window": 32768, "iso_channels": False}
+
+
+def _default_active_top(saved: dict) -> int | None:
+    """The active-bin cap of the LadderNet a saved run's settings build (None: a U-Net)."""
+    from .constants import ladder_active_top
+
+    if saved.get("arch", "unet") != "ladder":
+        return None
+    return ladder_active_top(int(saved.get("window", _LATER_RUN_DEFAULTS["window"])))
 
 
 def _check_same_run(saved: dict, now: dict) -> None:
     """Refuse to resume with settings that change the model, the schedule or the frames."""
     keys = ("arch", "model_size", "singly_charged", "epochs", "train_len", "batch_size", "lr",
             "base_seed", "z_max", "evidence_channels", "comb_prior", "fresh_each_epoch",
-            "weight_decay", "heat_weight")
-    diff = {k: (saved.get(k), now.get(k)) for k in keys if saved.get(k) != now.get(k)}
+            "weight_decay", "heat_weight", "window", "active_top", "iso_channels")
+
+    def get(d: dict, k: str):
+        return d.get(k, _LATER_RUN_DEFAULTS.get(k))
+
+    diff = {k: (get(saved, k), get(now, k)) for k in keys if get(saved, k) != get(now, k)}
     if diff:
         raise SystemExit(
             "cannot resume: these settings differ from the paused run's (saved, now): "
@@ -572,15 +618,19 @@ def _atomic_save(obj, path: Path) -> None:
 
 
 def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None:
+    from .constants import ladder_active_top
     from .grid import DEFAULT_STEP
 
+    ladder = config.arch == "ladder"
     _atomic_save({"state_dict": state, "config": asdict(config),
                   "synth_config_z_max": config.z_max, "model_size": config.model_size,
                   "z_max": config.z_max, "in_ch": in_ch,
                   "evidence_channels": config.evidence_channels,
                   "comb_prior": config.comb_prior, "arch": config.arch,
                   "singly_charged": config.singly_charged, "selection_metric": metric,
-                  "grid_step": DEFAULT_STEP, "window": 32768,
+                  "grid_step": DEFAULT_STEP, "window": int(config.window),
+                  "active_top": ladder_active_top(config.window) if ladder else None,
+                  "iso_channels": bool(config.iso_channels),
                   "val": val, "comb_baseline": comb}, path)
 
 

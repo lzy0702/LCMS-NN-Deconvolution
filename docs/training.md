@@ -94,6 +94,58 @@ optimiser, learning-rate schedule, position in the epoch, best checkpoint so far
 saved every `--save-every` minutes (10) and after every epoch, so an interrupted run loses at
 most that much. `--minutes` ends a session at a time budget the same way.
 
+### The whole-spectrum recipe (experimental)
+
+`--recipe v3` trains LadderNet on the view inference reads: a region's whole grid in one window.
+It is being tested at proof size on a CPU; the default recipe above is unchanged.
+
+```bash
+python scripts/train_charge_net.py --recipe v3 --out runs/ladder_v3.pt                 # arm A0
+python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_v3_iso.pt  # arm A1
+```
+
+- **Window and ladder reach** (`--window`, `TrainConfig.window`; 32 768 bins by default, 131 072
+  with v3). Every frame is read in one window: grids of 60 000-130 000 bins here, a few longer
+  ones cropped. The ladder keeps every offset shorter than the window, so it reads z = 1 <-> 2,
+  3, 4 (34 657, 54 931 and 69 315 bins), which no 32 768-bin crop holds. Ladders are read at
+  the 24 576 strongest bins (6 144 per 32 768). The checkpoint and the ONNX sidecar record the
+  window, that cap and the channels; `ChargePredictor` reads a grid that fits in one
+  zero-padded window, a longer one in windows overlapping by 25 %.
+- **One stage, singly charged ions labelled** (`--singly-charged keep`).
+- **Spectra.** Every frame is measured over an instrument's scan range (`scan_range =
+  "instrument"`: from 250-600 to 1 500-3 500 m/z, never narrower than its ions), so a species'
+  missing charge states lie inside the grid, as in real runs. It carries 0-200 singly charged
+  background ions, 10-100 times stronger in a quarter of the frames (`background_strong_prob`).
+  The Orbitrap oligonucleotides are dna, rna, ps_dna and ps_rna of 1-12 kDa, and in half the
+  frames they charge as in the real ion-pairing runs (`oligo_real_like_prob`: apex
+  0.0769 M^0.445, one to three charge states). Off, each `SynthConfig` option draws nothing,
+  so default frames are bit for bit those of earlier versions (`tests/test_recipe_v3.py`).
+- **Isotope-charge channels** (`--iso-channels`, `TrainConfig.iso_channels`). Channel 4 is
+  the charge the comb's isotope reader reads at each bin, channel 5 the strength of that
+  reading (best evidence over the bin's log-SNR squared). The reader is
+  `lcmsdeconv.nn.features.isotope_reading`, which `CombPredictor.isotope_charges` shares. The
+  channels are computed over the whole grid, with absolute m/z and the instrument's resolving
+  power, on Orbitrap and FT-ICR spectra; on time-of-flight spectra they are empty, as the
+  pipeline's comb reads no isotope charges there. The scorer of each charge also reads whether
+  the isotopes say that charge. That charge's logit gains up to `iso_scale` (learnable, 10 at
+  the start, above the comb prior's 8) where the reading is strong. So the untrained network
+  reads charges as the comb with isotope charges does. Such a model needs the instrument:
+  `process_run` passes the method's; other callers pass `instrument=` to `ChargePredictor` or
+  set `predictor.instrument`.
+
+On this machine (4 cores), a v3 frame takes about 0.3 s to synthesise in one process. A
+proof-size step at 2 threads takes 1.3 s per frame (1.4 with the channels), 1.5-1.6 s with both
+arms running at once. One training process peaks at about 4.8 GB and its data worker at about
+1.2 GB, so two arms together need about 11 GB.
+
+The isotope reader answers only charges whose spacing it resolves on the 2e-5 grid (2.5 peak
+widths, a peak at least two bins wide); an envelope of higher charge gets a lower charge, at full
+strength. On the synthetic Orbitrap spectra (35 000-280 000 at m/z 200) that is a quarter of the
+z >= 2 ion intensity, and where the charge is resolvable the broader synthetic peaks make it read
+z + 1 or higher nearly half the time: the reading is right on about a third of the z >= 2 ion
+intensity, against 0.74 for the untrained ladder. On the real runs, at 140 000 with charges 2-6
+and sharp peaks, the reader is within its range.
+
 ## The U-Net on a GPU
 
 ```bash

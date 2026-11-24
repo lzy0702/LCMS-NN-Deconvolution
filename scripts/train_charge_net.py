@@ -30,6 +30,11 @@ Examples:
     python scripts/train_charge_net.py --device cuda --singly-charged keep \\
         --init runs/ladder_stage1.pt --epochs 10 --lr 3e-4 --out runs/ladder_stage2.pt
 
+    # the whole-spectrum recipe (experimental): one 131 072-bin window, z = 1 labelled in one
+    # stage, instrument scan ranges, strong background in a quarter of the spectra, real-like
+    # ion-pairing oligonucleotides; --iso-channels adds the isotope-charge input channels
+    python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_v3_iso.pt
+
     # export for inference (ONNX + JSON sidecar next to it)
     lcmsdeconv export-onnx runs/ladder_stage1.pt -o runs/ladder_stage1.onnx
 
@@ -79,11 +84,45 @@ def mixture(crop: int = 32768, background_ions: int | None = None) -> list[tuple
     return mix
 
 
+#: the whole-spectrum recipe's window: a region's whole grid (400-2 500 m/z is about 91 600
+#: bins) and the ladder's far rungs (z = 1 <-> 4 is 69 315 bins) in one window
+V3_WINDOW = 131072
+
+
+def mixture_v3(window: int = V3_WINDOW, background_ions: int | None = None
+               ) -> list[tuple[float, SynthConfig]]:
+    """The whole-spectrum recipe (experimental): :func:`mixture`'s four kinds of spectra with the
+    same weights, each read whole in one ``window``-bin crop, measured over an instrument's scan
+    range (so that missing charge states lie inside the grid), with 0-200 singly charged
+    background ions that are 10-100 times stronger in a quarter of the spectra; the Orbitrap
+    oligonucleotides span dna, rna, ps_dna and ps_rna from 1 to 12 kDa, half the spectra with
+    the charge states of real ion-pairing runs (one to three)."""
+    mix = mixture(crop=window, background_ions=200 if background_ions is None else background_ions)
+    for _w, cfg in mix:
+        cfg.scan_range = "instrument"
+        cfg.background_strong_prob = 0.25
+    orbitrap = mix[2][1]
+    assert orbitrap.instrument_kind == "orbitrap"
+    orbitrap.classes = [ClassConfig(c, (1000.0, 12000.0)) for c in ("dna", "rna", "ps_dna", "ps_rna")]
+    orbitrap.oligo_real_like_prob = 0.5
+    return mix
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--recipe", default="default", choices=["default", "v3"],
+                    help="training spectra and settings: 'default' (the mixture above, "
+                         "32 768-bin crops) or 'v3', the whole-spectrum recipe (experimental: "
+                         "one 131 072-bin window, singly charged ions kept, instrument scan "
+                         "ranges, strong background, real-like ion-pairing oligonucleotides)")
+    ap.add_argument("--window", type=int, default=None,
+                    help="LadderNet window in grid bins (default 32 768; 131 072 with --recipe v3)")
+    ap.add_argument("--iso-channels", action="store_true",
+                    help="add the isotope-charge input channels (LadderNet only)")
     ap.add_argument("--arch", default="ladder", choices=["ladder", "unet"])
     ap.add_argument("--model-size", default="proof", choices=["small", "proof", "full"])
-    ap.add_argument("--singly-charged", default="ignore", choices=["drop", "ignore", "keep"])
+    ap.add_argument("--singly-charged", default=None, choices=["drop", "ignore", "keep"],
+                    help="default: ignore (keep with --recipe v3)")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--train-len", type=int, default=2000, help="frames per epoch")
     ap.add_argument("--val-len", type=int, default=64)
@@ -107,7 +146,8 @@ def main():
                          "process) instead of drawing new ones")
     ap.add_argument("--background-ions", type=int, default=None,
                     help="up to this many singly charged background ions per spectrum "
-                         "(default 40; more teaches the network to reject dense background)")
+                         "(default 40, 200 with --recipe v3; more teaches the network to reject "
+                         "dense background)")
     ap.add_argument("--init", default=None, help="checkpoint to start from")
     ap.add_argument("--resume", action="store_true",
                     help="continue a paused or interrupted run from <out>.resume.pt")
@@ -127,6 +167,11 @@ def main():
         print("WARNING: numba is not installed, so spectra are generated about 20 times slower. "
               "Install it with: pip install numba", flush=True)
     restart = args.restart
+    v3 = args.recipe == "v3"
+    if args.singly_charged is None:
+        args.singly_charged = "keep" if v3 else "ignore"
+    if args.window is None:
+        args.window = V3_WINDOW if v3 else 32768
     if args.workers is None:
         args.workers = auto_workers(args.max_ram_gb)
     if args.workers > 0:
@@ -145,10 +190,18 @@ def main():
                       init=args.init, resume=args.resume, restart=restart,
                       save_every_minutes=args.save_every, max_ram_gb=args.max_ram_gb,
                       clear_pause_files=not args.keep_pause_files,
-                      max_gpu_memory_gb=args.max_gpu_memory_gb)
+                      max_gpu_memory_gb=args.max_gpu_memory_gb,
+                      window=args.window, iso_channels=args.iso_channels)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
-    train(cfg, synth_config=mixture(background_ions=args.background_ions))
+    if v3:
+        print(f"recipe v3 (experimental): {args.window}-bin window, singly charged ions "
+              f"{args.singly_charged}" + (", isotope-charge channels" if args.iso_channels else ""),
+              flush=True)
+        synth = mixture_v3(args.window, background_ions=args.background_ions)
+    else:
+        synth = mixture(crop=args.window, background_ions=args.background_ions)
+    train(cfg, synth_config=synth)
     raise SystemExit(exit_code(Path(cfg.out)))
 
 

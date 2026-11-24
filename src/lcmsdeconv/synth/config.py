@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from .compounds import DEFAULT_CLASSES, ClassConfig
 
@@ -69,6 +69,48 @@ class SynthConfig:
     # impurities share their parent's charge envelope (apex scaled by mass); False draws every
     # impurity's envelope independently, as older versions did
     impurity_charge_from_parent: bool = True
+    #: the m/z range a profile frame is measured over: "sticks", the frame's own ions (+/- 2 %);
+    #: "instrument", widened to a scan range drawn per frame (low end U(250, 600), high end
+    #: U(1500, 3500) m/z, never narrower than the ions), as real runs are recorded, so that a
+    #: species' missing charge states lie inside the grid ("seen, empty"), not outside it. The
+    #: range is kept within one crop (ln(hi / lo) <= 0.98 crop_size grid_step) where the ions
+    #: allow, so that the whole grid is read in one window
+    scan_range: str = "sticks"
+    #: share of frames whose singly charged background is 10-100 times stronger (log-uniform):
+    #: single ions then reach about 0.1-300 % of the strongest component, as in real wash regions
+    background_strong_prob: float = 0.0
+    #: share of frames in which every oligonucleotide (dna, rna, ps_dna, ps_rna; 900 Da and up)
+    #: charges as in real ion-pairing runs: apex 0.0769 M^0.445 x U(0.9, 1.1), width 0.35-0.6
+    #: charges, one to three charge states (``synth.charge.sample_charge_shape``)
+    oligo_real_like_prob: float = 0.0
+    #: append the isotope-charge channels (charge read from resolved isotope spacing, strength)
+    #: to the features, computed over the whole grid before the crop (``nn.features.
+    #: isotope_channels``: read on Orbitrap and FT-ICR frames, empty on time-of-flight ones)
+    iso_channels: bool = False
+
+
+#: settings added after resumable training runs existed, with the values every earlier run had:
+#: left out of :func:`settings_repr` while they keep them
+LATER_DEFAULTS = {"scan_range": "sticks", "background_strong_prob": 0.0,
+                  "oligo_real_like_prob": 0.0, "iso_channels": False}
+
+
+def settings_repr(obj) -> str:
+    """``repr`` of a SynthConfig, or of a mixture (lists and tuples of weights and configs), as
+    the dataclass writes it, without the settings of :data:`LATER_DEFAULTS` that keep their
+    defaults: the text the training run's resume fingerprint is taken over, unchanged for the
+    settings an earlier version knew."""
+    if isinstance(obj, SynthConfig):
+        parts = [f"{f.name}={getattr(obj, f.name)!r}" for f in fields(obj)
+                 if f.repr and not (f.name in LATER_DEFAULTS
+                                    and getattr(obj, f.name) == LATER_DEFAULTS[f.name])]
+        return f"{type(obj).__qualname__}({', '.join(parts)})"
+    if isinstance(obj, list):
+        return "[" + ", ".join(settings_repr(o) for o in obj) + "]"
+    if isinstance(obj, tuple):
+        inner = ", ".join(settings_repr(o) for o in obj)
+        return f"({inner},)" if len(obj) == 1 else f"({inner})"
+    return repr(obj)
 
 
 def orbitrap_config(**kw) -> SynthConfig:
