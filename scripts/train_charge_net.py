@@ -32,8 +32,11 @@ Examples:
 
     # the whole-spectrum recipe (experimental): one 131 072-bin window, z = 1 labelled in one
     # stage, instrument scan ranges, strong background in a quarter of the spectra, real-like
-    # ion-pairing oligonucleotides; --iso-channels adds the isotope-charge input channels
+    # ion-pairing oligonucleotides; --iso-channels adds the isotope-charge input channels, and
+    # --view comb trains the ladder that reads a grid of any length whole (the same frames)
     python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_v3_iso.pt
+    python scripts/train_charge_net.py --recipe v3 --iso-channels --view comb \
+        --out runs/ladder_v3_comb.pt
 
     # export for inference (ONNX + JSON sidecar next to it)
     lcmsdeconv export-onnx runs/ladder_stage1.pt -o runs/ladder_stage1.onnx
@@ -141,7 +144,15 @@ def main():
     ap.add_argument("--window", type=int, default=None,
                     help="LadderNet window in grid bins (default 32 768; 131 072 with --recipe v3)")
     ap.add_argument("--iso-channels", action="store_true",
-                    help="add the isotope-charge input channels (LadderNet only)")
+                    help="add the isotope-charge input channels: charge, strength and isotope "
+                         "limit (LadderNet only)")
+    ap.add_argument("--view", default="window", choices=["window", "comb"],
+                    help="LadderNet: 'window' reads a fixed window (inference cuts the grid into "
+                         "windows of the training length); 'comb' reads any length, the whole "
+                         "grid in one pass at inference (the frames add the measured channel)")
+    ap.add_argument("--head-chunk", type=int, default=None,
+                    help="LadderNet: score this many charges at a time and recompute them in "
+                         "the backward pass (the same outputs in less GPU memory)")
     ap.add_argument("--arch", default="ladder", choices=["ladder", "unet"])
     ap.add_argument("--model-size", default="proof", choices=["small", "proof", "full"])
     ap.add_argument("--singly-charged", default=None, choices=["drop", "ignore", "keep"],
@@ -214,13 +225,14 @@ def main():
                       save_every_minutes=args.save_every, max_ram_gb=args.max_ram_gb,
                       clear_pause_files=not args.keep_pause_files,
                       max_gpu_memory_gb=args.max_gpu_memory_gb,
-                      window=args.window, iso_channels=args.iso_channels)
+                      window=args.window, iso_channels=args.iso_channels, view=args.view,
+                      head_chunk=args.head_chunk)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
     if v3:
-        print(f"recipe v3 (experimental): {args.window}-bin window, singly charged ions "
-              f"{args.singly_charged}" + (", isotope-charge channels" if args.iso_channels else ""),
-              flush=True)
+        print(f"recipe v3 (experimental): {args.window}-bin window, {args.view} view, singly "
+              f"charged ions {args.singly_charged}"
+              + (", isotope-charge channels" if args.iso_channels else ""), flush=True)
         synth = mixture_v3(args.window, background_ions=args.background_ions)
     else:
         synth = mixture(crop=args.window, background_ions=args.background_ions)

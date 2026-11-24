@@ -128,9 +128,9 @@ def generate_frame(cfg: SynthConfig, rng: np.random.Generator) -> FrameSample:
     )
     if cfg.render_path == "profile":
         return generate_frame_profile(cfg, rng, library)
-    if cfg.iso_channels:
-        raise ValueError("isotope-charge channels are computed on the whole measured grid, which "
-                         "only the profile render path builds (render_path='profile')")
+    if cfg.iso_channels or cfg.measured_channel:
+        raise ValueError("isotope-charge and measured channels are computed on the whole measured "
+                         "grid, which only the profile render path builds (render_path='profile')")
     grid = LogMzGrid(50.0, cfg.grid_mz_max, cfg.grid_step, cfg.polarity)
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
@@ -321,6 +321,11 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         piece = iso[:, b0:min(b1, grid.size)]
         part[:, : piece.shape[1]] = piece
         feats = np.concatenate([feats, part])
+    if cfg.measured_channel:
+        # the crop's bins the grid covers (a comb-view network reads them as measured)
+        measured = np.zeros((1, L), dtype=np.float32)
+        measured[0, : seg.size] = 1.0
+        feats = np.concatenate([feats, measured])
     labels = build_labels(cmat, np.array(zs, dtype=int), noise_part, noise_level=noise_sigma,
                           observed=window)
     meta = {"resolution": inst.resolution, "kind": inst.kind, "noise_sigma": noise_sigma,

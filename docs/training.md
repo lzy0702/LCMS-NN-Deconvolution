@@ -84,8 +84,9 @@ are generated once and kept in memory. A run stopped at the memory budget pauses
 the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
 
 `gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
-`setup_linux.sh`) installs and measures the machine, `train_all.bat` runs both stages within
-the RAM and GPU memory limits, resumes after any interruption and packs what to send back.
+`setup_linux.sh`) installs and measures the machine, `train_all.bat` trains the whole-spectrum
+recipe in both views (below) within the RAM and GPU memory limits, resumes after any
+interruption and packs what to send back.
 
 **Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
 the run after the current step and saves the whole training state (model, moving average,
@@ -125,7 +126,8 @@ python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_
   default frames are bit for bit those of earlier versions (`tests/test_recipe_v3.py`).
 - **Isotope-charge channels** (`--iso-channels`, `TrainConfig.iso_channels`). Channel 4 is
   the charge the comb's isotope reader reads at each bin, channel 5 the strength of that
-  reading (best evidence over the bin's log-SNR squared). The reader is
+  reading (best evidence over the bin's log-SNR squared), channel 6 the isotope limit (see
+  "Two views of the ladder" below). The reader is
   `lcmsdeconv.nn.features.isotope_reading`, which `CombPredictor.isotope_charges` shares. The
   channels are computed over the whole grid, with absolute m/z and the instrument's resolving
   power, on Orbitrap and FT-ICR spectra; on time-of-flight spectra they are empty, as the
@@ -158,6 +160,60 @@ Unthresholded, the channels fire mostly on noise bins: in an earlier draft of th
 the strong readings were on noise, and the untrained isotope-channel network called nearly
 every active noise bin an ion. A network trained there would learn to distrust a reader that is
 right nine times in ten on real spectra.
+
+### Two views of the ladder, and the isotope limit
+
+`--view` (`TrainConfig.view`) chooses how LadderNet reads a spectrum; `gpu_training` trains both
+on the whole-spectrum recipe with isotope channels, on the same spectra (seed 0).
+
+- **`window`** (the default, every network before): a fixed window, the training crop;
+  inference cuts a longer grid into windows of that length.
+- **`comb`**: the same ladder for an input of any length, read whole. The encoder normalises
+  each bin over its channels (a LayerNorm, `ChannelNorm`) instead of over the whole length, so
+  that a bin's features do not depend on how long the input is; the last input channel says
+  which bins are measured (1 on the grid, 0 on padding); every ladder offset is kept, and a
+  tooth that falls outside the input or on an unmeasured bin reads a learned vector
+  (`e_unmeasured`, zero at the start) instead of the encoder's projection, while the comb prior
+  reads 0 there. Only measured bins are active, at most 24 576 of them as in the window view.
+  Its training frames are the window view's, drawn the same way and cut to the same 131 072-bin
+  crop, plus the measured channel (`SynthConfig.measured_channel`). `ChargePredictor` reads the
+  whole grid in one pass at its own length: the grid and at least 64 zero bins, up to a
+  multiple of 64 (the encoder reaches 60 bins beyond the grid's end, where training frames had
+  zeros), with no windows. The ONNX export keeps the length axis open and is checked against
+  PyTorch at 8 192, 65 536 and 91 712 bins. Checkpoints, resume states and ONNX sidecars record
+  the view; a resume with the other view is refused, and states and checkpoints written before
+  record none and are window views.
+- **`--head-chunk N`** scores N charges at a time and recomputes them in the backward pass
+  (`torch.utils.checkpoint`): the same outputs (to about 1e-8) for about a third of the memory.
+  A full-size step at 4 spectra of 131 072 bins, every spectrum at the active-bin cap, peaked
+  on the processor at 6.7 GB (window) and 7.1 GB (comb) above the process's baseline, 2.4-2.5
+  GB in chunks of 16 charges, for 30 % more step time; the GPU package uses 16.
+
+**The isotope limit** (channel 6, `nn.features.isotope_limit`): at every bin, the highest charge
+whose isotope spacing the reader resolves at that m/z with the instrument's resolving power, by
+the reader's own rule (spacing at least 2.5 peak widths, a peak at least two bins wide), up to
+60; 0 where none is, and on time-of-flight spectra. At 140 000 (m/z 200) on the 2e-5 grid it is
+20 at m/z 500, 10 at 1 000 and 5 at 2 000. Above the limit the reader answers a resolvable lower
+charge at full strength, mostly half the true one. The scorer of each charge z also reads
+whether z is resolvable there (`clamp(zlim - z + 1, 0, 1)`), and the isotope prior counts only
+where twice the read charge is still resolvable (`gate = clamp(zlim - 2 zc + 1, 0, 1)`).
+Untrained, on 20 Orbitrap validation spectra of the recipe (the training's validation seeds,
+both Orbitrap halves; charge of z >= 2 ion bins read right, weighted by log-SNR / intensity):
+
+| estimator | z >= 2 |
+| --- | --- |
+| comb with isotope charges (the pipeline's) | 0.381 / 0.423 |
+| LadderNet, full, untrained, no isotope channels | 0.617 / 0.823 |
+| the same with the first layout's two isotope channels | 0.394 / 0.423 |
+| the same with three channels, gated | **0.656 / 0.845** |
+| the same with three channels, without the gate | 0.394 / 0.423 |
+
+The gate closes 85 % of the strong readings (strength >= 0.3) on those ion bins, of which 69 %
+(log-SNR weighted) are wrong; of those it leaves open, 28 % are. (Untrained, the three-channel
+network without the gate is the two-channel one: the learned part starts at zero.) Networks of
+the first layout (two isotope channels, in_ch 6, as 07cdc43 saved them) still load and read as
+they did (`tests/test_ladder_views.py`); every isotope-channel network now records its
+`iso_count`.
 
 ## The U-Net on a GPU
 

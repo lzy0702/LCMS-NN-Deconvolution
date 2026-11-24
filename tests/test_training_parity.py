@@ -12,8 +12,8 @@ from lcmsdeconv.synth.frames import generate_frame
 def test_training_features_equal_inference_features():
     """The frame's scans summed as a region's are and gridded as deconvolve_spectrum grids them:
     same grid, same noise estimate, same features; with isotope-charge channels, the same
-    channels too (computed over the whole grid with the instrument, then cut to the window; on
-    Orbitrap spectra, empty on time-of-flight ones)."""
+    channels too (charge, strength and isotope limit: computed over the whole grid with the
+    instrument, then cut to the window; on Orbitrap spectra, empty on time-of-flight ones)."""
     from lcmsdeconv.chem.instrument import InstrumentModel
     from lcmsdeconv.core.model import Run
     from lcmsdeconv.nn.features import isotope_channels
@@ -45,7 +45,7 @@ def test_training_features_equal_inference_features():
                 if iso:
                     inst = InstrumentModel(fs.meta["kind"], fs.meta["resolution"])
                     whole = isotope_channels(grid, observed, sigma, inst)
-                    part = np.zeros((2, cfg.crop_size), dtype=np.float32)
+                    part = np.zeros((whole.shape[0], cfg.crop_size), dtype=np.float32)
                     cut = whole[:, fs.b0:fs.b0 + cfg.crop_size]
                     part[:, :cut.shape[1]] = cut
                     feats = np.concatenate([feats, part])

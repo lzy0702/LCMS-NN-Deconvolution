@@ -174,7 +174,9 @@ def train(config, model_size, epochs, train_len, val_len, batch_size, workers, m
 @click.option("--out", "-o", default=None, type=click.Path(dir_okay=False))
 @click.option("--length", default=32768)
 @click.option("--verify/--no-verify", default=True)
-def export_onnx_cmd(checkpoint, out, length, verify):
+@click.option("--strict", is_flag=True,
+              help="exit with code 2 if the ONNX model does not match the checkpoint")
+def export_onnx_cmd(checkpoint, out, length, verify, strict):
     """Export a trained checkpoint to ONNX for deployment."""
     from .nn.export import export_onnx, verify_parity
 
@@ -182,7 +184,11 @@ def export_onnx_cmd(checkpoint, out, length, verify):
     p = export_onnx(checkpoint, out, length=length)
     click.echo(f"wrote {p}")
     if verify:
-        click.echo(json.dumps(verify_parity(checkpoint, p), indent=2))
+        res = verify_parity(checkpoint, p)
+        click.echo(json.dumps(res, indent=2))
+        if strict and not res["ok"]:
+            click.echo("the ONNX model does not match the checkpoint", err=True)
+            raise SystemExit(2)
 
 
 @main.command()

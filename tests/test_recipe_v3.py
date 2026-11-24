@@ -122,7 +122,8 @@ def test_resume_fingerprints_of_default_spectra_are_unchanged():
     assert synth_fingerprint(script.mixture()) == REF["fingerprints"]["mixture"]
     assert synth_fingerprint(keep) == REF["fingerprints"]["mixture_keep_200"]
     for attr, value in (("scan_range", "instrument"), ("background_strong_prob", 0.25),
-                        ("oligo_real_like_prob", 0.5), ("iso_channels", True)):
+                        ("oligo_real_like_prob", 0.5), ("iso_channels", True),
+                        ("measured_channel", True)):
         mix = script.mixture()
         setattr(mix[1][1], attr, value)
         assert synth_fingerprint(mix) != REF["fingerprints"]["mixture"], attr
@@ -167,11 +168,12 @@ def test_predictor_reads_an_old_ladder_checkpoint_as_before(tmp_path):
     _save(ckpt, torch.load(DATA / "laddernet_proof_1917c37.pt", weights_only=True),
           TrainConfig(arch="ladder", model_size="proof"), 4, None, None, "charge_acc_given_ion")
     raw = torch.load(ckpt, weights_only=False)
-    for key in ("active_top", "iso_channels"):  # as the checkpoints written before them
+    for key in ("active_top", "iso_channels", "iso_count", "view"):  # as written before them
         raw.pop(key)
     torch.save(raw, ckpt)
     pred = ChargePredictor(ckpt)
-    assert (pred.window, pred.active_top, pred.iso_channels) == (32768, 6144, False)
+    assert (pred.window, pred.active_top, pred.iso_channels, pred.view) == \
+        (32768, 6144, False, "window")
     cfg = _script().mixture(background_ions=200)[0][1]
     cfg.singly_charged = "keep"
     fs = generate_frame(cfg, np.random.default_rng(2000))
@@ -255,6 +257,8 @@ def test_untrained_iso_laddernet_reads_charges_as_the_comb_with_isotopes():
 
 
 def test_iso_laddernet_exports_to_onnx_at_the_whole_window(tmp_path):
+    """The current layout (three isotope channels); tests/test_ladder_views.py exports the first
+    layout's networks."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("onnxruntime")
     from lcmsdeconv.nn.export import export_onnx, verify_parity
@@ -262,18 +266,18 @@ def test_iso_laddernet_exports_to_onnx_at_the_whole_window(tmp_path):
     from lcmsdeconv.nn.train import TrainConfig, _save
 
     torch.manual_seed(0)
-    model = build_model("small", z_max=100, in_ch=6, arch="ladder", window=W, iso=True)
+    model = build_model("small", z_max=100, in_ch=7, arch="ladder", window=W, iso=True)
     with torch.no_grad():
         for p in model.parameters():
             p.add_(0.05 * torch.randn_like(p))
     ckpt = tmp_path / "iso.pt"
     _save(ckpt, model.state_dict(), TrainConfig(arch="ladder", model_size="small", window=W,
-                                                iso_channels=True), 6, None, None,
+                                                iso_channels=True), 7, None, None,
           "charge_acc_given_ion")
     onnx_path = export_onnx(ckpt, tmp_path / "iso.onnx")
     meta = json.loads(onnx_path.with_suffix(".json").read_text())
-    assert (meta["window"], meta["active_top"], meta["iso_channels"], meta["in_ch"]) == \
-        (W, 24576, True, 6)
+    assert (meta["window"], meta["active_top"], meta["iso_channels"], meta["in_ch"],
+            meta["iso_count"], meta["view"]) == (W, 24576, True, 7, 3, "window")
     res = verify_parity(ckpt, onnx_path, tol=1e-3)
     assert res["ok"], res
 
@@ -315,7 +319,7 @@ def _v3_orbitrap(crop=W, **kw):
 
 def test_training_and_inference_compute_the_same_isotope_channels(tmp_path):
     """The predictor feeds a frame's whole grid to the network exactly as training fed it: the
-    same window, base features and isotope channels."""
+    same window, base features and isotope channels (charge, strength and isotope limit)."""
     pytest.importorskip("torch")
     from lcmsdeconv.nn import baseline as bl
     from lcmsdeconv.nn.infer import ChargePredictor
@@ -323,8 +327,8 @@ def test_training_and_inference_compute_the_same_isotope_channels(tmp_path):
     from lcmsdeconv.nn.train import TrainConfig, _save
 
     ckpt = tmp_path / "iso.pt"
-    _save(ckpt, build_model("small", 100, 6, arch="ladder", window=W, iso=True).state_dict(),
-          TrainConfig(arch="ladder", model_size="small", window=W, iso_channels=True), 6, None,
+    _save(ckpt, build_model("small", 100, 7, arch="ladder", window=W, iso=True).state_dict(),
+          TrainConfig(arch="ladder", model_size="small", window=W, iso_channels=True), 7, None,
           None, "charge_acc_given_ion")
     pred = ChargePredictor(ckpt)
     seen = []
@@ -333,10 +337,11 @@ def test_training_and_inference_compute_the_same_isotope_channels(tmp_path):
     cfg = _v3_orbitrap(iso_channels=True)
     for seed in (2, 3):
         fs = generate_frame(cfg, np.random.default_rng(seed))
-        assert fs.features.shape == (6, W)
+        assert fs.features.shape == (7, W)
         grid, y, sigma = bl.frame_grid(cfg, fs)
         assert grid.size <= W and fs.b0 == 0  # the whole grid in one window
         assert fs.features[4].max() >= 2 and (fs.features[5] > 0.3).sum() > 50
+        assert fs.features[6, :grid.size].max() >= 5  # the isotope limit, on every grid bin
         assert not fs.features[:, grid.size:].any()  # the zero-padded tail: no input ...
         assert (fs.topk_z[grid.size:, 0] == 0).all() and not fs.heat[grid.size:].any()  # class 0
         seen.clear()
@@ -344,6 +349,40 @@ def test_training_and_inference_compute_the_same_isotope_channels(tmp_path):
         pred.predict_grid(grid, y, sigma)
         assert len(seen) == 1
         np.testing.assert_allclose(seen[0], fs.features, rtol=0, atol=1e-6)
+
+
+def test_training_and_inference_compute_the_same_comb_view_input(tmp_path):
+    """A comb-view network reads at inference what its training frames held: the base features,
+    the isotope channels and the measured channel, on the grid's own length (padded to a
+    multiple of 64); the frame's tail beyond holds nothing."""
+    pytest.importorskip("torch")
+    from lcmsdeconv.nn import baseline as bl
+    from lcmsdeconv.nn.infer import ChargePredictor, comb_length
+    from lcmsdeconv.nn.model import build_model
+    from lcmsdeconv.nn.train import TrainConfig, _save
+
+    ckpt = tmp_path / "comb.pt"
+    _save(ckpt, build_model("small", 100, 8, arch="ladder", window=W, iso=True,
+                            view="comb").state_dict(),
+          TrainConfig(arch="ladder", model_size="small", window=W, iso_channels=True,
+                      view="comb"), 8, None, None, "charge_acc_given_ion")
+    pred = ChargePredictor(ckpt)
+    seen = []
+    run = pred._run
+    pred._run = lambda feats: (seen.append(feats), run(feats))[1]
+    cfg = _v3_orbitrap(iso_channels=True, measured_channel=True)
+    for seed in (2, 3):
+        fs = generate_frame(cfg, np.random.default_rng(seed))
+        assert fs.features.shape == (8, W)
+        grid, y, sigma = bl.frame_grid(cfg, fs)
+        assert grid.size <= W and fs.b0 == 0
+        assert (fs.features[7, :grid.size] == 1).all() and not fs.features[7, grid.size:].any()
+        seen.clear()
+        pred.instrument = bl.frame_instrument(fs.meta)
+        pred.predict_grid(grid, y, sigma)
+        n = comb_length(grid.size)
+        assert len(seen) == 1 and seen[0].shape == (8, n)
+        np.testing.assert_allclose(seen[0], fs.features[:, :n], rtol=0, atol=1e-6)
 
 
 def test_isotope_channels_are_read_on_orbitrap_and_fticr_spectra_only():
@@ -356,7 +395,7 @@ def test_isotope_channels_are_read_on_orbitrap_and_fticr_spectra_only():
     tof = script.mixture_v3()[1][1]
     tof.iso_channels = True
     fs = generate_frame(tof, np.random.default_rng(1))
-    assert fs.meta["kind"] == "tof" and fs.features.shape[0] == 6 and not fs.features[4:].any()
+    assert fs.meta["kind"] == "tof" and fs.features.shape[0] == 7 and not fs.features[4:].any()
     grid, y, sigma = bl.frame_grid(tof, fs)
     inst = bl.frame_instrument(fs.meta)
     assert not isotope_channels(grid, y, sigma, inst).any()
@@ -534,8 +573,8 @@ def test_training_records_the_window_and_isotope_channels(tmp_path):
     assert synth.crop_size == 16384 and synth.iso_channels  # the frames follow the network
     assert (model.window, model.active_top, model.iso) == (16384, 3072, True)
     ckpt = torch.load(out, weights_only=False)
-    assert (ckpt["window"], ckpt["active_top"], ckpt["iso_channels"], ckpt["in_ch"]) == \
-        (16384, 3072, True, 6)
+    assert (ckpt["window"], ckpt["active_top"], ckpt["iso_channels"], ckpt["in_ch"],
+            ckpt["iso_count"], ckpt["view"]) == (16384, 3072, True, 7, 3, "window")
     pred = ChargePredictor(out)
     assert (pred.window, pred.iso_channels) == (16384, True)
     state = torch.load(out.with_suffix(".resume.pt"), weights_only=False)

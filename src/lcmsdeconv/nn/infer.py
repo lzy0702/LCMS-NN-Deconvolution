@@ -9,8 +9,26 @@ from pathlib import Path
 import numpy as np
 
 from .constants import DOWNSAMPLE
-from .features import N_ISOTOPE_CHANNELS, featurize, isotope_channels
+from .features import ISOTOPE_CHANNELS_FIRST_LAYOUT, featurize, isotope_channels
 from .grid import LogMzGrid
+
+#: a comb-view network's features are computed on the grid followed by at least this many zero
+#: bins (and on no fewer than COMB_MIN_FEATURE_LENGTH bins): the training frames' grids sit at
+#: the start of a 131 072-bin crop with zeros after them, and the local-maximum feature reads
+#: 2 000 bins either side (its filter is shorter on inputs under 8 000 bins)
+COMB_FEATURE_TAIL = 2048
+COMB_MIN_FEATURE_LENGTH = 8192
+#: unmeasured bins a comb-view network reads after the grid: its encoder reaches 60 bins either
+#: side, and what it computes at the grid's last bins is what it computed in training, where
+#: zeros followed the grid, only if that many zero bins follow the grid here too
+COMB_TAIL = 64
+
+
+def comb_length(bins: int) -> int:
+    """The input length a comb-view network reads a grid of ``bins`` bins at: the grid and at
+    least :data:`COMB_TAIL` zero bins, up to a multiple of 64."""
+    n = int(bins) + COMB_TAIL
+    return n + (-n) % DOWNSAMPLE
 
 
 @dataclass
@@ -42,9 +60,12 @@ class ChargePredictor:
 
     A LadderNet reads windows of the length it was trained at (recorded with it): the whole grid
     in one zero-padded window when it fits, else windows overlapping by ``overlap``, each bin
-    read from the window it is most central in. A network with isotope-charge input channels
-    (``iso_channels``) needs ``instrument``, whose resolving power those channels are computed
-    with (:func:`lcmsdeconv.nn.features.isotope_channels`, over the whole grid, then cut to each
+    read from the window it is most central in. A comb-view LadderNet (``view == "comb"``)
+    reads the whole grid in one pass at its own length, padded to a multiple of 64
+    (:func:`comb_length`), with the measured channel 1 on the grid's bins: no windows. A
+    network with isotope-charge input channels (``iso_channels``; ``iso_count`` of them) needs
+    ``instrument``, whose resolving power those channels are computed with
+    (:func:`lcmsdeconv.nn.features.isotope_channels`, over the whole grid, then cut to each
     window; empty for a time-of-flight instrument, as in training); it can also be set on the
     predictor before ``predict_grid`` is called.
     """
@@ -59,8 +80,12 @@ class ChargePredictor:
         self.evidence_channels = 0
         #: grid step a model's fixed offsets assume (LadderNet), None when it does not matter
         self.grid_step: float | None = None
-        #: whether the network reads the isotope-charge channels, which need ``instrument``
+        #: whether the network reads the isotope-charge channels, which need ``instrument``,
+        #: and how many (2 in the first layout, 3 with the isotope limit)
         self.iso_channels = False
+        self.iso_count = 0
+        #: "window" (windows of the training length) or "comb" (the whole grid in one pass)
+        self.view = "window"
         #: the LadderNet's active-bin cap (recorded with the model; informational)
         self.active_top: int | None = None
         self.instrument = instrument
@@ -94,6 +119,10 @@ class ChargePredictor:
                 self.window = int(info.get("window", self.window))
                 self.active_top = info.get("active_top")
                 self.iso_channels = bool(info.get("iso_channels", False))
+                # sidecars written before these were recorded: the first layout, a window view
+                self.iso_count = int(info.get("iso_count") or (ISOTOPE_CHANNELS_FIRST_LAYOUT
+                                                               if self.iso_channels else 0))
+                self.view = info.get("view") or "window"
 
     def _init_torch(self, path: Path):
         from .export import load_torch_model
@@ -107,6 +136,8 @@ class ChargePredictor:
             self.window = int(self.torch_model.window)
             self.active_top = int(self.torch_model.active_top)
             self.iso_channels = bool(self.torch_model.iso)
+            self.iso_count = int(self.torch_model.iso_count)
+            self.view = self.torch_model.view
         self.backend = "torch"
 
     # ------------------------------------------------------------- run
@@ -137,7 +168,10 @@ class ChargePredictor:
                     "(make_predictor and process_run do), or set predictor.instrument before "
                     "calling predict_grid")
             # over the whole grid (absolute m/z), once; each window takes its slice
-            iso = isotope_channels(grid, intensity, noise_sigma, self.instrument)
+            iso = isotope_channels(grid, intensity, noise_sigma, self.instrument,
+                                   count=self.iso_count)
+        if self.view == "comb":
+            return self._predict_whole(grid, intensity, noise_sigma, iso)
         B = intensity.size
         top1_z = np.zeros(B, dtype=np.int16)
         top1_p = np.zeros(B, dtype=np.float32)
@@ -166,7 +200,7 @@ class ChargePredictor:
             feats = featurize(seg, noise_sigma, grid.step, z_max=min(self.z_max, 64),
                               evidence_channels=self.evidence_channels)
             if iso is not None:
-                part = np.zeros((N_ISOTOPE_CHANNELS, W), dtype=np.float32)
+                part = np.zeros((iso.shape[0], W), dtype=np.float32)
                 part[:, : s1 - s0] = iso[:, s0:s1]
                 feats = np.concatenate([feats, part])
             if pad:
@@ -198,6 +232,51 @@ class ChargePredictor:
             top2_p[gi] = w2[idx]
             apex[gi] = _sigmoid(apx[idx])
             best_w[gi] = wl[idx]
+        return ChargePrediction(top1_z, top1_p, top2_z, top2_p, apex, noise_sigma)
+
+    def comb_input(self, grid: LogMzGrid, intensity: np.ndarray, noise_sigma: float,
+                   iso: np.ndarray | None) -> np.ndarray:
+        """A comb-view network's input for the whole grid ``[C, L]``: the grid followed by zeros
+        (:func:`comb_length`), the base features (computed as on a training frame, see
+        :data:`COMB_FEATURE_TAIL`), the isotope channels and the measured channel last."""
+        B = intensity.size
+        L = comb_length(B)
+        seg = np.zeros(max(B + COMB_FEATURE_TAIL, COMB_MIN_FEATURE_LENGTH), dtype=np.float64)
+        seg[:B] = intensity
+        parts = [featurize(seg, noise_sigma, grid.step, z_max=min(self.z_max, 64),
+                           evidence_channels=self.evidence_channels)[:, :L]]
+        if iso is not None:
+            part = np.zeros((iso.shape[0], L), dtype=np.float32)
+            part[:, :B] = iso
+            parts.append(part)
+        measured = np.zeros((1, L), dtype=np.float32)
+        measured[0, :B] = 1.0
+        parts.append(measured)
+        return np.concatenate(parts)
+
+    def _predict_whole(self, grid: LogMzGrid, intensity: np.ndarray, noise_sigma: float,
+                       iso: np.ndarray | None) -> ChargePrediction:
+        """A comb-view network over the whole grid in one pass."""
+        B = intensity.size
+        top1_z = np.zeros(B, dtype=np.int16)
+        top1_p = np.zeros(B, dtype=np.float32)
+        top2_z = np.zeros(B, dtype=np.int16)
+        top2_p = np.zeros(B, dtype=np.float32)
+        apex = np.zeros(B, dtype=np.float32)
+        if B == 0 or intensity.max(initial=0.0) <= 3.0 * max(noise_sigma, 1e-9):
+            return ChargePrediction(top1_z, top1_p, top2_z, top2_p, apex, noise_sigma)
+        logits, apx = self._run(self.comb_input(grid, intensity, noise_sigma, iso))
+        probs = _softmax(logits[:, :B], axis=0)
+        # the charge among the ion classes, renormalised (see predict_grid)
+        ion = probs[1:]
+        ion = ion / np.maximum(ion.sum(axis=0, keepdims=True), 1e-12)
+        order = np.argsort(-ion, axis=0)[:2]
+        cols = np.arange(B)
+        top1_z[:] = order[0] + 1
+        top1_p[:] = ion[order[0], cols]
+        top2_z[:] = order[1] + 1
+        top2_p[:] = ion[order[1], cols]
+        apex[:] = _sigmoid(apx[:B])
         return ChargePrediction(top1_z, top1_p, top2_z, top2_p, apex, noise_sigma)
 
 

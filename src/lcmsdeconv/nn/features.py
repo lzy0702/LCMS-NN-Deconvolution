@@ -121,8 +121,11 @@ ISOTOPE_Z_MAX = 60
 ISOTOPE_MIN_SNR = 3.0
 ISOTOPE_RESOLUTION_FACTOR = 2.5
 ISOTOPE_AGREEMENT = 0.6
-#: number of isotope-charge channels (:func:`isotope_channels`)
-N_ISOTOPE_CHANNELS = 2
+#: number of isotope-charge channels (:func:`isotope_channels`): the charge read, its strength
+#: and the isotope limit. Networks of the first layout read only the first two
+#: (:data:`ISOTOPE_CHANNELS_FIRST_LAYOUT`)
+N_ISOTOPE_CHANNELS = 3
+ISOTOPE_CHANNELS_FIRST_LAYOUT = 2
 #: instruments whose spectra the isotope channels are read on: those the pipeline reads isotope
 #: charges on by default (``process._isotope_mode``). On time-of-flight spectra the reader is
 #: outside the range it works in (most envelopes' spacing is below what it resolves, and it then
@@ -193,22 +196,58 @@ def isotope_reading(grid, s: np.ndarray, active: np.ndarray, instrument,
     return zraw, best_out
 
 
+def isotope_limit(grid, instrument, z_max: int = ISOTOPE_Z_MAX,
+                  resolution_factor: float = ISOTOPE_RESOLUTION_FACTOR,
+                  bins: np.ndarray | None = None) -> np.ndarray:
+    """The isotope limit of every grid bin (or of ``bins``): the highest charge, up to
+    ``z_max``, whose isotope spacing :func:`isotope_reading` counts as resolved at the bin's m/z
+    with ``instrument``'s resolving power (spacing in bins at least ``resolution_factor`` peak
+    widths, a peak never narrower than two bins); 0 where no charge is. ``int16``.
+
+    The reader answers no charge above it, so a reading close to the limit may be a lower
+    charge standing for an envelope it cannot resolve (2z read as z)."""
+    b = np.arange(grid.size) if bins is None else np.asarray(bins)
+    zlim = np.zeros(b.size, dtype=np.int16)
+    if b.size == 0:
+        return zlim
+    # the reader's own expressions, evaluated at every bin instead of the active ones
+    mz = grid.bin_to_mz(b)
+    fwhm = mz / np.asarray(instrument.resolving_power(mz), dtype=float)
+    off = np.abs(mz - grid.carrier)
+    width_bins = np.maximum(np.log1p(fwhm / off) / grid.step, 2.0)
+    for z in range(1, z_max + 1):
+        spacing = 1.0033548 / z
+        n = np.log1p(spacing / off) / grid.step
+        resolved = n >= resolution_factor * width_bins
+        if not resolved.any():
+            break
+        zlim[resolved] = z  # ascending z: the highest resolved charge stays
+    return zlim
+
+
 def isotope_channels(grid, intensity: np.ndarray, noise_sigma: float, instrument,
                      z_max: int = ISOTOPE_Z_MAX, min_snr: float = ISOTOPE_MIN_SNR,
-                     kinds: tuple[str, ...] | None = ISOTOPE_KINDS) -> np.ndarray:
-    """The two isotope-charge input channels of a whole grid spectrum, ``[2, B]`` float32.
+                     kinds: tuple[str, ...] | None = ISOTOPE_KINDS,
+                     count: int = N_ISOTOPE_CHANNELS) -> np.ndarray:
+    """The isotope-charge input channels of a whole grid spectrum, ``[count, B]`` float32.
 
     Channel 0 is the charge :func:`isotope_reading` reads at each bin (0 = none), channel 1 its
     strength ``clip(best / s**2, 0, 1)`` (0 where there is no charge), with ``s`` the bin's
-    log-SNR and bins above ``min_snr`` sigma read, exactly as the comb estimator reads them. The
-    channels depend on absolute m/z and the instrument's resolving power, so they are computed
-    over the whole grid (by training frames before their crop, by the predictor once per
-    spectrum) and then cut to each window: one function for both, so that training and
-    inference see the same input. They are read on the instrument ``kinds`` only (None: on every
-    instrument) and empty for the rest.
+    log-SNR and bins above ``min_snr`` sigma read, exactly as the comb estimator reads them.
+    Channel 2 is the bin's isotope limit (:func:`isotope_limit`, every bin, as a charge value):
+    the highest charge the reader resolves there, so that a network can tell a reading that may
+    be the half of an unresolved charge from one that cannot. ``count`` = 2 gives the first
+    layout, without it. The channels depend on absolute m/z and the instrument's resolving
+    power, so they are computed over the whole grid (by training frames before their crop, by
+    the predictor once per spectrum) and then cut to each window: one function for both, so
+    that training and inference see the same input. They are read on the instrument ``kinds``
+    only (None: on every instrument) and empty for the rest, the limit included.
     """
+    if count not in (ISOTOPE_CHANNELS_FIRST_LAYOUT, N_ISOTOPE_CHANNELS):
+        raise ValueError(f"isotope channels come as 2 (charge, strength) or 3 (and the isotope "
+                         f"limit), not {count}")
     y = np.asarray(intensity, dtype=float)
-    out = np.zeros((N_ISOTOPE_CHANNELS, y.size), dtype=np.float32)
+    out = np.zeros((count, y.size), dtype=np.float32)
     if kinds is not None and getattr(instrument, "kind", None) not in kinds:
         return out
     ns = max(noise_sigma, 1e-9)
@@ -218,4 +257,6 @@ def isotope_channels(grid, intensity: np.ndarray, noise_sigma: float, instrument
     on = zraw > 0
     out[0] = zraw
     out[1, on] = np.clip(best[on] / s[on] ** 2, 0.0, 1.0)
+    if count > 2:
+        out[2] = isotope_limit(grid, instrument, z_max)
     return out

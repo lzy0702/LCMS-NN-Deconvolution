@@ -67,10 +67,17 @@ class TrainConfig:
     #: window of 131 072 bins holds a whole region's grid and the ladder's far rungs (z = 1 <-> 2
     #: is 34 657 bins); the active-bin cap scales with it (6 144 per 32 768 bins)
     window: int = 32768
-    #: LadderNet: two more input channels, the charge read from resolved isotope spacing and its
-    #: strength (``lcmsdeconv.nn.features.isotope_channels``), computed over the whole spectrum
-    #: of Orbitrap and FT-ICR frames (empty on time-of-flight ones)
+    #: LadderNet: three more input channels, the charge read from resolved isotope spacing, its
+    #: strength and the isotope limit (``lcmsdeconv.nn.features.isotope_channels``), computed
+    #: over the whole spectrum of Orbitrap and FT-ICR frames (empty on time-of-flight ones)
     iso_channels: bool = False
+    #: LadderNet: "window" (a fixed window, read at inference window by window) or "comb" (any
+    #: length, the whole grid in one pass at inference; the frames get the measured channel and
+    #: are otherwise the window view's, crops of ``window`` bins included)
+    view: str = "window"
+    #: LadderNet: score this many charges at a time and recompute them in the backward pass
+    #: (the same outputs in a fraction of the memory; None: all at once)
+    head_chunk: int | None = None
 
 
 def _device(name: str):
@@ -115,24 +122,33 @@ def train(config: TrainConfig, synth_config=None):
 
     from ..synth.config import SynthConfig
     from ..synth.dataset import make_dataloaders
+    from .features import N_ISOTOPE_CHANNELS
     from .losses import ChargeLoss
-    from .model import build_model
+    from .model import VIEWS, build_model
 
     synth_config = synth_config or SynthConfig(z_max=config.z_max)
     if config.iso_channels and config.arch != "ladder":
         raise ValueError("isotope-charge channels are read by LadderNet only (arch='ladder')")
     if config.iso_channels and config.evidence_channels:
         raise ValueError("isotope-charge channels and comb evidence channels cannot be combined")
+    if config.view not in VIEWS:
+        raise ValueError(f"view must be one of {VIEWS}, not {config.view!r}")
+    comb_view = config.view == "comb"
+    if comb_view and (config.arch != "ladder" or config.evidence_channels):
+        raise ValueError("the comb view is a LadderNet's (arch='ladder'), without evidence "
+                         "channels")
     for sc in ([c for _w, c in synth_config] if isinstance(synth_config, (list, tuple))
                else [synth_config]):
         sc.evidence_channels = config.evidence_channels
         sc.singly_charged = config.singly_charged
         sc.iso_channels = config.iso_channels
+        sc.measured_channel = comb_view
         if config.arch == "ladder":
             # the frames are read at the network's window: its offsets and active-bin cap are
             # fixed for that length (the U-Net reads any length, so its crops stay as set)
             sc.crop_size = config.window
-    in_ch = 4 + config.evidence_channels + (2 if config.iso_channels else 0)
+    in_ch = (4 + config.evidence_channels + (N_ISOTOPE_CHANNELS if config.iso_channels else 0)
+             + (1 if comb_view else 0))
     if config.threads:
         torch.set_num_threads(int(config.threads))
     device = _device(config.device)
@@ -144,18 +160,24 @@ def train(config: TrainConfig, synth_config=None):
             "'gpu_training\\setup_windows.bat --reinstall-torch'.")
     if device.startswith("cuda") and config.max_gpu_memory_gb:
         _cap_gpu_memory(torch, config.max_gpu_memory_gb)
+    ladder_kw = ({"iso_count": N_ISOTOPE_CHANNELS if config.iso_channels else None,
+                  "view": config.view, "head_chunk": config.head_chunk}
+                 if config.arch == "ladder" else {})
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
                         comb_prior=config.comb_prior, arch=config.arch, window=config.window,
-                        iso=config.iso_channels).to(device)
+                        iso=config.iso_channels, **ladder_kw).to(device)
+    iso_count = int(getattr(model, "iso_count", 0))
     if config.init:
         state = torch.load(config.init, map_location=device, weights_only=False)["state_dict"]
         model.load_state_dict(state)
         print(f"started from {config.init}")
     print(f"model {config.arch}/{config.model_size}: {model.num_params()/1e6:.3f}M params "
           f"on {device}; singly charged ions: {config.singly_charged}")
-    if config.arch == "ladder" and (config.window != 32768 or config.iso_channels):
-        print(f"  window {model.window} bins, ladders read at up to {model.active_top} bins"
-              + ("; isotope-charge channels" if config.iso_channels else ""))
+    if config.arch == "ladder" and (config.window != 32768 or config.iso_channels or comb_view):
+        where = (f"comb view: any length (crops of {model.window} bins in training)" if comb_view
+                 else f"window {model.window} bins")
+        print(f"  {where}, ladders read at up to {model.active_top} bins"
+              + (f"; {iso_count} isotope-charge channels" if config.iso_channels else ""))
 
     if config.num_workers > 0:
         _warm_up(synth_config)
@@ -203,7 +225,10 @@ def train(config: TrainConfig, synth_config=None):
         st = torch.load(resume_path, map_location=device, weights_only=False)
         saved = dict(st.get("config", {}))
         saved["active_top"] = st.get("active_top", _default_active_top(saved))
-        _check_same_run(saved, {**asdict(config), "active_top": active_top})
+        # states written before it was recorded: the first layout's two channels
+        saved["iso_count"] = st.get("iso_count", 2 if saved.get("iso_channels") else 0)
+        _check_same_run(saved, {**asdict(config), "active_top": active_top,
+                                "iso_count": iso_count})
         if st.get("synth") != synth_key:
             why = ("was written by an earlier version of this package, which did not record its "
                    "synthetic spectra (and whose training mixture differed)"
@@ -266,7 +291,7 @@ def train(config: TrainConfig, synth_config=None):
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
                  "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason,
-                 "active_top": active_top}
+                 "active_top": active_top, "iso_count": iso_count}
         _atomic_save(state, resume_path)
         _write_status(out_path, epoch, step, config.epochs, stop_reason)
 
@@ -388,7 +413,7 @@ def train(config: TrainConfig, synth_config=None):
                 best_key = key(val)
                 best_loss = val["val_loss"]
                 best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
-                _save(out_path, best_state, config, in_ch, val, comb, metric)
+                _save(out_path, best_state, config, in_ch, val, comb, metric, iso_count)
                 print(f"  saved {out_path} ({metric} {val[metric]:.3f})")
             run_sum, run_n = 0.0, 0
             save_state(epoch + 1, 0, "finished" if epoch + 1 >= config.epochs else None)
@@ -402,7 +427,7 @@ def train(config: TrainConfig, synth_config=None):
 
     if best_state is None:
         best_state = model.state_dict()
-        _save(out_path, best_state, config, in_ch, None, comb, metric)
+        _save(out_path, best_state, config, in_ch, None, comb, metric, iso_count)
     print(f"finished; best checkpoint {out_path} (val_loss {best_loss:.4f})")
     model.load_state_dict(best_state)
     return model, history
@@ -565,7 +590,7 @@ def synth_fingerprint(synth_config) -> str:
 
 
 #: settings a resume state written before they existed was trained with
-_LATER_RUN_DEFAULTS = {"window": 32768, "iso_channels": False}
+_LATER_RUN_DEFAULTS = {"window": 32768, "iso_channels": False, "view": "window", "iso_count": 0}
 
 
 def _default_active_top(saved: dict) -> int | None:
@@ -581,7 +606,8 @@ def _check_same_run(saved: dict, now: dict) -> None:
     """Refuse to resume with settings that change the model, the schedule or the frames."""
     keys = ("arch", "model_size", "singly_charged", "epochs", "train_len", "batch_size", "lr",
             "base_seed", "z_max", "evidence_channels", "comb_prior", "fresh_each_epoch",
-            "weight_decay", "heat_weight", "window", "active_top", "iso_channels")
+            "weight_decay", "heat_weight", "window", "active_top", "iso_channels", "iso_count",
+            "view")
 
     def get(d: dict, k: str):
         return d.get(k, _LATER_RUN_DEFAULTS.get(k))
@@ -617,11 +643,18 @@ def _atomic_save(obj, path: Path) -> None:
             time.sleep(0.5)
 
 
-def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None:
+def _save(path: Path, state, config, in_ch: int, val, comb, metric: str,
+          iso_count: int | None = None) -> None:
+    """Write a checkpoint. ``iso_count``: the isotope channels the network reads (default: as
+    many as ``in_ch`` holds, two for six inputs, the first layout's)."""
     from .constants import ladder_active_top
     from .grid import DEFAULT_STEP
 
     ladder = config.arch == "ladder"
+    view = getattr(config, "view", "window")
+    if iso_count is None:
+        iso_count = (max(0, min(in_ch - 4 - (1 if view == "comb" else 0), 3))
+                     if config.iso_channels else 0)
     _atomic_save({"state_dict": state, "config": asdict(config),
                   "synth_config_z_max": config.z_max, "model_size": config.model_size,
                   "z_max": config.z_max, "in_ch": in_ch,
@@ -630,7 +663,8 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str) -> None
                   "singly_charged": config.singly_charged, "selection_metric": metric,
                   "grid_step": DEFAULT_STEP, "window": int(config.window),
                   "active_top": ladder_active_top(config.window) if ladder else None,
-                  "iso_channels": bool(config.iso_channels),
+                  "iso_channels": bool(config.iso_channels), "iso_count": int(iso_count),
+                  "view": view if ladder else "window",
                   "val": val, "comb_baseline": comb}, path)
 
 
