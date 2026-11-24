@@ -84,9 +84,9 @@ are generated once and kept in memory. A run stopped at the memory budget pauses
 the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
 
 `gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
-`setup_linux.sh`) installs and measures the machine, `train_all.bat` trains the whole-spectrum
-recipe in both views (below) within the RAM and GPU memory limits, resumes after any
-interruption and packs what to send back.
+`setup_linux.sh`) installs and measures the machine, `train_all.bat` trains recipe v4 in both
+views (below) within the RAM and GPU memory limits, with the GPU speedups setup measured
+faster, resumes after any interruption and packs what to send back.
 
 **Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
 the run after the current step and saves the whole training state (model, moving average,
@@ -164,7 +164,7 @@ right nine times in ten on real spectra.
 ### Two views of the ladder, and the isotope limit
 
 `--view` (`TrainConfig.view`) chooses how LadderNet reads a spectrum; `gpu_training` trains both
-on the whole-spectrum recipe with isotope channels, on the same spectra (seed 0).
+on recipe v4 (below) with isotope channels, on the same spectra (seed 0).
 
 - **`window`** (the default, every network before): a fixed window, the training crop;
   inference cuts a longer grid into windows of that length.
@@ -218,6 +218,71 @@ network without the gate is the two-channel one: the learned part starts at zero
 the first layout (two isotope channels, in_ch 6, as 07cdc43 saved them) still load and read as
 they did (`tests/test_ladder_views.py`); every isotope-channel network now records its
 `iso_count`.
+
+### Recipe v4: what the GPU package trains
+
+`--recipe v4` is v3 with lone multiply charged oligonucleotides: in the real-like Orbitrap
+spectra (half of them), 40 % of the oligonucleotide main compounds show a single charge state,
+their impurities with them (`SynthConfig.oligo_single_state_prob`, `V4_SINGLE_STATE` in
+`scripts/train_charge_net.py`). In v3's spectra 99.8 % of the envelopes with no other charge
+state of their species in view are singly charged background ions, and where the isotope reader
+reads a charge of 2 or more on such a lone peak the label is z = 1 for 97.6 % of the signal: a
+network trained there learns that a charge without ladder rungs is z = 1, whatever the isotopes
+say. In 80 v4 Orbitrap frames a real-like frame holds 0.95 strong (S/N >= 100) lone envelopes
+of z >= 2 (v3: 0.01), and at lone peaks that the reader reads as 2 or more, the label is z = 1
+for 49 % of the signal (v3: 97.6 %). Only Orbitrap spectra get them: a lone envelope's charge is
+in its absolute m/z, which only the isotope-charge channels carry. The option draws nothing
+while it is 0, so default and v3 frames, and their resume fingerprints, are unchanged
+(`tests/test_recipe_v4.py`).
+
+`gpu_training` trains v4 (`train_all.RECIPE`): `runs/ladder_v4_window.pt` and
+`runs/ladder_v4_comb.pt`, checked by `check_model.py` on a v4 Orbitrap spectrum. Setup measures
+the data workers on v4's spectra and records the recipe in `machine.json`; with a `machine.json`
+measured for another recipe, train_all gives no time estimate and asks for setup to run again.
+
+### GPU speedups and the pace of an epoch
+
+A training step reads nothing back from the GPU but the active bins' positions (LadderNet's
+`nonzero`, which sizes the head). The batches are copied from pinned memory without waiting;
+the epoch's running loss is summed on the device in float64 and read only at log steps, at the
+epoch's end and when the state is saved, so the printed losses, the history and the resume
+state carry the values the host sum gave; the focal loss chooses between its two normalisations
+on the device (`torch.where`, the same value either way); the moving average updates all
+parameters in two launches (`torch._foreach_mul_` / `_foreach_add_`, the same arithmetic) and
+copies only the buffers saved with the model (running statistics, where a module keeps them;
+LadderNet's offset tables, comb counts and charge numbers are rebuilt with it and never change).
+
+`--gpu-speedups LIST` (`TrainConfig.gpu_speedups`, `nn.train.GPU_SPEEDUPS`) turns on speedups
+that change the rounding of the computation, not what is computed, on CUDA only:
+
+- `cudnn_benchmark`: cuDNN times its convolution algorithms on the first step and keeps the
+  fastest (training frames all have one length);
+- `tf32`: matrix products in TensorFloat-32 (cuDNN's convolutions use it by default);
+- `index_select`: LadderNet's sparse head reads the ladder rows with `torch.index_select` and
+  int32 indices (`LadderNet.head_gather`), whose CUDA backward pass adds into the rows
+  (`index_add_`) instead of sorting the indices for `index_put_`; the same outputs, gradients
+  equal up to the order of summation, in the chunked head as in the whole one. It is a plain
+  attribute: checkpoints, state dicts and the dense ONNX export do not change;
+- `fused_adamw`: AdamW updates every parameter in one fused kernel.
+
+They are recorded in the checkpoint and the status file, and are no part of the resume check: a
+run may resume with others (the optimiser state is moved to the implementation the new session
+uses). `gpu_training/probe.py` measures each on the user's GPU, each configuration in a process
+of its own (cuDNN keeps the algorithm it first chose for a convolution, with or without its
+benchmark, for the rest of a process), on the runs' first training batch in each view with the
+head chunking the run will use: kept if a step with it alone is at least 3 % faster than one
+without any and its loss and gradients from the same weights agree (relative loss difference
+at most 1e-3, gradient cosine at least 0.999, gradient norms within 1 %), then combined
+greedily, fastest first, each further one only if it makes the step 2 % faster again
+(`probe.choose_speedups`). train_all passes each run its view's choice; a `machine.json` without
+one gives none.
+
+Every epoch records what set its pace, without waiting for the GPU at any step: the share of the
+training time spent waiting for the data loader, and on CUDA the median GPU time of every 25th
+step (CUDA events, read at the epoch's end), that time times the steps as a share of the
+training time, the peak reserved and allocated GPU memory and the allocator's retries in the
+epoch. They are in the pace line, in the epoch's record in `<out>.log.jsonl` (`pace`) and in
+`<out>.status.json`; `gpu_training/README.md` says how to read them.
 
 ## The U-Net on a GPU
 

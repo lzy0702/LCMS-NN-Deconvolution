@@ -78,7 +78,7 @@ with isotope-charge channels, pausing and resuming at any time, and what to send
 ```bash
 bash gpu_training/setup_linux.sh        # Windows: gpu_training\setup_windows.bat
 bash gpu_training/train_all.sh          # Windows: gpu_training\train_all.bat
-python scripts/eval_charge_bins.py runs/ladder_v3_window.onnx runs/ladder_v3_comb.onnx
+python scripts/eval_charge_bins.py runs/ladder_v4_window.onnx runs/ladder_v4_comb.onnx
 ```
 
 Training data is synthesized on the fly, so there is no dataset to obtain and no epoch repeats.

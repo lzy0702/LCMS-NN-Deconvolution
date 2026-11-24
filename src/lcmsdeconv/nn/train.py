@@ -78,6 +78,86 @@ class TrainConfig:
     #: LadderNet: score this many charges at a time and recompute them in the backward pass
     #: (the same outputs in a fraction of the memory; None: all at once)
     head_chunk: int | None = None
+    #: GPU speedups to use (names of GPU_SPEEDUPS): applied on CUDA only, recorded with the run,
+    #: and free to differ when a run resumes
+    gpu_speedups: tuple = ()
+
+
+#: speedups of GPU training (``TrainConfig.gpu_speedups``, ``--gpu-speedups``). Each changes how
+#: the numbers are computed, not what is computed: the results differ by rounding only, so each
+#: is used only where setup measured it faster on that GPU with the same loss and gradients
+#: (gpu_training/probe.py):
+#:
+#: - ``cudnn_benchmark``: cuDNN times its convolution algorithms once and keeps the fastest
+#:   (training frames all have the same length);
+#: - ``tf32``: matrix products in TensorFloat-32 (cuDNN convolutions use it by default);
+#: - ``index_select``: LadderNet's head reads the ladder rows with ``torch.index_select``
+#:   (``LadderNet.head_gather``), whose backward pass adds into the rows directly instead of
+#:   sorting the indices first;
+#: - ``fused_adamw``: the optimiser updates all parameters in one fused kernel.
+GPU_SPEEDUPS = ("cudnn_benchmark", "tf32", "index_select", "fused_adamw")
+
+
+def parse_gpu_speedups(text: str | None) -> tuple[str, ...]:
+    """``"tf32,index_select"`` -> ``("tf32", "index_select")`` (in GPU_SPEEDUPS order); "none" or
+    "" -> (). A ValueError names the known speedups for anything else."""
+    names = {t.strip() for t in (text or "").split(",")} - {"", "none"}
+    unknown = sorted(names - set(GPU_SPEEDUPS))
+    if unknown:
+        raise ValueError(f"unknown GPU speedup {', '.join(unknown)}: choose from "
+                         f"{', '.join(GPU_SPEEDUPS)}, or none")
+    return tuple(s for s in GPU_SPEEDUPS if s in names)
+
+
+def set_gpu_flags(speedups) -> tuple:
+    """Set the process-wide switches of the speedups ``cudnn_benchmark`` and ``tf32`` (on exactly
+    when named in ``speedups``); returns what they were, for :func:`restore_gpu_flags`."""
+    import torch
+
+    before = (torch.backends.cudnn.benchmark, torch.backends.cuda.matmul.allow_tf32)
+    torch.backends.cudnn.benchmark = "cudnn_benchmark" in speedups
+    torch.backends.cuda.matmul.allow_tf32 = "tf32" in speedups
+    return before
+
+
+def restore_gpu_flags(before: tuple) -> None:
+    import torch
+
+    torch.backends.cudnn.benchmark, torch.backends.cuda.matmul.allow_tf32 = before
+
+
+def _active_speedups(config, device: str, model) -> tuple[str, ...]:
+    """The GPU speedups this run uses: those ``config`` asks for, on CUDA only, index_select only
+    for a LadderNet. Says which, and which are ignored."""
+    asked = parse_gpu_speedups(",".join(config.gpu_speedups or ()))
+    if not asked:
+        return ()
+    if not device.startswith("cuda"):
+        print(f"GPU speedups ignored ({', '.join(asked)}): this run trains on {device}")
+        return ()
+    active = tuple(s for s in asked if s != "index_select" or hasattr(model, "head_gather"))
+    if len(active) < len(asked):
+        print("GPU speedup index_select ignored: it is LadderNet's")
+    print(f"GPU speedups: {', '.join(active)}")
+    return active
+
+
+def _use_fused(opt, fused: bool) -> None:
+    """Make AdamW ``opt``, whose state was just loaded, update fused or not as this run asks (the
+    loaded state brings the choice of the run that saved it). Each parameter's step count moves
+    to where that implementation keeps it: on the parameter's device when fused, on the
+    processor otherwise."""
+    import torch
+
+    for group in opt.param_groups:
+        group["fused"] = True if fused else None
+        if fused:
+            group["foreach"] = None
+        for p in group["params"]:
+            st = opt.state.get(p) or {}
+            if torch.is_tensor(st.get("step")):
+                st["step"] = (st["step"].to(device=p.device, dtype=torch.float32) if fused
+                              else st["step"].to("cpu"))
 
 
 def _device(name: str):
@@ -90,29 +170,149 @@ def _device(name: str):
 
 def _batch_dict(sample, device):
     x, topk_z, topk_w, heat = sample
+    # on CUDA the copies are queued without waiting: the loaders pin their batches in memory
+    # (make_dataloaders), so the GPU reads them while the processor goes on
+    nb = str(device).startswith("cuda")
     return {
-        "features": x.to(device),
-        "topk_z": topk_z.to(device),
-        "topk_w": topk_w.to(device),
-        "heat": heat.to(device),
+        "features": x.to(device, non_blocking=nb),
+        "topk_z": topk_z.to(device, non_blocking=nb),
+        "topk_w": topk_w.to(device, non_blocking=nb),
+        "heat": heat.to(device, non_blocking=nb),
     }
 
 
 class EMA:
+    """Exponential moving average of a model's parameters, ``shadow``.
+
+    Buffers saved with the model (running statistics, where a module keeps them) are copied from
+    it at every update. Buffers it does not save (LadderNet's ladder offsets, comb counts,
+    charge numbers and tooth masks) are rebuilt with the model from its settings and never
+    change, so they are left as the copy made them."""
+
     def __init__(self, model, decay: float):
         self.decay = decay
         self.shadow = copy.deepcopy(model).eval()
         for p in self.shadow.parameters():
             p.requires_grad_(False)
+        self._params = list(self.shadow.parameters())
+        saved = set(model.state_dict())
+        self._buffers = [(name, b) for name, b in self.shadow.named_buffers() if name in saved]
 
     def update(self, model):
         import torch
 
         with torch.no_grad():
-            for s, m in zip(self.shadow.parameters(), model.parameters()):
-                s.mul_(self.decay).add_(m, alpha=1 - self.decay)
-            for s, m in zip(self.shadow.buffers(), model.buffers()):
-                s.copy_(m)
+            live = list(model.parameters())
+            if self._params and hasattr(torch, "_foreach_mul_") and hasattr(torch, "_foreach_add_"):
+                # the same arithmetic as the loop below, in two launches for all parameters
+                # instead of two per parameter
+                torch._foreach_mul_(self._params, self.decay)
+                torch._foreach_add_(self._params, live, alpha=1 - self.decay)
+            else:
+                for s, m in zip(self._params, live):
+                    s.mul_(self.decay).add_(m, alpha=1 - self.decay)
+            for name, s in self._buffers:
+                s.copy_(model.get_buffer(name))
+
+
+class _RunningLoss:
+    """The sum of the epoch's training losses so far, kept on the device in float64: adding a
+    step's loss does not wait for the GPU, only reading the sum does (at log steps, at the
+    epoch's end and when the state is saved). The same float64 sum the host kept before."""
+
+    def __init__(self, device: str, total: float = 0.0, n: int = 0):
+        import torch
+
+        # Apple's GPUs have no float64: the sum stays on the processor there
+        where = "cpu" if str(device).startswith("mps") else device
+        self.sum = torch.tensor(float(total), dtype=torch.float64, device=where)
+        self.n = int(n)
+
+    def add(self, loss) -> None:
+        self.sum += loss.detach().to(self.sum.device)
+        self.n += 1
+
+    def reset(self) -> None:
+        self.sum.zero_()
+        self.n = 0
+
+    def state(self) -> tuple[float, int]:
+        """``(sum, steps)`` as the resume state keeps them."""
+        return float(self.sum), self.n
+
+    def mean(self) -> float:
+        return float(self.sum) / max(1, self.n)
+
+
+class _EpochWatch:
+    """What sets the pace of an epoch, measured without making the processor wait for the GPU:
+    the time spent waiting for the next batch from the data loader, the GPU time of every
+    ``every``-th step (CUDA events, read once the epoch is over), and on CUDA the memory peaks
+    and the allocator's retries (allocations that failed at first and succeeded only after the
+    allocator released its cache: memory pressure at the cap)."""
+
+    def __init__(self, device: str, every: int = 25):
+        import torch
+
+        self._torch = torch
+        self.cuda = str(device).startswith("cuda")
+        self.every = int(every)
+        self.wait = 0.0
+        self.events: list = []
+        self._open = None
+        self.retries0 = self._retries() if self.cuda else 0
+
+    def _retries(self) -> int:
+        return int(self._torch.cuda.memory_stats().get("num_alloc_retries", 0))
+
+    def batches(self, loader):
+        """``loader``'s batches; the time spent waiting for each is added to ``wait``."""
+        t = time.perf_counter()
+        it = iter(loader)
+        while True:
+            try:
+                item = next(it)
+            except StopIteration:
+                self.wait += time.perf_counter() - t
+                return
+            self.wait += time.perf_counter() - t
+            yield item
+            t = time.perf_counter()
+
+    def step_starts(self, k: int) -> None:
+        """Before step ``k`` of this epoch (0 = its first in this session)."""
+        if self.cuda and k % self.every == 0:
+            self._open = self._torch.cuda.Event(enable_timing=True)
+            self._open.record()
+
+    def step_ends(self) -> None:
+        if self._open is not None:
+            end = self._torch.cuda.Event(enable_timing=True)
+            end.record()
+            self.events.append((self._open, end))
+            self._open = None
+
+    def summary(self, seconds: float, steps: int) -> dict:
+        """The epoch's record, for ``steps`` training steps in ``seconds`` (validation not
+        included): the share of that time spent waiting for data and, on CUDA, the median GPU
+        time of the timed steps, the share of the time the GPU was busy by that measure, the
+        memory peaks (GB, since the run started in this process) and the allocator's retries
+        in this epoch."""
+        import statistics
+
+        rec = {"data_wait_share": round(self.wait / max(seconds, 1e-9), 4)}
+        if not self.cuda:
+            return rec
+        torch = self._torch
+        if self.events:
+            self.events[-1][1].synchronize()
+            ms = statistics.median(a.elapsed_time(b) for a, b in self.events)
+            rec.update(gpu_step_ms=round(ms, 1), gpu_steps_timed=len(self.events),
+                       gpu_busy_share=round(ms * steps / 1000.0 / max(seconds, 1e-9), 4))
+        rec.update(gpu_reserved_gb=round(torch.cuda.max_memory_reserved() / 2**30, 2),
+                   gpu_allocated_gb=round(torch.cuda.max_memory_allocated() / 2**30, 2),
+                   alloc_retries=self._retries() - self.retries0)
+        return rec
 
 
 def train(config: TrainConfig, synth_config=None):
@@ -166,6 +366,9 @@ def train(config: TrainConfig, synth_config=None):
     model = build_model(config.model_size, z_max=config.z_max, in_ch=in_ch,
                         comb_prior=config.comb_prior, arch=config.arch, window=config.window,
                         iso=config.iso_channels, **ladder_kw).to(device)
+    speedups = _active_speedups(config, device, model)
+    if "index_select" in speedups:
+        model.head_gather = "index_select"  # before the moving average copies the model
     iso_count = int(getattr(model, "iso_count", 0))
     if config.init:
         state = torch.load(config.init, map_location=device, weights_only=False)["state_dict"]
@@ -186,7 +389,9 @@ def train(config: TrainConfig, synth_config=None):
                               base_seed=config.base_seed, cache=config.cache_frames,
                               pin_memory=device.startswith("cuda"))
     steps_per_epoch = len(tl)
-    opt = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    fused = "fused_adamw" in speedups
+    opt = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay,
+                fused=True if fused else None)
     steps = max(1, steps_per_epoch) * config.epochs
     sched = OneCycleLR(opt, max_lr=config.lr, total_steps=steps, pct_start=0.2)
     loss_fn = ChargeLoss(heat_weight=config.heat_weight,
@@ -212,7 +417,7 @@ def train(config: TrainConfig, synth_config=None):
     best_loss = float("inf")
     best_key = None
     epoch0, step0 = 0, 0
-    run_sum, run_n = 0.0, 0
+    running = _RunningLoss(device)  # this epoch's training losses
     comb = None
     if resume_path.exists() and not (config.resume or config.restart):
         raise SystemExit(
@@ -240,11 +445,12 @@ def train(config: TrainConfig, synth_config=None):
         model.load_state_dict(st["model"])
         ema.shadow.load_state_dict(st["ema"])
         opt.load_state_dict(st["opt"])
+        _use_fused(opt, fused)  # the speedups may differ from the paused session's
         sched.load_state_dict(st["sched"])
         history, best_state, best_loss = st["history"], st["best_state"], st["best_loss"]
         best_key = tuple(st["best_key"]) if st["best_key"] is not None else None
         epoch0, step0, comb = st["epoch"], st["step"], st["comb"]
-        run_sum, run_n = st.get("running", (0.0, 0))
+        running = _RunningLoss(device, *st.get("running", (0.0, 0)))
         if epoch0 >= config.epochs:
             print(f"{resume_path}: this run already finished all {config.epochs} epochs")
         else:
@@ -290,10 +496,14 @@ def train(config: TrainConfig, synth_config=None):
                  "opt": opt.state_dict(), "sched": sched.state_dict(), "history": history,
                  "best_state": best_state, "best_key": best_key, "best_loss": best_loss,
                  "epoch": epoch, "step": step, "comb": comb, "config": asdict(config),
-                 "running": (run_sum, run_n), "synth": synth_key, "stop_reason": stop_reason,
-                 "active_top": active_top, "iso_count": iso_count}
+                 "running": running.state(), "synth": synth_key, "stop_reason": stop_reason,
+                 "active_top": active_top, "iso_count": iso_count,
+                 "gpu_speedups": list(speedups)}
         _atomic_save(state, resume_path)
-        _write_status(out_path, epoch, step, config.epochs, stop_reason)
+        extra = {"gpu_speedups": list(speedups)}
+        if history and history[-1].get("pace"):
+            extra["pace"] = history[-1]["pace"]  # the last epoch's
+        _write_status(out_path, epoch, step, config.epochs, stop_reason, extra)
 
     # Ctrl+C asks for a pause: the current step finishes, the state is saved, the run ends.
     # A second Ctrl+C aborts at once. A file named PAUSE next to the output does the same.
@@ -329,23 +539,27 @@ def train(config: TrainConfig, synth_config=None):
     pace = {"steps": 0, "seconds": 0.0}  # training steps done in this session, and their time
     awake = _KeepAwake()
     awake.start()
+    flags = set_gpu_flags(speedups) if speedups else None
     try:
         for epoch in range(epoch0, config.epochs):
             model.train()
             if epoch != epoch0:
-                run_sum, run_n = 0.0, 0
+                running.reset()
             first_step = step0 if epoch == epoch0 else 0
             # new spectra every epoch: epoch e reads items e * train_len ... (EpochSampler)
             tl.sampler.epoch = epoch if config.fresh_each_epoch else 0
             tl.sampler.start = first_step * config.batch_size
             epoch_start = time.time()
+            watch = _EpochWatch(device)
             i = first_step - 1
             try:
-                for i, sample in enumerate(tl, start=first_step):
+                for i, sample in enumerate(watch.batches(tl), start=first_step):
+                    # nothing in a step reads a value back from the GPU but the active bins'
+                    # positions (LadderNet): the loss is read at log steps only
+                    watch.step_starts(i - first_step)
                     batch = _batch_dict(sample, device)
                     out = model(batch["features"])
                     losses = loss_fn(out, batch)
-                    loss_val = float(losses["loss"].detach())
                     opt.zero_grad()
                     losses["loss"].backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
@@ -353,11 +567,12 @@ def train(config: TrainConfig, synth_config=None):
                     if sched.last_epoch < steps - 1:
                         sched.step()
                     ema.update(model)
-                    run_sum += loss_val
-                    run_n += 1
+                    running.add(losses["loss"])
+                    watch.step_ends()
                     if i % config.log_every == 0:
-                        print(f"  epoch {epoch} step {i}/{steps_per_epoch} loss {loss_val:.4f} "
-                              f"ce {float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
+                        print(f"  epoch {epoch} step {i}/{steps_per_epoch} loss "
+                              f"{float(losses['loss'].detach()):.4f} ce "
+                              f"{float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
                               flush=True)
                     if paused():
                         return stop_here(epoch, i + 1, "paused")
@@ -376,8 +591,12 @@ def train(config: TrainConfig, synth_config=None):
                 if pause["requested"]:
                     return stop_here(epoch, i + 1, "paused")
                 raise
+            trained = time.time() - epoch_start
             pace["steps"] += i + 1 - first_step
-            pace["seconds"] += time.time() - epoch_start
+            pace["seconds"] += trained
+            measured = watch.summary(trained, i + 1 - first_step)
+            if speedups:
+                measured["gpu_speedups"] = list(speedups)
             try:
                 val_ema = evaluate(ema.shadow, vl, loss_fn, device, kinds=comb.get("kinds"))
                 val_live = evaluate(model, vl, loss_fn, device, kinds=comb.get("kinds"))
@@ -397,9 +616,9 @@ def train(config: TrainConfig, synth_config=None):
 
             best = "ema" if key(val_ema) >= key(val_live) else "live"
             val = val_ema if best == "ema" else val_live
-            history.append({"epoch": epoch, "train_loss": run_sum / max(1, run_n),
+            history.append({"epoch": epoch, "train_loss": running.mean(),
                             "ema": val_ema, "live": val_live, "best": best,
-                            "seconds": time.time() - session_start})
+                            "seconds": time.time() - session_start, "pace": measured})
             _log(log_path, history[-1])
             bands = {k: round(v, 3) for k, v in val["bands_given_ion"].items()}
             print(f"epoch {epoch}: {metric} ema {val_ema[metric]:.3f} live "
@@ -408,26 +627,30 @@ def train(config: TrainConfig, synth_config=None):
             for line in by_kind_lines(val.get("by_kind"), comb.get("by_kind")):
                 print(line, flush=True)
             print("  " + _pace_line(pace, epoch, epoch_start, config, steps_per_epoch, ram,
-                                    device), flush=True)
+                                    device, measured), flush=True)
             if best_state is None or key(val) > best_key:
                 best_key = key(val)
                 best_loss = val["val_loss"]
                 best_state = copy.deepcopy((ema.shadow if best == "ema" else model).state_dict())
-                _save(out_path, best_state, config, in_ch, val, comb, metric, iso_count)
+                _save(out_path, best_state, config, in_ch, val, comb, metric, iso_count,
+                      gpu_speedups=speedups)
                 print(f"  saved {out_path} ({metric} {val[metric]:.3f})")
-            run_sum, run_n = 0.0, 0
+            running.reset()
             save_state(epoch + 1, 0, "finished" if epoch + 1 >= config.epochs else None)
             last_save = time.time()
             if paused() and epoch + 1 < config.epochs:
                 return stop_here(epoch + 1, 0, "paused")
     finally:
         awake.stop()
+        if flags is not None:
+            restore_gpu_flags(flags)
         if old_handler is not None:
             signal.signal(signal.SIGINT, old_handler)
 
     if best_state is None:
         best_state = model.state_dict()
-        _save(out_path, best_state, config, in_ch, None, comb, metric, iso_count)
+        _save(out_path, best_state, config, in_ch, None, comb, metric, iso_count,
+              gpu_speedups=speedups)
     print(f"finished; best checkpoint {out_path} (val_loss {best_loss:.4f})")
     model.load_state_dict(best_state)
     return model, history
@@ -450,16 +673,18 @@ def _warm_up(synth_config) -> None:
 
 
 def _write_status(out_path: Path, epoch: int, step: int, epochs: int,
-                  stop_reason: str | None) -> None:
+                  stop_reason: str | None, extra: dict | None = None) -> None:
     """``<out>.status.json``: where the run stands, for gpu_training/train_all.py (which then
-    does not need to load the resume state, and PyTorch with it)."""
+    does not need to load the resume state, and PyTorch with it), and ``extra`` for the record
+    (the GPU speedups in use, the last epoch's pace measurements)."""
     import json
     import os
 
     path = out_path.with_suffix(".status.json")
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps({"epoch": epoch, "step": step, "epochs": epochs,
-                               "stop_reason": stop_reason}) + "\n", encoding="utf-8")
+                               "stop_reason": stop_reason, **(extra or {})}) + "\n",
+                   encoding="utf-8")
     for attempt in range(20):
         try:
             os.replace(tmp, path)
@@ -558,19 +783,33 @@ class _RamWatch:
 
 
 def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epoch: int,
-               ram: _RamWatch, device: str) -> str:
-    """Duration and speed of the epoch, memory in use, and the time left."""
+               ram: _RamWatch, device: str, measured: dict | None = None) -> str:
+    """Duration and speed of the epoch, what set its pace (``measured``, the epoch's record of
+    :class:`_EpochWatch`), memory in use, and the time left."""
     import torch
 
+    m = measured or {}
     took = time.time() - epoch_start
     per_step = pace["seconds"] / max(1, pace["steps"])
     left = per_step * steps_per_epoch * (config.epochs - epoch - 1)
     parts = [f"epoch took {took / 60:.1f} min",
              f"{config.batch_size / max(per_step, 1e-9):.0f} spectra/s"]
+    if "data_wait_share" in m:
+        share = f"of the training time {100 * m['data_wait_share']:.0f} % waiting for data"
+        if m.get("gpu_step_ms") is not None:
+            share += (f", {100 * m['gpu_busy_share']:.0f} % GPU busy ({m['gpu_step_ms']:.0f} ms "
+                      f"a step)")
+        parts.append(share)
     if ram.proc is not None:
         parts.append(f"RAM {ram.used_gb():.1f} GB" + (f" of {ram.limit:g}" if ram.limit else ""))
     if device.startswith("cuda"):
-        parts.append(f"GPU {torch.cuda.max_memory_reserved() / 2**30:.1f} GB reserved")
+        reserved = m.get("gpu_reserved_gb", torch.cuda.max_memory_reserved() / 2**30)
+        gpu = f"GPU {reserved:.1f} GB reserved"
+        if "gpu_allocated_gb" in m:
+            retries = m.get("alloc_retries", 0)
+            gpu += (f", {m['gpu_allocated_gb']:.1f} GB allocated at most, {retries} allocator "
+                    f"retr{'y' if retries == 1 else 'ies'}")
+        parts.append(gpu)
     if config.epochs - epoch - 1 > 0:
         parts.append(f"about {left / 3600:.1f} h to go" if left >= 3600
                      else f"about {left / 60:.0f} min to go")
@@ -644,9 +883,10 @@ def _atomic_save(obj, path: Path) -> None:
 
 
 def _save(path: Path, state, config, in_ch: int, val, comb, metric: str,
-          iso_count: int | None = None) -> None:
+          iso_count: int | None = None, gpu_speedups=()) -> None:
     """Write a checkpoint. ``iso_count``: the isotope channels the network reads (default: as
-    many as ``in_ch`` holds, two for six inputs, the first layout's)."""
+    many as ``in_ch`` holds, two for six inputs, the first layout's); ``gpu_speedups``: those
+    the training used, for the record."""
     from .constants import ladder_active_top
     from .grid import DEFAULT_STEP
 
@@ -665,6 +905,7 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str,
                   "active_top": ladder_active_top(config.window) if ladder else None,
                   "iso_channels": bool(config.iso_channels), "iso_count": int(iso_count),
                   "view": view if ladder else "window",
+                  "gpu_speedups": list(gpu_speedups or ()),
                   "val": val, "comb_baseline": comb}, path)
 
 

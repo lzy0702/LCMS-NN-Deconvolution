@@ -223,6 +223,8 @@ class LadderNet(nn.Module):
     prior reads 0 there. Only measured bins can be active; the cap stays ``active_top``.
     ``head_chunk`` (training only) scores that many charges at a time and recomputes them in the
     backward pass (``torch.utils.checkpoint``): the same outputs, a fraction of the memory.
+    ``head_gather = "index_select"`` (training only, a plain attribute) reads the ladder rows
+    with ``torch.index_select``: the same outputs, gradients equal up to the order of summation.
     """
 
     def __init__(self, in_ch: int = 4, z_max: int = 100, z_ladder: int = 64, step: float = 2e-5,
@@ -262,6 +264,11 @@ class LadderNet(nn.Module):
             raise ValueError(f"this LadderNet reads {need} input channels ({what}), not {in_ch}")
         #: charges scored at a time in training (None: all at once)
         self.head_chunk = head_chunk
+        #: how the sparse path's head reads each active bin's ladder rows: "index" (advanced
+        #: indexing) or "index_select" (``torch.index_select`` with int32 indices, whose backward
+        #: pass on CUDA adds into the rows directly instead of sorting the indices first). The
+        #: same values; a training setting (the GPU speedup of that name), saved with nothing
+        self.head_gather = "index"
         self.dense = False
 
         def shift(z_from: float, z_to: float) -> int | None:
@@ -370,7 +377,13 @@ class LadderNet(nn.Module):
 
     def _head_rows(self, z0: int, z1: int, qf, start, off, zc, st, zl):
         """The learned scores of charges ``z0 + 1 .. z1`` at the active bins ``[n, z1 - z0]``."""
-        g = qf[start[:, None, None] + off[z0:z1][None]]  # [n, Zc, J, P]
+        idx = start[:, None, None] + off[z0:z1][None]  # [n, Zc, J]: rows of qf
+        if self.head_gather == "index_select":
+            small = qf.shape[0] <= torch.iinfo(torch.int32).max
+            flat = idx.reshape(-1).to(torch.int32) if small else idx.reshape(-1)
+            g = torch.index_select(qf, 0, flat).reshape(*idx.shape, qf.shape[1])
+        else:
+            g = qf[idx]  # [n, Zc, J, P]
         feats = g.reshape(g.shape[0], z1 - z0, -1)
         bias = self.z_bias[z0:z1][None]
         if self.view == "comb":

@@ -14,22 +14,24 @@ while the GPU trains; that part cannot run on the GPU. By default everything sta
 Two networks, one after the other, on the same spectra (the same seed), so that they can be
 compared:
 
-- **`window`** (`runs\ladder_v3_window.pt`): the ladder reads a fixed window of 131 072 grid
+- **`window`** (`runs\ladder_v4_window.pt`): the ladder reads a fixed window of 131 072 grid
   bins, a region's whole spectrum; inference cuts a longer spectrum into such windows.
-- **`comb`** (`runs\ladder_v3_comb.pt`): the same ladder for a spectrum of any length, read
+- **`comb`** (`runs\ladder_v4_comb.pt`): the same ladder for a spectrum of any length, read
   whole in one pass. Its layers do not depend on the input's length, it is told which bins were
   measured, and where a rung of a charge ladder falls outside the spectrum it reads a learned
   "not measured" value instead of zeros.
 
-Both use the whole-spectrum recipe: full size, 20 epochs of 6 000 new spectra each (singly
-charged ions included), learning rate 0.002, and the **isotope-charge channels**: the charge the
-comb's isotope reader reads from resolved isotope spacing, the strength of that reading, and
-the **isotope limit**, the highest charge whose isotope spacing can be resolved at that m/z
-with the instrument's resolving power. Above the limit the reader answers a lower charge it can
-resolve, mostly one at or a little below the limit; the network uses the limit to tell such
-readings apart. Untrained, the
-share of charges of z >= 2 read right on Orbitrap spectra is 0.66 with the limit (0.85 weighted
-by intensity), against 0.62 (0.82) without isotope channels and 0.39 (0.42) with the earlier
+Both use **recipe v4**, the whole-spectrum recipe in which 40 % of the oligonucleotides of the
+real-like Orbitrap spectra show a single charge state (so that the network learns that a lone
+envelope can be multiply charged, as its isotope spacing says): full size, 20 epochs of 6 000
+new spectra each (singly charged ions included), learning rate 0.002, and the **isotope-charge
+channels**: the charge the comb's isotope reader reads from resolved isotope spacing, the
+strength of that reading, and the **isotope limit**, the highest charge whose isotope spacing
+can be resolved at that m/z with the instrument's resolving power. Above the limit the reader
+answers a lower charge it can resolve, mostly one at or a little below the limit; the network
+uses the limit to tell such readings apart. Untrained, the share of charges of z >= 2 read
+right on the Orbitrap spectra of recipe v3 is 0.66 with the limit (0.85 weighted by
+intensity), against 0.62 (0.82) without isotope channels and 0.39 (0.42) with the earlier
 layout's two channels, whose wrong readings the limit lets the network discount.
 
 Two more runs exist but are not trained by default: `window-plain` and `comb-plain`, the same
@@ -55,7 +57,9 @@ place, for example `C:\lcms`; let Windows replace the files). The environment `.
 PyTorch is not downloaded again; because the package changed, the setup measures the computer
 and runs its check again (a few minutes). Delete `gpu_training\run_stage1.bat` and
 `run_stage2.bat` if they are still there: they belong to the earlier two-stage training. The
-earlier runs' files in `runs` are not touched.
+earlier runs' files in `runs` are not touched. This package trains recipe v4 into new files
+(`runs\ladder_v4_*`): a recipe v3 run that has not finished is not continued by it, so finish
+that one with the earlier package first if you want it.
 
 **The easy way: one double-click.** Double-click `gpu_training\setup_and_train.bat`. The first
 time, it sets up (step 1) and then trains (step 2) in the same window; at the end it names the
@@ -69,11 +73,12 @@ runs the whole setup again. The two steps can also be run one at a time:
 **1. Set up (10-20 minutes the first time):** `gpu_training\setup_windows.bat`. It creates the
 Python environment `.venv`, installs PyTorch for CUDA and this package, checks that PyTorch
 computes on the GPU, and measures your machine: training steps of both networks on the GPU
-under the 14 GB cap, and how much memory each data worker takes and how many spectra per second
-they deliver. It chooses the number of workers that keeps the training within 16 GB of RAM
-(`gpu_training\machine.json`), then checks everything end to end in a few minutes: a few
-training steps of both networks, their export to ONNX, and whole spectra read with them. It
-prints the expected training time; its output is also in `gpu_training\setup.log`.
+under the 14 GB cap, how much memory each data worker takes and how many spectra per second
+they deliver, and which GPU speedups make training faster on your GPU (below). It chooses the
+number of workers that keeps the training within 16 GB of RAM (`gpu_training\machine.json`),
+then checks everything end to end in a few minutes: a few training steps of both networks
+(with the speedups chosen), their export to ONNX, and whole spectra read with them. It prints
+the expected training time; its output is also in `gpu_training\setup.log`.
 
 **2. Train:** `gpu_training\train_all.bat` trains the runs, exports each finished one to ONNX
 (checking that the ONNX model computes what the checkpoint does) and reads whole spectra with
@@ -109,8 +114,30 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   Exporting the window network to ONNX (after its run, and in setup's check) takes about 9 GB
   of RAM for a minute or two; no training runs at that time.
 - **Speed:** the data workers and the GPU work at the same time and the slower one sets the
-  pace; setup says which. More workers (a larger RAM budget) help only if the workers are the
-  slower one. The workers run at below-normal priority, so the computer stays usable.
+  pace; setup says which, and every epoch measures it again (see "What the output means").
+  More workers (a larger RAM budget) help only if the workers are the slower one. The workers
+  run at below-normal priority, so the computer stays usable.
+- **GPU speedups:** four switches change how the GPU rounds its arithmetic, not what it
+  computes: `cudnn_benchmark` (cuDNN times its convolution methods once and keeps the fastest),
+  `tf32` (matrix products in TensorFloat-32, as cuDNN's convolutions already are),
+  `index_select` (the ladder head reads its rows in a way whose backward pass needs no sort)
+  and `fused_adamw` (the optimiser updates every weight in one step). Setup measures them on
+  your GPU, each in a process of its own, on the first training batch of both networks with
+  the chunking training will use: a step with every switch off, then with each one alone (a
+  few steps to warm up, then the median of eight timed steps). A switch is kept if its step is
+  at least 3 % faster and its loss and gradients, from the same weights on the same batch, agree
+  with those of the step without it (the loss within 0.1 %, the gradients pointing the same way
+  to a cosine of 0.999 and of the same size within 1 %: TensorFloat-32 rounding stays well
+  inside these, a real change of the computation does not). The kept ones are then combined,
+  fastest first, each further one only if it makes the step at least 2 % faster again and still
+  agrees. A switch that fails in any way is left off. `gpu_speedups` in `machine.json` records
+  the choice for each network,
+  `speedup_timings` the measured steps, `speedup_checks` why each switch was kept or not, and
+  `cuda_kernels` the 15 GPU kernels that take the most time in the window network's step; setup
+  prints a summary (also in `setup.log`). Training uses the chosen switches and prints them as
+  each run starts (`GPU speedups tf32, index_select`, or `no GPU speedups`). A `machine.json`
+  from an earlier setup has no such record: training then uses none, and says that running
+  setup again measures them. A paused run may resume with other switches.
 - **Sleep:** while training, Windows is kept from going to sleep (the screen may still turn off).
   Pause Windows Update for the day before a long run.
 
@@ -124,14 +151,29 @@ epoch 8: charge_acc_given_ion ema 0.903 live 0.907 (comb 0.668) -> keeping live;
   charge of z >= 2 ion bins read right (log-SNR / intensity weighted):
     time-of-flight  network 0.895 / 0.931   comb 0.689 / 0.844
     Orbitrap        network 0.850 / 0.917   comb 0.237 / 0.290
-  epoch took 21 min; 48 spectra/s; RAM 11.8 GB of 16; GPU 3.9 GB reserved; about 4.1 h to go
+  epoch took 21.0 min; 48 spectra/s; of the training time 2 % waiting for data, 95 % GPU busy (79 ms a step); RAM 11.8 GB of 16; GPU 3.9 GB reserved, 3.4 GB allocated at most, 0 allocator retries; about 4.1 h to go
 ```
 
 (illustrative numbers). The number in brackets is the comb estimator, scored the same way on
 the same spectra, as the pipeline runs it. The two lines below split the comparison by kind of
 spectrum, bins weighted by log-SNR and by intensity; a network worth uploading beats the comb in
-all four. The last line gives speed, memory and the time left. The best checkpoint is saved
-whenever it improves; logs are in `runs\*.log.jsonl` and `runs\*.console.log`.
+all four. The last line gives speed, what set the pace, memory and the time left:
+
+- **waiting for data**: the share of the epoch's training time (validation not counted) the
+  training spent waiting for the data workers' next batch. High (more than a few percent)
+  means the workers set the pace: more workers, a larger RAM budget, would help.
+- **GPU busy** and **ms a step**: the GPU time of every 25th step, timed on the GPU itself
+  (its median), and that time times the number of steps as a share of the training time. Near
+  100 % the GPU sets the pace, and more workers would not help.
+- **allocated at most** and **allocator retries**: the most GPU memory the tensors took (below
+  "reserved", which adds what PyTorch keeps for reuse), and how often in this epoch an
+  allocation succeeded only after PyTorch released its reserve. Retries above 0 mean the memory
+  is tight at the cap and the steps slow down: raise the cap with `--gpu-memory-gb` if the GPU
+  has room, or train with a smaller batch.
+
+The same numbers are in each epoch's record in `runs\*.log.jsonl` (`pace`) and in
+`runs\*.status.json`, with the GPU speedups the run used. The best checkpoint is saved whenever
+it improves; logs are in `runs\*.log.jsonl` and `runs\*.console.log`.
 
 ## Pausing and resuming
 
@@ -170,6 +212,10 @@ bash gpu_training/train_all.sh
   budget with `--ram-gb`.
 - **`[WinError 1455] The paging file is too small`** while workers start: let Windows manage
   the paging file size, or use fewer workers (`--workers 6`).
-- **Re-measure the machine** after changing the limits or hardware: `.venv\Scripts\python
-  gpu_training\probe.py --ram-gb 16 --gpu-memory-gb 14`; `.venv\Scripts\python
-  gpu_training\check_gpu.py` runs a few steps of both networks on random input.
+- **Re-measure the machine** after changing the limits, the hardware or the NVIDIA driver (the
+  GPU speedups are measured again too): `.venv\Scripts\python gpu_training\probe.py --ram-gb
+  16 --gpu-memory-gb 14`; `.venv\Scripts\python gpu_training\check_gpu.py` runs a few steps of
+  both networks on random input.
+- **A run stops with an error from cuDNN, from `index_select` or from the optimiser** after
+  setup chose GPU speedups: set each network's list under `gpu_speedups` in
+  `gpu_training\machine.json` to `[]` and start the training again; it resumes without them.

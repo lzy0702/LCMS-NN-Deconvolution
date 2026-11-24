@@ -27,15 +27,20 @@ def centernet_focal(apex_logit: torch.Tensor, heat: torch.Tensor, alpha: float =
 
     Crops that contain no peak at all have no positives; normalizing those by 1 would make the
     negative term explode with the crop length, so they are normalized per bin instead.
+
+    Both normalisations are computed and the one that applies is chosen on the device: asking
+    the host whether there are positives would wait for the GPU at every training step. The
+    unused one divides by at least 1, so that its zero gradient stays zero.
     """
     p = torch.sigmoid(apex_logit).squeeze(1).clamp(1e-4, 1 - 1e-4)  # [N, L]
     pos = (heat >= 1.0 - 1e-6).float()
     pos_loss = -((1 - p) ** alpha) * torch.log(p) * pos
     neg_loss = -((1 - heat) ** beta) * (p ** alpha) * torch.log(1 - p) * (1 - pos)
     n_pos = pos.sum()
-    if float(n_pos) < 1.0:
-        return neg_loss.sum() / max(heat.numel(), 1)
-    return (pos_loss.sum() + neg_loss.sum()) / n_pos
+    neg = neg_loss.sum()
+    per_bin = neg / max(heat.numel(), 1)
+    per_positive = (pos_loss.sum() + neg) / n_pos.clamp(min=1.0)
+    return torch.where(n_pos < 1.0, per_bin, per_positive)
 
 
 def bin_weights(features: torch.Tensor, topk_z: torch.Tensor, topk_w: torch.Tensor,

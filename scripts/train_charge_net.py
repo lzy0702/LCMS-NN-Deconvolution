@@ -40,6 +40,12 @@ Examples:
     # v4: v3 with lone multiply charged oligonucleotides in the real-like Orbitrap spectra
     python scripts/train_charge_net.py --recipe v4 --iso-channels --out runs/ladder_v4_iso.pt
 
+    # GPU speedups that change only the rounding of the computation (gpu_training/probe.py
+    # measures which are faster on a GPU with the same loss and gradients; train_all.py passes
+    # those): cudnn_benchmark, tf32, index_select, fused_adamw
+    python scripts/train_charge_net.py --recipe v4 --iso-channels \\
+        --gpu-speedups tf32,index_select --out runs/ladder_v4_iso.pt
+
     # export for inference (ONNX + JSON sidecar next to it)
     lcmsdeconv export-onnx runs/ladder_stage1.pt -o runs/ladder_stage1.onnx
 
@@ -59,7 +65,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from lcmsdeconv.nn.machine import auto_workers, single_threaded_workers
-from lcmsdeconv.nn.train import TrainConfig, train
+from lcmsdeconv.nn.train import GPU_SPEEDUPS, TrainConfig, parse_gpu_speedups, train
 from lcmsdeconv.synth.compounds import DEFAULT_CLASSES, ClassConfig
 from lcmsdeconv.synth.config import SynthConfig
 
@@ -200,6 +206,12 @@ def main():
                          "sets the default --workers, and the run pauses if it is exceeded")
     ap.add_argument("--max-gpu-memory-gb", type=float, default=None,
                     help="cap on this process's GPU memory, CUDA context included")
+    ap.add_argument("--gpu-speedups", default="none", metavar="LIST",
+                    help=f"comma-separated GPU speedups, each changing only the rounding of the "
+                         f"computation: {', '.join(GPU_SPEEDUPS)}, or none (the default). "
+                         f"gpu_training/train_all.py passes those setup measured faster on this "
+                         f"GPU with the same loss and gradients; ignored on the processor; a "
+                         f"run may resume with others")
     ap.add_argument("--device", default="cuda",
                     help="cuda (default: the network trains on the GPU only), cpu, or auto")
     ap.add_argument("--threads", type=int, default=None, help="CPU threads for torch")
@@ -226,6 +238,10 @@ def main():
     ap.add_argument("--out", default="runs/ladder.pt")
     ap.add_argument("--smoke", action="store_true", help="tiny run to check the installation")
     args = ap.parse_args()
+    try:
+        speedups = parse_gpu_speedups(args.gpu_speedups)
+    except ValueError as exc:
+        ap.error(str(exc))
     try:
         import numba  # noqa: F401
     except ImportError:
@@ -257,7 +273,7 @@ def main():
                       clear_pause_files=not args.keep_pause_files,
                       max_gpu_memory_gb=args.max_gpu_memory_gb,
                       window=args.window, iso_channels=args.iso_channels, view=args.view,
-                      head_chunk=args.head_chunk)
+                      head_chunk=args.head_chunk, gpu_speedups=speedups)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
     if v3:

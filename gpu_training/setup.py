@@ -14,10 +14,12 @@ Every step is skipped when it is already done, so running it again is safe:
 4. installs this package with what training needs (numba, onnx, psutil);
 5. measures the machine within the limits (gpu_training/probe.py): GPU memory and time of a
    training step of both views under the GPU cap, memory per data worker, spectra per second,
-   and the number of workers that keeps everything within the RAM budget
+   the number of workers that keeps everything within the RAM budget, and the GPU speedups
+   that make a training step faster on this GPU with the same loss and gradients
    (gpu_training/machine.json);
 6. checks everything end to end in a few minutes (train_all.py --smoke): a few training steps
-   of both views on the GPU, their export to ONNX, and the predictor reading whole spectra.
+   of both views on the GPU with the speedups chosen, their export to ONNX, and the predictor
+   reading whole spectra.
 
 A setup that finishes records itself in gpu_training/setup_done.json. With --if-needed (what
 setup_and_train.bat uses) the whole setup is skipped while that record still holds: the same
