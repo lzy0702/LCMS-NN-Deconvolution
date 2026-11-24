@@ -90,6 +90,11 @@ class SynthConfig:
     #: charged background ion, and it learns to read every lone envelope as z = 1 whatever its
     #: isotope spacing says. No draw while it is 0, so frames are drawn exactly as before
     oligo_single_state_prob: float = 0.0
+    #: the heaviest such main compound, in Da (None: no limit). The isotope reader reads a lone
+    #: envelope's charge right below about 5 kDa (0.83-0.96 of the signal in recipe-v4 frames)
+    #: but mostly as z + 1 or a divisor above 8 kDa (0.01-0.52), so single states above the limit
+    #: teach a network that a lone envelope's isotope reading cannot be trusted
+    oligo_single_state_max_mass: float | None = None
     #: append the isotope-charge channels (charge read from resolved isotope spacing, strength,
     #: isotope limit) to the features, computed over the whole grid before the crop
     #: (``nn.features.isotope_channels``: read on Orbitrap and FT-ICR frames, empty on
@@ -105,7 +110,7 @@ class SynthConfig:
 #: left out of :func:`settings_repr` while they keep them
 LATER_DEFAULTS = {"scan_range": "sticks", "background_strong_prob": 0.0,
                   "oligo_real_like_prob": 0.0, "iso_channels": False, "measured_channel": False,
-                  "oligo_single_state_prob": 0.0}
+                  "oligo_single_state_prob": 0.0, "oligo_single_state_max_mass": None}
 
 
 def settings_repr(obj) -> str:

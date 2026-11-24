@@ -104,3 +104,33 @@ def test_single_state_share_and_other_classes():
     for seed in range(20):
         prot = _members(15000.0, cls="peptide", impurities=0)
         assert _draw(cfg, prot, True, seed) == _draw(off, prot, True, seed)
+
+
+def test_v5_limits_single_states_to_where_the_isotope_reader_is_right():
+    script = _script()
+    v4, v5 = script.mixture_v4(), script.mixture_v5()
+    assert [w for w, _c in v5] == [w for w, _c in v4]
+    for (_w4, c4), (_w5, c5) in zip(v4, v5):
+        if c5.instrument_kind == "orbitrap":
+            assert (c5.oligo_single_state_prob, c5.oligo_single_state_max_mass,
+                    c5.oligo_real_like_prob) == (1.0, script.V5_SINGLE_STATE_MAX_MASS,
+                                                 script.V5_REAL_LIKE) == (1.0, 5000.0, 0.75)
+            assert replace(c5, oligo_single_state_prob=c4.oligo_single_state_prob,
+                           oligo_single_state_max_mass=None,
+                           oligo_real_like_prob=c4.oligo_real_like_prob) == c4
+        else:
+            assert c5 == c4
+    assert "oligo_single_state_max_mass" not in settings_repr(v4)
+    assert "oligo_single_state_max_mass=5000.0" in settings_repr(v5)
+
+
+def test_the_mass_ceiling_leaves_heavier_compounds_as_drawn():
+    on = replace(SynthConfig(instrument_kind="orbitrap"), oligo_single_state_prob=1.0)
+    capped = replace(on, oligo_single_state_max_mass=5000.0)
+    for seed in range(10):
+        light, heavy = _members(3000.0, impurities=1), _members(7000.0, impurities=1)
+        assert _draw(capped, light, True, seed) == _draw(on, light, True, seed)
+        assert len(_draw(capped, light, True, seed)[0][0]) == 1
+        # above the ceiling: no draw at all, the distribution of a config without the option
+        off = SynthConfig(instrument_kind="orbitrap")
+        assert _draw(capped, heavy, True, seed) == _draw(off, heavy, True, seed)

@@ -245,14 +245,16 @@ def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict
 def _single_state(shape, comp, cfg, rng: np.random.Generator, real_like: bool):
     """A real-like oligonucleotide main compound's envelope reduced to one charge state, with
     probability ``cfg.oligo_single_state_prob`` (``SynthConfig``): its apex charge times
-    U(0.8, 1.25), rounded. Draws nothing unless the option is on and applies."""
+    U(0.8, 1.25), rounded, for main compounds up to ``cfg.oligo_single_state_max_mass``. Draws
+    nothing unless the option is on and applies."""
     from dataclasses import replace
 
     from .charge import OLIGO_CLASSES
 
     p = getattr(cfg, "oligo_single_state_prob", 0.0)
+    top = getattr(cfg, "oligo_single_state_max_mass", None)
     if not (p > 0 and real_like and comp.compound_class in OLIGO_CLASSES and comp.mass >= 900
-            and shape.single is None):
+            and (top is None or comp.mass <= top) and shape.single is None):
         return shape
     if rng.random() >= p:
         return shape
