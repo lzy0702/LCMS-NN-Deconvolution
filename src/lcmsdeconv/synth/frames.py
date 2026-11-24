@@ -210,8 +210,15 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     evaluated on data it has never seen. Labels come from per-charge renders of the same scans
     through the same resampling, so they stay consistent with the features.
     """
-    from .fast import ProfileRows, featurize, noisy_scan, positive_points, spectrum_to_grid
-    from .render import render_profile
+    from .fast import (
+        ProfileRows,
+        build_labels,
+        featurize,
+        noisy_scan,
+        positive_points,
+        spectrum_to_grid,
+    )
+    from .render import profile_reach, render_profile
 
     inst = sample_instrument(cfg, rng)
     scene = sample_scene(cfg, rng, library)
@@ -288,29 +295,38 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     # unclipped: saturation does not change the charge.) The sticks near the crop, grouped by
     # charge in their own order, are what ``(sticks.z == z) & near`` selects for each charge, and
     # ProfileRows is ``grid.resample_profile(sub_axis, prof)[b0:b1]`` with the axis work done once.
+    # Each charge is rendered on the part of the axis its peaks reach (render.profile_reach: the
+    # profile is zero elsewhere), in one reused buffer, and its row written in place, into the
+    # next row of one matrix: a charge whose row stays empty leaves it to the next.
     crop_lo = float(grid.bin_to_mz(b0)) * 0.999
     crop_hi = float(grid.bin_to_mz(min(b1, grid.size) - 1)) * 1.001
     charges = np.unique(sticks.z) if len(sticks) else np.array([], dtype=int)
-    rows, zs = [], []
+    zs = []
     a0 = int(np.searchsorted(axis, crop_lo))
     a1 = int(np.searchsorted(axis, crop_hi))
     sub_axis = axis[max(0, a0 - 2):min(axis.size, a1 + 2)]
+    rows = np.zeros((0, L))
     if charges.size and sub_axis.size >= 2:
         near = np.flatnonzero((sticks.mz > crop_lo * 0.995) & (sticks.mz < crop_hi * 1.005))
         near = near[np.argsort(sticks.z[near], kind="stable")]
         z_near = sticks.z[near]
         resampled = ProfileRows(grid, sub_axis, b0, L)
+        rows = np.zeros((np.unique(z_near).size, L))  # at most one per charge near the crop
+        profile = np.empty(sub_axis.size)
         for z in charges:
             sel = near[np.searchsorted(z_near, z, "left"):np.searchsorted(z_near, z, "right")]
             if not sel.size:
                 continue
             sub = type(sticks)(sticks.mz[sel], sticks.intensity[sel], sticks.comp_id[sel],
                                sticks.z[sel], sticks.adduct_mass[sel])
-            row = resampled.row(render_profile(sub, sub_axis, inst))
+            r0, r1 = profile_reach(sub, sub_axis, inst)
+            drawn = render_profile(sub, sub_axis[r0:r1], inst, out=profile[:r1 - r0])
+            row = resampled.row_into(drawn, rows[len(zs)], start=r0)
             if row.max() > 0:
-                rows.append(row)
                 zs.append(int(z))
-    cmat = np.array(rows) if rows else np.zeros((0, L))
+            else:
+                row[:] = 0.0
+    cmat = rows[:len(zs)]
     # shares of the observed intensity: y * c_z / max(y, sum c), the remainder is non-ion
     signal = cmat.sum(axis=0) if cmat.shape[0] else np.zeros(L)
     noise_part = np.clip(window - signal, 0.0, None)

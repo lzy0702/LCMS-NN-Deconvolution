@@ -2,7 +2,8 @@
 rem One-time setup of the training environment on Windows.
 rem Finds Python 3.12 (or 3.13, 3.11, 3.14) and runs gpu_training\setup.py, which creates .venv,
 rem installs PyTorch for CUDA and this package, measures the machine and runs a short test.
-rem Options are passed on, for example:  gpu_training\setup_windows.bat --ram-gb 16 --gpu-memory-gb 14
+rem Options are passed on, for example:  gpu_training\setup_windows.bat --ram-gb 24 --gpu-memory-gb 12
+rem (by default the RAM budget is half the computer's memory, at least 16 GB and at most 48).
 setlocal
 cd /d "%~dp0\.."
 set "PY="

@@ -86,7 +86,16 @@ the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
 `gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
 `setup_linux.sh`) installs and measures the machine, `train_all.bat` trains recipe v4 in both
 views (below) within the RAM and GPU memory limits, with the GPU speedups setup measured
-faster, resumes after any interruption and packs what to send back.
+faster, resumes after any interruption and packs what to send back. Its RAM budget is by
+default half the computer's memory, at least 16 GB, at most 48 and at most the memory less 4
+GB (`nn.machine.default_ram_budget_gb`; `--ram-gb` sets another). Setup gives the data workers
+all cores but four (two of eight or fewer) where the budget holds them, and measures their
+speed at that number, in full flow after two batches from each (`probe.workers_run`): with
+performance and efficiency cores each further worker adds less, and the loader delivers
+batches in order with two in work per worker, so a worker that is ahead waits for the slower
+ones. On the user's 24-core processor (8 performance, 16 efficient cores, 96 GB) the earlier
+fixed 16 GB held 13 workers, which trained at 19 spectra/s where 10 workers measured alone and
+scaled to 13 had promised 30; the 20 the processor is given trained at 26-27.
 
 **Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
 the run after the current step and saves the whole training state (model, moving average,
@@ -282,7 +291,11 @@ training time spent waiting for the data loader, and on CUDA the median GPU time
 step (CUDA events, read at the epoch's end), that time times the steps as a share of the
 training time, the peak reserved and allocated GPU memory and the allocator's retries in the
 epoch. They are in the pace line, in the epoch's record in `<out>.log.jsonl` (`pace`) and in
-`<out>.status.json`; `gpu_training/README.md` says how to read them.
+`<out>.status.json`; `gpu_training/README.md` says how to read them. Setup predicts the same
+from its measurements (`train_all.training_hours`, `pace` in `machine.json`): the data workers'
+speed at the number training uses against a GPU step on the runs' first training batch with
+the speedups chosen (`speedup_timings`), the slower setting the pace, and the step with every
+spectrum at the active-bin cap (`gpu_views`) as the bound on the time.
 
 ## The U-Net on a GPU
 

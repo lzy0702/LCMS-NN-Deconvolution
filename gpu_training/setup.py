@@ -13,9 +13,10 @@ Every step is skipped when it is already done, so running it again is safe:
    falling back to the next build if it does not (PyPI only has processor builds for Windows);
 4. installs this package with what training needs (numba, onnx, psutil);
 5. measures the machine within the limits (gpu_training/probe.py): GPU memory and time of a
-   training step of both views under the GPU cap, memory per data worker, spectra per second,
-   the number of workers that keeps everything within the RAM budget, and the GPU speedups
-   that make a training step faster on this GPU with the same loss and gradients
+   training step of both views under the GPU cap, memory per data worker, the number of
+   workers the processor is given and the RAM budget holds (by default half the computer's
+   memory, at least 16 GB and at most 48), the spectra per second that many deliver, and the GPU
+   speedups that make a training step faster on this GPU with the same loss and gradients
    (gpu_training/machine.json);
 6. checks everything end to end in a few minutes (train_all.py --smoke): a few training steps
    of both views on the GPU with the speedups chosen, their export to ONNX, and the predictor
@@ -96,6 +97,15 @@ def fingerprint() -> dict:
             digest.update(path.read_bytes() + b"\0")
         out[rel + "/"] = digest.hexdigest()[:16]
     return out
+
+
+def _machine_budget() -> float | None:
+    """The RAM budget probe.py recorded in machine.json (the computer's default unless --ram-gb
+    gave one), or None."""
+    try:
+        return json.loads(MACHINE.read_text(encoding="utf-8")).get("ram_budget_gb")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def setup_is_current() -> tuple[bool, str]:
@@ -242,8 +252,10 @@ def torch_on_gpu() -> tuple[str | None, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--ram-gb", type=float, default=16.0,
-                    help="RAM the training may use, training process and data workers together")
+    ap.add_argument("--ram-gb", type=float, default=None,
+                    help="RAM the training may use, training process and data workers together "
+                         "(default: half the computer's memory, at least 16 GB and at most 48, "
+                         "leaving 4 GB to the system; probe.py works it out)")
     ap.add_argument("--gpu-memory-gb", type=float, default=14.0,
                     help="GPU memory the training may use (the rest is left to Windows)")
     ap.add_argument("--torch-build", default=None, choices=[b for b, _v in TORCH_BUILDS],
@@ -365,22 +377,24 @@ def main() -> int:
             f"{reason[-600:]}\nRun this again with --reinstall-torch.")
         return 1
 
-    # 5. measure the machine within the limits
+    # 5. measure the machine within the limits. Without --ram-gb the budget is the computer's
+    # default (lcmsdeconv.nn.machine.default_ram_budget_gb), which needs psutil from .venv:
+    # probe.py works it out and records it in machine.json, where the smoke and train_all read it
+    ram = ["--ram-gb", f"{args.ram_gb:g}"] if args.ram_gb else []
     if not args.skip_probe:
-        run([VPY, "gpu_training/probe.py", "--ram-gb", str(args.ram_gb), "--gpu-memory-gb",
-             str(args.gpu_memory_gb)])
+        run([VPY, "gpu_training/probe.py", *ram, "--gpu-memory-gb", str(args.gpu_memory_gb)])
 
     # 6. a short end-to-end check on the GPU: training steps, export, the predictor
     if not args.skip_smoke:
         say("A few minutes' check of both runs on the GPU: training steps, export to ONNX, "
             "whole spectra read by the predictor ...")
-        run([VPY, "gpu_training/train_all.py", "--smoke", "--ram-gb", str(args.ram_gb),
-             "--gpu-memory-gb", str(args.gpu_memory_gb)])
+        run([VPY, "gpu_training/train_all.py", "--smoke", *ram, "--gpu-memory-gb",
+             str(args.gpu_memory_gb)])
 
     DONE.write_text(json.dumps({
         "finished": time.strftime("%Y-%m-%d %H:%M"), "torch": current,
         "probe": not args.skip_probe, "smoke": not args.skip_smoke,
-        "ram_gb": args.ram_gb, "gpu_memory_gb": args.gpu_memory_gb,
+        "ram_gb": args.ram_gb or _machine_budget(), "gpu_memory_gb": args.gpu_memory_gb,
         "fingerprint": fingerprint()}, indent=1) + "\n", encoding="utf-8")
     say("")
     if args.if_needed:

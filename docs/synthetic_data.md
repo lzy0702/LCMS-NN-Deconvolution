@@ -74,13 +74,47 @@ chromatographic region); the sum is resampled onto a grid restricted to the meas
 the noise level is estimated from it by `estimate_noise_sigma`, exactly as `deconvolve_spectrum`
 does. Labels are the shares `y · c_z / max(y, Σ c_z)` of the observed intensity `y`, with each
 charge's noise-free contribution `c_z` rendered and resampled the same way. Generation takes
-about 0.35 s per frame. `render_path = "grid"` renders straight onto the grid with the
-generator's own noise level, as earlier versions did, which is faster but describes a different
-input from the one inference sees.
+a few tenths of a second per frame on one core (see *How fast frames are made*).
+`render_path = "grid"` renders straight onto the grid with the generator's own noise level, as
+earlier versions did, which is faster but describes a different input from the one inference
+sees.
 
 **Run tier** (`synth/chromatography.py`) produces a whole LC-MS run as mzML plus a `truth.json`
 listing every peak, its members, their masses and relative abundances. This is what
 `lcmsdeconv synth` writes and what `lcmsdeconv evaluate` scores against.
+
+## How fast frames are made
+
+When a network trains on a GPU, the data workers that make its frames usually set the pace. The
+steps that dominate a frame are compiled (`synth/fast.py`, with numba) and give exactly - bit for
+bit - what the code they stand for gives, so with numba installed a frame is the same with them
+or without them and a paused run resumes on the same spectra. Without numba they fall back to
+that code, and the line-shape renderer, which numba compiles with fast-math
+(`render._splat_profile`), runs as plain Python and rounds differently: the labels then differ
+from those made with numba, as they did before these steps were compiled. The largest gains are
+in whole-spectrum frames (recipes v3 and v4, 131 072-bin windows):
+
+- **labels** (`fast.build_labels`): the reference sorts every bin's shares of all classes, one
+  sort over a `[classes, bins]` matrix; here the three largest shares are kept as they are
+  computed. In most bins (background) all classes but one or two have a share of exactly zero,
+  and where numpy's sort puts such tied zeros depends on the sort it runs on the processor
+  (AVX-512, AVX2 or neither): numpy's own sort orders one bin of each pattern, and bins whose
+  nonzero shares tie are sorted by numpy itself, so the labels are numpy's on every processor;
+- **label rows**: each charge is rendered only on the part of the m/z axis its peaks reach
+  (`render.profile_reach`) and resampled from there, its zero samples skipped, into one matrix;
+- **scans**: the Poisson rates and their nonzero positions in one pass;
+- **comb features**: at the nonzero bins only in a window that is mostly zeros (thresholded
+  Orbitrap spectra), tile by tile in the others.
+
+`tests/test_synth_speed.py` compares each with the code it replaces (the labels with ties of
+every kind, under each of numpy's sorts), whole frames of every recipe with the generator as it
+was (`tests/_synth_reference.py`), and full-size v3 and v4 frames with the digests of the frames
+commit 2a5fcb5 made. Measured item by item against that commit on one core of a busy 4-core
+machine (medians of paired, interleaved timings), a v4 whole-spectrum item takes 191 ms instead
+of 322 ms (paired ratio 1.58, 95 % interval 1.35-1.78) and a v3 item is 1.68 times faster; items
+of the default mixture (32 768-bin crops) are 1.04-1.08 times faster. A process making v4 items
+peaks about 0.2 GB lower (850-870 MB resident instead of 1 070-1 080 MB, PyTorch loaded, as in
+a data worker).
 
 ## Why labels cannot drift from features
 

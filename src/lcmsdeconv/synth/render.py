@@ -364,9 +364,16 @@ def render_grid_by_charge(
     return cmat, charges.astype(int), compmat
 
 
-def render_profile(sticks: Sticks, mz_axis: np.ndarray, instrument: InstrumentModel) -> np.ndarray:
-    """Render sticks onto a raw (non-uniform) m/z axis with apex-height convention."""
-    out = np.zeros(mz_axis.size, dtype=np.float64)
+def render_profile(sticks: Sticks, mz_axis: np.ndarray, instrument: InstrumentModel,
+                   out: np.ndarray | None = None) -> np.ndarray:
+    """Render sticks onto a raw (non-uniform) m/z axis with apex-height convention.
+
+    ``out``, a float64 array as long as the axis, is zeroed and rendered into instead of a new
+    array (a training frame renders one profile per charge on the same axis)."""
+    if out is None:
+        out = np.zeros(mz_axis.size, dtype=np.float64)
+    else:
+        out[:] = 0.0
     if len(sticks) == 0:
         return out
     order = np.argsort(sticks.mz)
@@ -374,9 +381,41 @@ def render_profile(sticks: Sticks, mz_axis: np.ndarray, instrument: InstrumentMo
     inten = sticks.intensity[order]
     sigma = instrument.sigma_mz(mz)
     idx = np.searchsorted(mz_axis, mz)
-    kfactor = 4.0 if instrument.shape == "gaussian" else 12.0
-    _splat_profile(mz_axis, mz, inten, sigma, idx.astype(np.int64), out, float(kfactor))
+    _splat_profile(mz_axis, mz, inten, sigma, idx.astype(np.int64), out,
+                   _profile_kfactor(instrument))
     return out
+
+
+def _profile_kfactor(instrument: InstrumentModel) -> float:
+    """How many sigmas from its centre :func:`render_profile` draws a peak."""
+    return 4.0 if instrument.shape == "gaussian" else 12.0
+
+
+def profile_reach(sticks: Sticks, mz_axis: np.ndarray, instrument: InstrumentModel
+                  ) -> tuple[int, int]:
+    """The part ``lo:hi`` of a sorted axis that :func:`render_profile` writes for ``sticks``:
+    no point outside it, and from ``mz_axis[lo:hi]`` alone the same values at every point in it.
+
+    The kernel draws each stick from its insertion point ``np.searchsorted(mz_axis, mz)``,
+    which it writes, outwards while points lie closer than the line shape's reach (its sigma
+    floored at 1e-6, times :func:`_profile_kfactor`), and never past an end of the axis it is
+    given. ``lo:hi`` holds every point within that reach of a stick and every insertion point,
+    with two points to spare on either side for rounding, so that rendered on the slice each
+    stick starts from the same point and stops where it stops on the whole axis. Sticks or
+    widths that are not finite: the whole axis."""
+    n = mz_axis.size
+    if len(sticks) == 0:
+        return 0, 0
+    mz = sticks.mz
+    sigma = instrument.sigma_mz(mz)
+    if not (np.all(np.isfinite(mz)) and np.all(np.isfinite(sigma))):
+        return 0, n
+    reach = _profile_kfactor(instrument) * np.where(sigma > 0, sigma, 1e-6)
+    start = np.searchsorted(mz_axis, mz)
+    lo = min(int(start.min()), int(np.searchsorted(mz_axis, float(np.min(mz - reach))))) - 2
+    hi = max(int(start.max()) + 1,
+             int(np.searchsorted(mz_axis, float(np.max(mz + reach)), side="right"))) + 2
+    return max(lo, 0), min(hi, n)
 
 
 @njit(cache=True, fastmath=True)

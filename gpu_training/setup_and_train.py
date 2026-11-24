@@ -14,8 +14,12 @@
    the training stopped.
 
 Options, all optional (a double-click passes none):
-  --ram-gb N, --gpu-memory-gb N   limits for setup and training (default 16 and 14)
-  --workers N                      data workers for the training (default: what setup measured)
+  --ram-gb N                       RAM budget for setup and training (default: half the
+                                   computer's memory, at least 16 GB and at most 48, leaving
+                                   4 GB to the system)
+  --gpu-memory-gb N                GPU memory cap for setup and training (default 14)
+  --workers N                      data workers for the training (default: what setup chose, as
+                                   many as the processor is given and the RAM budget holds)
   --batch-size N                   spectra per training step (default 4, the recipe's)
   --runs A,B                       the runs to train (default window,comb; see train_all.py)
   --restart                        train the runs from the beginning (needed after changing
@@ -26,6 +30,7 @@ Options, all optional (a double-click passes none):
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import subprocess
 import sys
@@ -43,6 +48,16 @@ AGAIN = f"double-click {SCRIPT} again" if WINDOWS else f"run {SCRIPT} again"
 def rel(*parts: str) -> str:
     """A path inside the package folder, written the way this system writes paths."""
     return str(Path(*parts))
+
+
+def recorded_budget() -> float | None:
+    """The RAM budget setup recorded in gpu_training/machine.json, or None."""
+    try:
+        budget = json.loads((ROOT / "gpu_training" / "machine.json").read_text(
+            encoding="utf-8")).get("ram_budget_gb")
+        return float(budget) if budget else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def run(cmd: list) -> int:
@@ -127,9 +142,12 @@ def main(argv: list | None = None) -> int:
         print(f"\nStopped; the last saved state is kept. To continue from it, {AGAIN}.",
               flush=True)
     elif rc == MEMORY:
-        print(f"\nStopped at the RAM budget (see the messages above and "
-              f"{rel('gpu_training', 'machine.json')}). Close other programs or raise the "
-              f"budget, for example {SCRIPT} --ram-gb 20, then start again.", flush=True)
+        budget = args.ram_gb or recorded_budget()
+        now = f" (now {budget:g} GB)" if budget else ""
+        example = f"{budget + 8:g}" if budget else "24"
+        print(f"\nStopped at the RAM budget{now}; see the messages above and "
+              f"{rel('gpu_training', 'machine.json')}. Close other programs or raise the "
+              f"budget, for example {SCRIPT} --ram-gb {example}, then start again.", flush=True)
     else:
         print(f"\nThe training stopped (exit code {rc}); the messages above say why, and the "
               f"{rel('runs', '*.console.log')} files hold each run's full output. Saved "

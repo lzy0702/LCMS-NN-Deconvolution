@@ -5,8 +5,12 @@ channels, at the recipe's batch size, every spectrum at the active-bin cap: the 
 step can need) on the GPU under the GPU memory cap, scoring the charges in chunks and all at
 once (train_all.py chooses between the two from these measurements), then starts data workers
 the way training does on the recipe's spectra and measures how much memory each one takes and
-how many spectra per second they deliver. From that it chooses the number of workers that keeps
-the training process and its workers within the RAM budget.
+how many spectra per second they deliver together. It chooses as many workers as the processor
+is given (all cores but four, or two of eight or fewer) where the RAM budget holds them with the
+training process, fewer where it does not, and measures their speed at the number it chooses:
+on a processor with performance and efficiency cores each further worker adds less, and batches
+are delivered in order, so that a worker that is ahead waits for the slower ones. The RAM budget
+is by default half the computer's memory, at least 16 GB and at most 48 (lcmsdeconv.nn.machine).
 
 Then it measures the GPU speedups (lcmsdeconv.nn.train.GPU_SPEEDUPS: cuDNN's benchmark, TF32
 matrix products, LadderNet's index_select head, fused AdamW), which change only the rounding of
@@ -16,9 +20,11 @@ a view if a step with it alone is at least 3 % faster than one without any and i
 gradients agree with that step's; the kept ones are combined greedily, fastest first, each
 further one only if it makes the step at least 2 % faster again (choose_speedups). A profile of
 the window view's step with its speedups lists the CUDA kernels that take the most time.
-Everything goes to gpu_training/machine.json, which train_all.py reads.
+Everything goes to gpu_training/machine.json, which train_all.py reads. The pace it reports
+compares the workers' speed with the GPU's on the runs' first training batch (the speedup
+measurement), and gives the GPU's step with every spectrum at the active-bin cap as the bound.
 
-    python gpu_training/probe.py [--ram-gb 16] [--gpu-memory-gb 14] [--workers N]
+    python gpu_training/probe.py [--ram-gb N] [--gpu-memory-gb 14] [--workers N]
 
 setup.py runs it; run it again on its own to re-measure (for example after changing the limits).
 """
@@ -60,6 +66,15 @@ WARM_STEPS, TIMED_STEPS = 2, 8
 SPEEDUP_TIMEOUT = 900
 #: the CUDA kernel table: steps profiled, kernels kept
 PROFILE_STEPS, PROFILE_TOP = 3, 15
+#: the data workers' measurement (workers_run): WORKER_WARM_ROUNDS batches from every worker
+#: before the timing starts (the start-up, and the head start of the workers that started
+#: first), then the timed part, which ends with the first batch after at least WORKER_ROUNDS
+#: rounds and WORKER_SECONDS, or after WORKER_MAX_SECONDS and one round
+WORKER_WARM_ROUNDS, WORKER_ROUNDS, WORKER_SECONDS, WORKER_MAX_SECONDS = 2, 3, 60.0, 180.0
+#: seconds a batch may take to come from the workers before they count as failed to run
+WORKER_TIMEOUT = 600.0
+#: seconds between two readings of the workers' memory
+MEMORY_EVERY = 5.0
 
 
 def process_gb(proc) -> float:
@@ -174,52 +189,87 @@ def gpu_steps(gpu_memory_gb: float, batch_size: int, head_chunk: int | None) -> 
             "gpu_views": views, "torch": torch.__version__, "torch_cuda": torch.version.cuda}
 
 
-def workers_run(n: int, rounds: int = 4, batch_size: int = 4) -> dict:
-    """Start ``n`` workers as training does on the recipe's spectra and measure their speed and
-    memory. Speed is timed from the moment every worker has delivered its first batch, so that
-    start-up does not count."""
+def workers_run(n: int, batch_size: int = 4, dataset=None) -> dict:
+    """Start ``n`` data workers as training does (the recipe's spectra in batches of
+    ``batch_size``, delivered in order with two batches in work per worker, at lowered priority,
+    into pinned memory where CUDA is available) and measure how many spectra per second they
+    deliver together and how much memory each one takes. The timing starts once every worker
+    has delivered WORKER_WARM_ROUNDS batches, so that neither the start-up nor the head start of
+    the workers that started first counts, and stops while every worker is still busy, at
+    least WORKER_ROUNDS rounds and WORKER_SECONDS later (after WORKER_MAX_SECONDS and one round
+    at most). ``dataset`` stands in for the recipe's spectra (tests)."""
     import psutil
+    import torch
     from torch.utils.data import DataLoader
 
     from lcmsdeconv.synth.dataset import FrameDataset, mp_context, worker_init
 
-    ds = FrameDataset(recipe_mixture(), n * rounds * batch_size, base_seed=4242)
-    loader = DataLoader(ds, batch_size=batch_size, num_workers=n, worker_init_fn=worker_init,
-                        **mp_context(n))
+    if dataset is None:  # far more spectra than are read: the measurement stops in full flow
+        dataset = FrameDataset(recipe_mixture(), n * batch_size * 100_000, base_seed=4242)
+    loader = DataLoader(dataset, batch_size=batch_size, num_workers=n, worker_init_fn=worker_init,
+                        prefetch_factor=2, timeout=WORKER_TIMEOUT,
+                        pin_memory=torch.cuda.is_available(), **mp_context(n))
     me = psutil.Process()
+    memory = {"worker": 0.0, "commit": 0.0, "total": 0.0}
+
+    def read_memory():
+        sizes = []
+        for p in me.children(recursive=True):
+            try:
+                sizes.append((process_gb(p), commit_gb(p)))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if sizes:
+            memory["worker"] = max(memory["worker"], max(a for a, _b in sizes))
+            memory["commit"] = max(memory["commit"], max(b for _a, b in sizes))
+            memory["total"] = max(memory["total"], sum(a for a, _b in sizes))
+
     started = time.time()
-    warm = None
+    up = t0 = None  # every worker has delivered a batch; the timing starts
+    k0 = spectra0 = spectra_up = 0
+    k = -1
+    now = last_read = started
     spectra = 0
-    per_worker = commit = total_workers = 0.0
-    for k, (x, *_rest) in enumerate(loader):
-        if k == n - 1:
-            warm = time.time()  # every worker is up and has delivered a batch
-        elif k >= n:
-            spectra += x.shape[0]
-        if k % max(1, n // 2) == 0:
-            sizes = []
-            for p in me.children(recursive=True):
-                try:
-                    sizes.append((process_gb(p), commit_gb(p)))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            if sizes:
-                per_worker = max(per_worker, max(a for a, _b in sizes))
-                commit = max(commit, max(b for _a, b in sizes))
-                total_workers = max(total_workers, sum(a for a, _b in sizes))
-    elapsed = time.time() - (warm or started)
-    return {"workers": n, "startup_seconds": round((warm or started) - started, 1),
-            "spectra_per_second": round(spectra / max(elapsed, 1e-9), 1),
-            "worker_gb": round(per_worker, 2), "worker_commit_gb": round(commit, 2),
-            "workers_total_gb": round(total_workers, 2)}
+    batches = iter(loader)
+    try:
+        for k, batch in enumerate(batches):
+            now = time.time()  # before anything else this process does
+            spectra += len(batch[0] if isinstance(batch, (list, tuple)) else batch)
+            if k == n - 1:
+                up, spectra_up = now, spectra
+            if k == WORKER_WARM_ROUNDS * n - 1:
+                t0, k0, spectra0 = now, k, spectra
+            elif t0 is not None:
+                rounds, seconds = (k - k0) / n, now - t0
+                if ((rounds >= WORKER_ROUNDS and seconds >= WORKER_SECONDS)
+                        or (rounds >= 1 and seconds >= WORKER_MAX_SECONDS)):
+                    break
+            if now - last_read >= MEMORY_EVERY or k == n - 1:
+                read_memory()
+                last_read = time.time()
+        read_memory()  # in full flow
+    finally:
+        stop = getattr(batches, "_shutdown_workers", None)
+        if stop is not None:
+            stop()  # each worker finishes the batch it is making, then ends
+        del batches
+    if t0 is None or k <= k0:  # the spectra ran out before the timed part (a short dataset)
+        t0, spectra0 = (up, spectra_up) if up is not None and k > n - 1 else (started, 0)
+    seconds = max(now - t0, 1e-9)
+    return {"workers": n, "startup_seconds": round((up or now) - started, 1),
+            "timed_seconds": round(seconds, 1), "timed_spectra": spectra - spectra0,
+            "spectra_per_second": round((spectra - spectra0) / seconds, 2),
+            "worker_gb": round(memory["worker"], 2), "worker_commit_gb": round(memory["commit"], 2),
+            "workers_total_gb": round(memory["total"], 2)}
 
 
 # ------------------------------------------------------------------ the GPU speedups
 def config_name(config) -> str:
-    """``("tf32", "index_select")`` -> "tf32+index_select" (in GPU_SPEEDUPS order); () -> "none"."""
-    from lcmsdeconv.nn.train import GPU_SPEEDUPS
+    """``("tf32", "index_select")`` -> "tf32+index_select" (in GPU_SPEEDUPS order); () -> "none":
+    the names of machine.json's speedup_timings, which train_all looks up (speedup_name)."""
+    from train_all import speedup_name
 
-    return "+".join(s for s in GPU_SPEEDUPS if s in config) or "none"
+    return speedup_name(config)
 
 
 def disagreement(base: dict, other: dict) -> str | None:
@@ -626,6 +676,65 @@ def speedup_lines(info: dict, chunks: dict | None = None) -> list[str]:
     return lines
 
 
+def worker_line(run: dict) -> str:
+    """One measurement of the data workers (workers_run) for the console and setup.log."""
+    n = max(run["workers"], 1)
+    return (f"  {run['workers']} worker{'s' if n > 1 else ''}: "
+            f"{run['spectra_per_second']:.1f} spectra/s together "
+            f"({run['spectra_per_second'] / n:.2f} each), timed over "
+            f"{run.get('timed_seconds', 0):.0f} s after {run['startup_seconds']:.0f} s to start; "
+            f"{run['worker_gb']:.2f} GB of RAM each at most ({run['workers_total_gb']:.1f} GB "
+            f"together; {run['worker_commit_gb']:.1f} GB committed each)")
+
+
+def measure_workers(n: int, measured: list, halve: bool = True) -> dict | None:
+    """workers_run(n), with half as many workers each time they fail to run (Windows error 1455,
+    the paging file, for example) where ``halve``; each measurement is added to ``measured``.
+    None if no number of workers ran."""
+    while n >= 1:
+        print(f"Measuring {n} data workers on the recipe's spectra (a minute or two) ...",
+              flush=True)
+        try:
+            run = workers_run(n)
+        except (OSError, RuntimeError) as exc:  # e.g. Windows error 1455: paging file
+            if not halve:
+                print(f"  {n} workers failed to run ({exc})", flush=True)
+                return None
+            print(f"  {n} workers failed to run ({exc}); trying {n // 2}", flush=True)
+            n //= 2
+            continue
+        print(worker_line(run), flush=True)
+        measured.append(run)
+        return run
+    return None
+
+
+def pace_lines(estimate: dict) -> list[str]:
+    """What sets the pace of each of train_all's default runs (train_all.training_hours), with
+    what setup measured of the GPU, for the console and setup.log."""
+    verdicts = {"workers": "the data workers set the pace",
+                "gpu": "the GPU sets the pace",
+                "gpu_cap": "the GPU at the active-bin cap is slower than the data workers; "
+                           "real batches are lighter, so either may set the pace",
+                "either": "the GPU is slower than the data workers' rate scaled up from fewer "
+                          "workers, which may promise too much, so either may set the pace"}
+    lines = []
+    for r in estimate["runs"]:
+        gpu = []
+        if r["batch"]:
+            gpu.append(f"{r['batch_ms']:.0f} ms a step on the runs' first training batch "
+                       f"({r['batch']:.0f} spectra/s)")
+        if r["cap"]:
+            gpu.append(f"{r['cap_ms']:.0f} ms with every spectrum at the active-bin cap "
+                       f"({r['cap']:.0f} spectra/s, the slowest a step can be)")
+        if not gpu:
+            lines.append(f"  {r['name']} run: the GPU was not measured")
+            continue
+        lines.append(f"  {r['name']} run: the GPU took {' and '.join(gpu)}; the data workers "
+                     f"deliver {r['data']:.0f} spectra/s: {verdicts[r['set_by']]}")
+    return lines
+
+
 def main() -> int:
     from train_all import (
         BATCH,
@@ -635,16 +744,26 @@ def main() -> int:
         RATE_WORKERS_KEY,
         RECIPE,
         RUN_TABLE,
-        SPECTRA,
         head_chunk_for,
+        make_run,
+        speedups_for,
+        training_hours,
     )
 
+    from lcmsdeconv.nn.machine import default_ram_budget_gb, physical_ram_gb
+
+    total_ram = physical_ram_gb()
+    default_ram = default_ram_budget_gb(total_ram)
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--ram-gb", type=float, default=16.0,
-                    help="RAM budget of the training process and its workers together")
+    ap.add_argument("--ram-gb", type=float, default=None,
+                    help=f"RAM budget of the training process and its workers together (default: "
+                         f"half this computer's memory, at least 16 GB and at most 48, leaving 4 "
+                         f"GB to the system: {default_ram:g} GB here)")
     ap.add_argument("--gpu-memory-gb", type=float, default=14.0,
                     help="GPU memory the training process may use, CUDA context included")
-    ap.add_argument("--workers", type=int, default=None, help="measure with this many workers")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="measure and train with this many workers (default: as many as the "
+                         "processor is given and the RAM budget holds)")
     ap.add_argument("--batch-size", type=int, default=BATCH,
                     help=f"spectra per step to measure the GPU at (default {BATCH}, the recipe's)")
     ap.add_argument("--out", type=Path, default=ROOT / "gpu_training" / "machine.json")
@@ -661,8 +780,9 @@ def main() -> int:
     import psutil
     import torch
 
-    from lcmsdeconv.nn.machine import MARGIN_GB, auto_workers, cpu_cores, single_threaded_workers
+    from lcmsdeconv.nn.machine import cpu_cores, cpu_workers, ram_workers, single_threaded_workers
 
+    ram = args.ram_gb or default_ram
     if args.no_gpu:
         gpu = {"gpu": None, "gpu_views": {}}
     elif not torch.cuda.is_available():
@@ -691,28 +811,42 @@ def main() -> int:
 
     single_threaded_workers()
     cores = cpu_cores()
-    n = args.workers or auto_workers(args.ram_gb, main_gb=max(main_gb, 1.0))
-    run = None
-    while n >= 1:
-        print(f"Measuring {n} data workers on the recipe's spectra ...", flush=True)
-        try:
-            run = workers_run(n)
-            break
-        except (OSError, RuntimeError) as exc:  # e.g. Windows error 1455: paging file
-            print(f"  {n} workers failed to run ({exc}); trying {n // 2}", flush=True)
-            n //= 2
+    by_cpu = cpu_workers(cores)
+    # the number of workers to measure: the processor's share where the budget holds it, with a
+    # worker's memory taken as WORKER_GB (more than one took on Linux or on Windows) until it is
+    # measured, so that the measurement stays within the budget
+    planned = args.workers or max(1, min(by_cpu, ram_workers(ram, main_gb=max(main_gb, 1.0))))
+    measured: list = []
+    run = measure_workers(planned, measured)
     if run is None:
         print("No data worker could be started.")
         return 1
-    print(f"  {run['workers']} workers: {run['spectra_per_second']:.0f} spectra/s after "
-          f"{run['startup_seconds']:.0f} s to start; {run['worker_gb']:.2f} GB of RAM each at most "
-          f"({run['workers_total_gb']:.1f} GB together; {run['worker_commit_gb']:.1f} GB committed "
-          f"each)", flush=True)
     worker_gb = max(run["worker_gb"], 0.3)
-    fit = int((args.ram_gb - main_gb - MARGIN_GB) // worker_gb)
-    by_cpu = cores - 2 if cores <= 8 else cores - 4
-    chosen = args.workers or max(1, min(by_cpu, fit))
-    rate = run["spectra_per_second"] * chosen / max(run["workers"], 1)
+    chosen = args.workers or max(1, min(by_cpu, ram_workers(ram, worker_gb, main_gb)))
+    did_not_run = None  # a number of workers that failed to run, where that limits those chosen
+    if run["workers"] < planned:  # more workers did not run
+        did_not_run = planned if chosen >= run["workers"] else None
+        chosen = min(chosen, run["workers"])
+    if chosen != run["workers"]:
+        # by the memory measured the budget holds another number: their speed is measured at
+        # that number, not scaled from this one (on a processor with efficiency cores each
+        # further worker adds less, and batches come in order: one that is ahead waits)
+        print(f"  the budget holds {chosen} workers of {worker_gb:.2f} GB beside the training "
+              f"process ({main_gb:.1f} GB)", flush=True)
+        again = measure_workers(chosen, measured, halve=False)
+        if again is None:
+            if chosen > run["workers"]:
+                did_not_run = chosen
+            chosen = min(chosen, run["workers"])
+            print(f"  keeping {chosen} workers", flush=True)
+        else:
+            run = again
+            worker_gb = max(worker_gb, again["worker_gb"])
+            if not args.workers:
+                chosen = max(1, min(chosen, ram_workers(ram, worker_gb, main_gb)))
+    # the workers' speed at the number chosen: as measured, or in proportion where fewer were
+    # chosen than measured (an underestimate: each worker of fewer is at least as fast)
+    rate = run["spectra_per_second"] * min(chosen, run["workers"]) / max(run["workers"], 1)
     # a view whose training ran out of GPU memory scoring all charges at once (train_all keeps
     # the record) stays in chunks while the GPU, its cap and the batch are the ones measured
     try:
@@ -725,19 +859,6 @@ def main() -> int:
     chunks = {view: head_chunk_for({**gpu, "unchunked_failed": failed}, view,
                                    args.gpu_memory_gb, args.batch_size, rate)
               for view in gpu["gpu_views"]}
-    # train_all.py's default runs, each 20 x 6000 spectra; 10 % more for validation. The data
-    # workers and the GPU work at the same time, so the slower of the two sets the pace
-    hours, paces = 0.0, {}
-    for name in DEFAULT_RUNS:
-        view = RUN_TABLE[name]["view"]
-        m = gpu["gpu_views"].get(view) or {}
-        if m and chunks.get(view, HEAD_CHUNK) is None:
-            m = m["unchunked"]  # the step train_all will take
-        pace = rate
-        if m.get("step_seconds"):
-            pace = min(rate, m["batch"] / m["step_seconds"])
-        paces[view] = pace
-        hours += 1.1 * SPECTRA / max(pace, 1e-6) / 3600
     # the GPU speedups, on the runs' first training batch, with the chunking each view will use
     speed: dict = {"gpu_speedups": {}}
     if gpu["gpu_views"]:
@@ -756,38 +877,65 @@ def main() -> int:
                   f"GPU speedups", flush=True)
         for line in speedup_lines(speed, view_chunks):
             print(line, flush=True)
-    info = {"recipe": RECIPE, "workers": chosen, "ram_budget_gb": args.ram_gb,
+    info = {"recipe": RECIPE, "workers": chosen, "ram_budget_gb": ram,
+            "ram_budget_default": args.ram_gb is None,
+            "physical_ram_gb": round(total_ram, 1) if total_ram else None,
             "gpu_memory_gb": args.gpu_memory_gb, "gpu_batch": args.batch_size,
             "head_chunk": HEAD_CHUNK, "head_chunks": chunks, "main_gb": round(main_gb, 2),
             "worker_gb": round(worker_gb, 2),
             "expected_ram_gb": round(main_gb + chosen * worker_gb, 1),
-            RATE_KEY: round(rate, 1), RATE_WORKERS_KEY: chosen,
-            "expected_hours": round(hours, 1), "cores": cores, "measured": [run], **gpu,
-            **speed}
+            RATE_KEY: round(rate, 1), RATE_WORKERS_KEY: chosen, "cores": cores,
+            "processor_workers": by_cpu, "measured": measured, **gpu, **speed}
     if failed:
         info["unchunked_failed"] = failed
+    # train_all's default runs as it will train them, each at the slower of the data workers
+    # and the GPU (on the runs' first training batch where measured, else at the active-bin cap)
+    stages = []
+    for name in DEFAULT_RUNS:
+        st = make_run(name)
+        st["head_chunk"] = chunks.get(st["view"], HEAD_CHUNK)
+        st["gpu_speedups"] = speedups_for(info, st["view"])
+        stages.append(st)
+    estimate = training_hours(stages, info, chosen)
+    if estimate:
+        info["expected_hours"] = round(estimate["hours"], 1)
+        info["expected_hours_at_most"] = round(estimate["slowest"], 1)
+        info["pace"] = {r["name"]: {
+            "data_spectra_per_second": round(r["data"], 1),
+            "gpu_spectra_per_second": r["batch"] and round(r["batch"], 1),
+            "gpu_at_cap_spectra_per_second": r["cap"] and round(r["cap"], 1),
+            "set_by": r["set_by"]} for r in estimate["runs"]}
     args.out.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
-    gpu_rates = {}
-    for v, m in gpu["gpu_views"].items():
-        if m and chunks.get(v, HEAD_CHUNK) is None:
-            m = m["unchunked"]
-        if m.get("step_seconds"):
-            gpu_rates[v] = m["batch"] / m["step_seconds"]
-    if gpu_rates:
-        pace_text = "; ".join(f"the GPU could take {r:.0f} spectra/s in the {v} view"
-                              for v, r in gpu_rates.items())
-        slower = ("the workers set the pace" if all(r >= rate for r in gpu_rates.values())
-                  else "the GPU sets the pace")
-        pace_text = f" ({pace_text}, so {slower})"
-    else:
-        pace_text = " (the GPU was not measured)"
     for view, chunk in chunks.items():
         how = "all charges at once" if chunk is None else f"{HEAD_CHUNK} charges at a time"
         print(f"  {view} view: training will score {how}", flush=True)
-    print(f"Chosen: {chosen} data workers (about {info['expected_ram_gb']:.1f} GB of RAM with "
-          f"the training process, budget {args.ram_gb:g} GB; {cores} cores). Expected "
-          f"{rate:.0f} spectra/s from the workers{pace_text}: about {hours:.1f} h for the two "
-          f"runs. Written to {args.out}", flush=True)
+    if args.workers:
+        why = "as --workers asks" if chosen == args.workers else f"{args.workers} did not run"
+    elif did_not_run:
+        why = f"as many as ran: {did_not_run} did not"
+    elif chosen >= by_cpu:
+        why = f"the processor's share, all {cores} cores but {cores - by_cpu}"
+    else:
+        why = f"as many as the RAM budget holds; the processor would take {by_cpu}"
+    budget = (f"the default for this computer's {total_ram:.0f} GB of memory"
+              if args.ram_gb is None and total_ram else
+              "the default" if args.ram_gb is None else "--ram-gb")
+    speed_text = (f"measured at that number: {rate:.1f} spectra/s" if chosen == run["workers"]
+                  else f"{rate:.1f} spectra/s in proportion to the {run['spectra_per_second']:.1f} "
+                       f"of {run['workers']} measured")
+    print(f"Chosen: {chosen} data workers ({why}); about {info['expected_ram_gb']:.1f} GB of RAM "
+          f"with the training process, within the budget of {ram:g} GB ({budget}); "
+          f"{speed_text}", flush=True)
+    if estimate:
+        for line in pace_lines(estimate):
+            print(line, flush=True)
+        bound = (f" (up to {estimate['slowest']:.1f} h should every step take as long as with "
+                 f"every spectrum at the active-bin cap)"
+                 if estimate["slowest"] > 1.05 * estimate["hours"] else "")
+        print(f"About {estimate['hours']:.1f} h for the two runs{bound}. Each epoch's pace line "
+              f"measures the pace again: a share of the training time waiting for data above a "
+              f"few percent means the data workers set it.", flush=True)
+    print(f"Written to {args.out}", flush=True)
     return 0
 
 

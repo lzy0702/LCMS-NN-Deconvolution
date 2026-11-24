@@ -7,7 +7,8 @@ data leaves your computer. When it is done, you upload one zip file.
 The network trains on the **GPU only**: the scripts refuse to start rather than fall back to the
 processor. The training spectra are synthesised by data-worker processes on the processor
 while the GPU trains; that part cannot run on the GPU. By default everything stays within
-**16 GB of RAM** and **14 GB of GPU memory**, leaving the rest to Windows.
+**half of your computer's RAM, at least 16 GB and at most 48 GB** (12 GB on a computer of 16 GB)
+and **14 GB of GPU memory**, leaving the rest to Windows.
 
 ## What is trained
 
@@ -73,12 +74,14 @@ runs the whole setup again. The two steps can also be run one at a time:
 **1. Set up (10-20 minutes the first time):** `gpu_training\setup_windows.bat`. It creates the
 Python environment `.venv`, installs PyTorch for CUDA and this package, checks that PyTorch
 computes on the GPU, and measures your machine: training steps of both networks on the GPU
-under the 14 GB cap, how much memory each data worker takes and how many spectra per second
-they deliver, and which GPU speedups make training faster on your GPU (below). It chooses the
-number of workers that keeps the training within 16 GB of RAM (`gpu_training\machine.json`),
-then checks everything end to end in a few minutes: a few training steps of both networks
-(with the speedups chosen), their export to ONNX, and whole spectra read with them. It prints
-the expected training time; its output is also in `gpu_training\setup.log`.
+under the 14 GB cap, how much memory each data worker takes, and which GPU speedups make
+training faster on your GPU (below). It chooses as many data workers as the processor is given
+(all cores but four) where the RAM budget holds them, and measures how many spectra per second
+that many deliver together (`gpu_training\machine.json`; a minute or two). Then it checks
+everything end to end in a few minutes: a few training steps of both networks (with the
+speedups chosen), their export to ONNX, and whole spectra read with them. It prints which side
+will set the pace, the data workers or the GPU, and the expected training time; its output is
+also in `gpu_training\setup.log`.
 
 **2. Train:** `gpu_training\train_all.bat` trains the runs, exports each finished one to ONNX
 (checking that the ONNX model computes what the checkpoint does) and reads whole spectra with
@@ -108,15 +111,31 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   largest size that fits. The learning rate stays the recipe's; the networks were set up at 4.
   A run already started at another size cannot be resumed with a new one: finish it, or start
   over with `--restart`.
-- **RAM, at most 16 GB:** the training process plus its data workers, counted as Task Manager
-  counts memory. If the budget is reached anyway, the run pauses safely and resumes at once
-  with two workers fewer (remembered in `machine.json`). For another budget, `--ram-gb 20`.
-  Exporting the window network to ONNX (after its run, and in setup's check) takes about 9 GB
-  of RAM for a minute or two; no training runs at that time.
+- **RAM budget, by default half of the computer's RAM:** the training process plus its data
+  workers, counted as Task Manager counts memory. The default is half the RAM, at least 16 GB
+  and at most 48 GB, and at most the RAM less 4 GB (12 GB on a computer of 16 GB): 16 GB on a
+  computer of 32 GB, as before, 32 GB on one of 64 GB, 48 GB on one of 96 GB or more. Setup
+  gives the data workers all cores but four (two of eight or fewer) where the budget holds
+  them, and measures their speed at that number. Why: the spectra come from the workers, and
+  on a processor with performance and efficiency cores each further worker adds less, while
+  batches are delivered in order, so a worker that is ahead waits for the slower ones. On a
+  computer of 96 GB with 24 cores (8 performance, 16 efficient), the earlier fixed budget of
+  16 GB held 13 workers, which trained at 19 spectra/s (5.4 minutes an epoch) where setup had
+  expected 30 from 10 workers measured alone and scaled up; with `--ram-gb 48` the 20 workers
+  the processor is given trained at 26-27 spectra/s (3.8 minutes an epoch). Whether the
+  workers or the GPU set the pace is in every epoch's line (the share of the time waiting for
+  data, below). If the budget is reached anyway, the run pauses safely and resumes at once
+  with two workers fewer (remembered in `machine.json`). Another budget: `--ram-gb 24`
+  (setup_and_train, setup or train_all); another number of workers: `--workers 16`
+  (setup_and_train or train_all). Exporting the window network to ONNX (after its run, and in
+  setup's check) takes about 9 GB of RAM for a minute or two; no training runs at that time.
 - **Speed:** the data workers and the GPU work at the same time and the slower one sets the
-  pace; setup says which, and every epoch measures it again (see "What the output means").
-  More workers (a larger RAM budget) help only if the workers are the slower one. The workers
-  run at below-normal priority, so the computer stays usable.
+  pace. Setup compares the workers' speed with a training step of the GPU on the runs' first
+  training batch (with the GPU speedups chosen), and gives the step with every spectrum at the
+  active-bin cap, the slowest a step can be, as the bound; it prints which side sets the pace
+  and the expected time (`pace` in `machine.json`), and every epoch measures it again (see
+  "What the output means"). More workers help only if the workers are the slower one. The
+  workers run at below-normal priority, so the computer stays usable.
 - **GPU speedups:** four switches change how the GPU rounds its arithmetic, not what it
   computes: `cudnn_benchmark` (cuDNN times its convolution methods once and keeps the fastest),
   `tf32` (matrix products in TensorFloat-32, as cuDNN's convolutions already are),
@@ -161,7 +180,8 @@ all four. The last line gives speed, what set the pace, memory and the time left
 
 - **waiting for data**: the share of the epoch's training time (validation not counted) the
   training spent waiting for the data workers' next batch. High (more than a few percent)
-  means the workers set the pace: more workers, a larger RAM budget, would help.
+  means the workers set the pace: more workers would help, where the RAM budget holds fewer
+  than the processor is given (`--ram-gb`) or the processor has cores to spare (`--workers`).
 - **GPU busy** and **ms a step**: the GPU time of every 25th step, timed on the GPU itself
   (its median), and that time times the number of steps as a share of the training time. Near
   100 % the GPU sets the pace, and more workers would not help.
@@ -213,9 +233,14 @@ bash gpu_training/train_all.sh
 - **`[WinError 1455] The paging file is too small`** while workers start: let Windows manage
   the paging file size, or use fewer workers (`--workers 6`).
 - **Re-measure the machine** after changing the limits, the hardware or the NVIDIA driver (the
-  GPU speedups are measured again too): `.venv\Scripts\python gpu_training\probe.py --ram-gb
-  16 --gpu-memory-gb 14`; `.venv\Scripts\python gpu_training\check_gpu.py` runs a few steps of
-  both networks on random input.
+  GPU speedups are measured again too): `.venv\Scripts\python gpu_training\probe.py` with the
+  default limits, or with your own, for example `--ram-gb 24 --gpu-memory-gb 12`;
+  `.venv\Scripts\python gpu_training\check_gpu.py` runs a few steps of both networks on random
+  input.
+- **Training says machine.json "comes from an earlier setup, with a RAM budget of 16 GB"**:
+  that setup kept 16 GB whatever the computer. `setup_and_train.bat` measures again by itself
+  after a new package; `train_all.bat` alone keeps the old budget until setup has run, or
+  `--ram-gb` gives another.
 - **A run stops with an error from cuDNN, from `index_select` or from the optimiser** after
   setup chose GPU speedups: set each network's list under `gpu_speedups` in
   `gpu_training\machine.json` to `[]` and start the training again; it resumes without them.
