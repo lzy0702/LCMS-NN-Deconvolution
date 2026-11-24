@@ -391,6 +391,11 @@ def build_model(size: str = "proof", z_max: int = 100, in_ch: int = 4,
         if size not in LADDER_SIZES:
             raise ValueError(f"Unknown model size {size!r}")
         width, proj, hidden, z_ladder = LADDER_SIZES[size]
+        if int(window) <= 0 or int(window) % DOWNSAMPLE:
+            # the predictor pads its input to a multiple of DOWNSAMPLE, and an exported LadderNet
+            # reads exactly its window: any other window gives an ONNX model it cannot run
+            raise ValueError(f"LadderNet window must be a positive multiple of {DOWNSAMPLE} bins, "
+                             f"not {window}")
         top = ladder_active_top(window) if active_top is None else int(active_top)
         return LadderNet(in_ch, z_max, z_ladder=z_ladder, width=width, proj=proj, hidden=hidden,
                          window=int(window), active_top=top, iso=iso)

@@ -50,6 +50,7 @@ unless ``--restart`` says to discard it.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from lcmsdeconv.nn.machine import auto_workers, single_threaded_workers
@@ -96,16 +97,38 @@ def mixture_v3(window: int = V3_WINDOW, background_ions: int | None = None
     range (so that missing charge states lie inside the grid), with 0-200 singly charged
     background ions that are 10-100 times stronger in a quarter of the spectra; the Orbitrap
     oligonucleotides span dna, rna, ps_dna and ps_rna from 1 to 12 kDa, half the spectra with
-    the charge states of real ion-pairing runs (one to three)."""
+    the charge states of real ion-pairing runs (one to three).
+
+    The Orbitrap spectra are thresholded as Thermo profile spectra are (3-6 electronic noise
+    sigmas: most bins zero), and half of them are recorded at the resolving power of the real
+    runs (130 000-185 000 at m/z 200), the other half over the whole 35 000-280 000. Measured on
+    real-like synthetic envelopes as on the real runs (zero bins near an envelope, peak width,
+    isotope-reader accuracy at z >= 2): 0.93, 1.21 bins and 0.89 at that resolving power and
+    0.90, 1.36 and 0.78 over the whole range, against 0.86, 1.13 and 0.90 on the real runs; the
+    default 0-3 sigmas give 0.15, 1.36 and 0.59. Without the threshold the isotope-charge
+    channels fire mostly on noise bins, which real spectra hardly have.
+
+    The result has five components: the Orbitrap one is split into those two halves, each at
+    half its weight (``mix[2]`` the whole range, ``mix[3]`` the real runs' resolving power)."""
     mix = mixture(crop=window, background_ions=200 if background_ions is None else background_ions)
     for _w, cfg in mix:
         cfg.scan_range = "instrument"
         cfg.background_strong_prob = 0.25
-    orbitrap = mix[2][1]
+    weight, orbitrap = mix[2]
     assert orbitrap.instrument_kind == "orbitrap"
     orbitrap.classes = [ClassConfig(c, (1000.0, 12000.0)) for c in ("dna", "rna", "ps_dna", "ps_rna")]
     orbitrap.oligo_real_like_prob = 0.5
+    orbitrap.threshold_sigmas_range = (3.0, 6.0)
+    at_real = replace(orbitrap, classes=list(orbitrap.classes),
+                      resolution_range=V3_REAL_RESOLUTION)
+    mix[2] = (weight / 2, orbitrap)
+    mix.insert(3, (weight / 2, at_real))
     return mix
+
+
+#: resolving power (at m/z 200) of half the v3 Orbitrap spectra: the real Q Exactive Plus runs
+#: were recorded at 140 000 and measure about 155 000
+V3_REAL_RESOLUTION = (130000.0, 185000.0)
 
 
 def main():

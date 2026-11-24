@@ -118,8 +118,11 @@ python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_
   background ions, 10-100 times stronger in a quarter of the frames (`background_strong_prob`).
   The Orbitrap oligonucleotides are dna, rna, ps_dna and ps_rna of 1-12 kDa, and in half the
   frames they charge as in the real ion-pairing runs (`oligo_real_like_prob`: apex
-  0.0769 M^0.445, one to three charge states). Off, each `SynthConfig` option draws nothing,
-  so default frames are bit for bit those of earlier versions (`tests/test_recipe_v3.py`).
+  0.0769 M^0.445, one to three charge states). The Orbitrap spectra are thresholded as Thermo
+  profile spectra are (`threshold_sigmas_range` 3-6 electronic sigmas, so most bins are zero),
+  and half of them are recorded at the real runs' resolving power (130 000-185 000 at m/z 200),
+  the other half over 35 000-280 000. Off, each new `SynthConfig` option draws nothing, so
+  default frames are bit for bit those of earlier versions (`tests/test_recipe_v3.py`).
 - **Isotope-charge channels** (`--iso-channels`, `TrainConfig.iso_channels`). Channel 4 is
   the charge the comb's isotope reader reads at each bin, channel 5 the strength of that
   reading (best evidence over the bin's log-SNR squared). The reader is
@@ -140,11 +143,21 @@ arms running at once. One training process peaks at about 4.8 GB and its data wo
 
 The isotope reader answers only charges whose spacing it resolves on the 2e-5 grid (2.5 peak
 widths, a peak at least two bins wide); an envelope of higher charge gets a lower charge, at full
-strength. On the synthetic Orbitrap spectra (35 000-280 000 at m/z 200) that is a quarter of the
-z >= 2 ion intensity, and where the charge is resolvable the broader synthetic peaks make it read
-z + 1 or higher nearly half the time: the reading is right on about a third of the z >= 2 ion
-intensity, against 0.74 for the untrained ladder. On the real runs, at 140 000 with charges 2-6
-and sharp peaks, the reader is within its range.
+strength. Its accuracy on synthetic spectra depends on how they are rendered. Real-like
+oligonucleotide envelopes, measured as on the real runs (`envlib`: per envelope, z >= 2,
+intensity-weighted):
+
+| Orbitrap spectra | isotope reader | zero bins near the envelope | peak FWHM, bins |
+| --- | --- | --- | --- |
+| threshold 0-3 sigmas, 35 000-280 000 | 0.59 | 0.15 | 1.36 |
+| threshold 3-6 sigmas, 35 000-280 000 | 0.78 | 0.90 | 1.36 |
+| threshold 3-6 sigmas, 130 000-185 000 (v3, half the spectra) | 0.89 | 0.93 | 1.21 |
+| the real runs (140 000 set) | 0.90 | 0.86 | 1.13 |
+
+Unthresholded, the channels fire mostly on noise bins: in an earlier draft of the recipe 88 % of
+the strong readings were on noise, and the untrained isotope-channel network called nearly
+every active noise bin an ion. A network trained there would learn to distrust a reader that is
+right nine times in ten on real spectra.
 
 ## The U-Net on a GPU
 

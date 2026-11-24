@@ -400,9 +400,11 @@ def test_instrument_scan_range_widens_the_grid_to_one_window():
                 assert a <= 600.0 or a == lo or np.log(b / a) >= span - 1e-9
             else:
                 assert (a, b) == (lo, hi)  # the ions alone span more than a window
-    # frames: the grid spans the scan range, and fits one window
+    # frames: the grid spans the scan range, and fits one window. (With v3's vendor-like
+    # threshold the grid spans the points above it instead, which in 90 % of frames start
+    # within 1 500 bins of the scan range's low end; the default threshold shows the range.)
     for seed in range(3):
-        cfg = _v3_orbitrap()
+        cfg = _v3_orbitrap(threshold_sigmas_range=(0.0, 3.0))
         fs = generate_frame(cfg, np.random.default_rng(seed))
         lo, hi = fs.meta["scan_range"]
         grid, _y, _s = bl.frame_grid(cfg, fs)
@@ -464,16 +466,55 @@ def test_real_like_ion_pairing_oligonucleotides():
 def test_v3_recipe():
     script = _script()
     mix, base = script.mixture_v3(), script.mixture()
-    assert [w for w, _c in mix] == [w for w, _c in base]
-    for (_w, c), (_w0, c0) in zip(mix, base):
+    # the Orbitrap component is split in two halves of its weight; the others keep theirs
+    assert [w for w, _c in mix] == [0.3, 0.25, 0.125, 0.125, 0.2]
+    assert sum(w for w, _c in mix) == pytest.approx(sum(w for w, _c in base))
+    for (_w, c), (_w0, c0) in zip(mix, [*base[:3], base[2], base[3]]):
         assert (c.crop_size, c.scan_range, c.background_ions_range, c.background_strong_prob) == \
             (W, "instrument", (0, 200), 0.25)
         assert (c.instrument_kind, c.polarity, c.mode) == (c0.instrument_kind, c0.polarity, c0.mode)
-    orbi = mix[2][1]
-    assert orbi.instrument_kind == "orbitrap" and orbi.oligo_real_like_prob == 0.5
-    assert [(k.name, k.mass_range) for k in orbi.classes] == \
-        [(n, (1000.0, 12000.0)) for n in ("dna", "rna", "ps_dna", "ps_rna")]
-    assert all(c.oligo_real_like_prob == 0.0 for i, (_w, c) in enumerate(mix) if i != 2)
+    whole, real = mix[2][1], mix[3][1]
+    assert whole is not real and whole.classes is not real.classes
+    for orbi in (whole, real):
+        assert orbi.instrument_kind == "orbitrap" and orbi.oligo_real_like_prob == 0.5
+        assert [(k.name, k.mass_range) for k in orbi.classes] == \
+            [(n, (1000.0, 12000.0)) for n in ("dna", "rna", "ps_dna", "ps_rna")]
+        assert orbi.threshold_sigmas_range == (3.0, 6.0)  # vendor-like: most bins zero
+    assert whole.resolution_range == base[2][1].resolution_range == (35000.0, 280000.0)
+    assert real.resolution_range == script.V3_REAL_RESOLUTION == (130000.0, 185000.0)
+    for i, (_w, c) in enumerate(mix):
+        if i not in (2, 3):  # time-of-flight spectra keep the default threshold and charges
+            assert c.oligo_real_like_prob == 0.0 and c.threshold_sigmas_range == (0.0, 3.0)
+
+
+def test_v3_orbitrap_spectra_are_mostly_zero_like_real_ones():
+    """The vendor-like threshold leaves most of an Orbitrap v3 grid at zero (real region grids:
+    79-93 %), where the default 0-3 sigmas leave nearly every bin nonzero."""
+    from lcmsdeconv.nn import baseline as bl
+
+    zero = {}
+    for name, thr in (("v3", None), ("default", (0.0, 3.0))):
+        fracs = []
+        for seed in range(3):
+            cfg = _v3_orbitrap()
+            if thr is not None:
+                cfg.threshold_sigmas_range = thr
+            fs = generate_frame(cfg, np.random.default_rng(200 + seed))
+            _grid, y, _sigma = bl.frame_grid(cfg, fs)
+            fracs.append(float((y <= 0).mean()))
+        zero[name] = np.median(fracs)
+    assert zero["v3"] > 0.75 and zero["default"] < 0.4, zero
+
+
+def test_ladder_window_must_be_a_multiple_of_the_padding():
+    """The predictor pads to a multiple of 64 and an exported LadderNet reads exactly its window,
+    so any other window would export a model the predictor cannot run."""
+    pytest.importorskip("torch")
+    from lcmsdeconv.nn.model import build_model
+
+    with pytest.raises(ValueError, match="multiple of 64"):
+        build_model("small", 100, 4, arch="ladder", window=20000)
+    assert build_model("small", 100, 4, arch="ladder", window=20032).window == 20032
 
 
 # ------------------------------------------------------------------ training with the options
