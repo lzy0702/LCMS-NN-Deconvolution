@@ -37,6 +37,8 @@ Examples:
     python scripts/train_charge_net.py --recipe v3 --iso-channels --out runs/ladder_v3_iso.pt
     python scripts/train_charge_net.py --recipe v3 --iso-channels --view comb \
         --out runs/ladder_v3_comb.pt
+    # v4: v3 with lone multiply charged oligonucleotides in the real-like Orbitrap spectra
+    python scripts/train_charge_net.py --recipe v4 --iso-channels --out runs/ladder_v4_iso.pt
 
     # export for inference (ONNX + JSON sidecar next to it)
     lcmsdeconv export-onnx runs/ladder_stage1.pt -o runs/ladder_stage1.onnx
@@ -134,15 +136,44 @@ def mixture_v3(window: int = V3_WINDOW, background_ions: int | None = None
 V3_REAL_RESOLUTION = (130000.0, 185000.0)
 
 
+def mixture_v4(window: int = V3_WINDOW, background_ions: int | None = None
+               ) -> list[tuple[float, SynthConfig]]:
+    """Recipe v4 (experimental): :func:`mixture_v3` with lone multiply charged
+    oligonucleotides. In the real-like Orbitrap spectra (half of them), a share
+    :data:`V4_SINGLE_STATE` of the oligonucleotide main compounds show one charge state only
+    (``SynthConfig.oligo_single_state_prob``), their impurities with them.
+
+    In v3's spectra 99.8 % of the envelopes with no other charge state of their species in view
+    are singly charged background ions, and where the isotope reader reads a charge of 2 or more
+    on such a lone peak the label is z = 1 for 97.6 % of the signal. A network trained on them
+    learns that a charge without ladder rungs is z = 1 and overrides a right isotope reading on
+    every lone multiply charged envelope (docs/training.md, recipe v4). Only Orbitrap spectra get
+    them: a lone envelope's charge is in its absolute m/z, which only the isotope-charge channels
+    carry, and those are read on Orbitrap and FT-ICR spectra only."""
+    mix = mixture_v3(window, background_ions)
+    for _w, cfg in mix:
+        if cfg.instrument_kind == "orbitrap":
+            cfg.oligo_single_state_prob = V4_SINGLE_STATE
+    return mix
+
+
+#: recipe v4: share of the real-like Orbitrap spectra's oligonucleotide main compounds that show
+#: a single charge state
+V4_SINGLE_STATE = 0.4
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--recipe", default="default", choices=["default", "v3"],
+    ap.add_argument("--recipe", default="default", choices=["default", "v3", "v4"],
                     help="training spectra and settings: 'default' (the mixture above, "
-                         "32 768-bin crops) or 'v3', the whole-spectrum recipe (experimental: "
+                         "32 768-bin crops), 'v3', the whole-spectrum recipe (experimental: "
                          "one 131 072-bin window, singly charged ions kept, instrument scan "
-                         "ranges, strong background, real-like ion-pairing oligonucleotides)")
+                         "ranges, strong background, real-like ion-pairing oligonucleotides), "
+                         "or 'v4', v3 with lone multiply charged oligonucleotides in the "
+                         "real-like Orbitrap spectra")
     ap.add_argument("--window", type=int, default=None,
-                    help="LadderNet window in grid bins (default 32 768; 131 072 with --recipe v3)")
+                    help="LadderNet window in grid bins (default 32 768; 131 072 with --recipe "
+                         "v3 or v4)")
     ap.add_argument("--iso-channels", action="store_true",
                     help="add the isotope-charge input channels: charge, strength and isotope "
                          "limit (LadderNet only)")
@@ -156,7 +187,7 @@ def main():
     ap.add_argument("--arch", default="ladder", choices=["ladder", "unet"])
     ap.add_argument("--model-size", default="proof", choices=["small", "proof", "full"])
     ap.add_argument("--singly-charged", default=None, choices=["drop", "ignore", "keep"],
-                    help="default: ignore (keep with --recipe v3)")
+                    help="default: ignore (keep with --recipe v3 or v4)")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--train-len", type=int, default=2000, help="frames per epoch")
     ap.add_argument("--val-len", type=int, default=64)
@@ -180,8 +211,8 @@ def main():
                          "process) instead of drawing new ones")
     ap.add_argument("--background-ions", type=int, default=None,
                     help="up to this many singly charged background ions per spectrum "
-                         "(default 40, 200 with --recipe v3; more teaches the network to reject "
-                         "dense background)")
+                         "(default 40, 200 with --recipe v3 or v4; more teaches the network to "
+                         "reject dense background)")
     ap.add_argument("--init", default=None, help="checkpoint to start from")
     ap.add_argument("--resume", action="store_true",
                     help="continue a paused or interrupted run from <out>.resume.pt")
@@ -201,7 +232,7 @@ def main():
         print("WARNING: numba is not installed, so spectra are generated about 20 times slower. "
               "Install it with: pip install numba", flush=True)
     restart = args.restart
-    v3 = args.recipe == "v3"
+    v3 = args.recipe in ("v3", "v4")  # v4 is v3 with other spectra
     if args.singly_charged is None:
         args.singly_charged = "keep" if v3 else "ignore"
     if args.window is None:
@@ -230,10 +261,11 @@ def main():
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
     if v3:
-        print(f"recipe v3 (experimental): {args.window}-bin window, {args.view} view, singly "
-              f"charged ions {args.singly_charged}"
+        print(f"recipe {args.recipe} (experimental): {args.window}-bin window, {args.view} "
+              f"view, singly charged ions {args.singly_charged}"
               + (", isotope-charge channels" if args.iso_channels else ""), flush=True)
-        synth = mixture_v3(args.window, background_ions=args.background_ions)
+        make = mixture_v4 if args.recipe == "v4" else mixture_v3
+        synth = make(args.window, background_ions=args.background_ions)
     else:
         synth = mixture(crop=args.window, background_ions=args.background_ions)
     train(cfg, synth_config=synth)

@@ -83,6 +83,13 @@ class SynthConfig:
     #: charges as in real ion-pairing runs: apex 0.0769 M^0.445 x U(0.9, 1.1), width 0.35-0.6
     #: charges, one to three charge states (``synth.charge.sample_charge_shape``)
     oligo_real_like_prob: float = 0.0
+    #: share of the oligonucleotide main compounds of those real-like frames (900 Da and up) that
+    #: show a single charge state: their apex charge times U(0.8, 1.25), rounded, with no other
+    #: state; their impurities show the same one. Lone multiply charged envelopes are rare in
+    #: real runs, but without them nearly every lone envelope a network trains on is a singly
+    #: charged background ion, and it learns to read every lone envelope as z = 1 whatever its
+    #: isotope spacing says. No draw while it is 0, so frames are drawn exactly as before
+    oligo_single_state_prob: float = 0.0
     #: append the isotope-charge channels (charge read from resolved isotope spacing, strength,
     #: isotope limit) to the features, computed over the whole grid before the crop
     #: (``nn.features.isotope_channels``: read on Orbitrap and FT-ICR frames, empty on
@@ -97,7 +104,8 @@ class SynthConfig:
 #: settings added after resumable training runs existed, with the values every earlier run had:
 #: left out of :func:`settings_repr` while they keep them
 LATER_DEFAULTS = {"scan_range": "sticks", "background_strong_prob": 0.0,
-                  "oligo_real_like_prob": 0.0, "iso_channels": False, "measured_channel": False}
+                  "oligo_real_like_prob": 0.0, "iso_channels": False, "measured_channel": False,
+                  "oligo_single_state_prob": 0.0}
 
 
 def settings_repr(obj) -> str:

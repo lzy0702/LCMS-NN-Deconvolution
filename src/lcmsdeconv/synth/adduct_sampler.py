@@ -234,11 +234,30 @@ def member_distributions(cfg, members, library: AdductLibrary, run_adducts: dict
             shape = sample_charge_shape(comp.mass, comp.compound_class, cfg.esi_mode, rng,
                                         real_like=real_like)
             if idx == 0:
+                shape = _single_state(shape, comp, cfg, rng, real_like)
                 parent_shape, parent_mass = shape, comp.mass
         cd = distribution_from_shape(shape, cfg.z_max)
         props = run_adducts if legacy_adducts else propensities_for_component(run_adducts, cd)
         out.append((cd, adduct_fractions_by_charge(cd, props, library)))
     return out
+
+
+def _single_state(shape, comp, cfg, rng: np.random.Generator, real_like: bool):
+    """A real-like oligonucleotide main compound's envelope reduced to one charge state, with
+    probability ``cfg.oligo_single_state_prob`` (``SynthConfig``): its apex charge times
+    U(0.8, 1.25), rounded. Draws nothing unless the option is on and applies."""
+    from dataclasses import replace
+
+    from .charge import OLIGO_CLASSES
+
+    p = getattr(cfg, "oligo_single_state_prob", 0.0)
+    if not (p > 0 and real_like and comp.compound_class in OLIGO_CLASSES and comp.mass >= 900
+            and shape.single is None):
+        return shape
+    if rng.random() >= p:
+        return shape
+    z = int(round(shape.centre * rng.uniform(0.8, 1.25)))
+    return replace(shape, single={min(max(1, z), cfg.z_max): 1.0})
 
 
 def run_adduct_draw(cfg, library: AdductLibrary, rng: np.random.Generator) -> dict[str, float]:
