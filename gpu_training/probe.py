@@ -1,8 +1,9 @@
 """Measure this computer for training, within the given memory limits.
 
 Runs real training steps of the full-size networks of both views (the whole-spectrum recipe
-with isotope-charge channels, at the recipe's batch size and head chunking, every spectrum at
-the active-bin cap: the most memory a step can need) on the GPU under the GPU memory cap, then
+with isotope-charge channels, at the recipe's batch size, every spectrum at the active-bin cap:
+the most memory a step can need) on the GPU under the GPU memory cap, scoring the charges in
+chunks and all at once (train_all.py chooses between the two from these measurements), then
 starts data workers the way training does on the recipe's spectra and measures how much memory
 each one takes and how many spectra per second they deliver. From that it chooses the number of
 workers that keeps the training process and its workers within the RAM budget, and writes
@@ -103,7 +104,9 @@ def gpu_view(view: str, batch_size: int, head_chunk: int | None) -> dict:
 
 
 def gpu_steps(gpu_memory_gb: float, batch_size: int, head_chunk: int | None) -> dict:
-    """Both views at ``batch_size`` (halved until a step fits under the cap)."""
+    """Both views at ``batch_size`` (halved until a step fits under the cap) in chunks of
+    ``head_chunk`` charges, then at the batch that fit with all charges at once
+    (``"unchunked"``)."""
     import torch
 
     from lcmsdeconv.nn.train import _cap_gpu_memory, _warm_up
@@ -125,6 +128,16 @@ def gpu_steps(gpu_memory_gb: float, batch_size: int, head_chunk: int | None) -> 
         if view not in views:
             views[view] = {"batch": batch_size, "peak_gb": None, "step_seconds": None,
                            "error": "out of GPU memory even at one spectrum per step"}
+            continue
+        whole = None
+        try:
+            whole = gpu_view(view, views[view]["batch"], None)
+        except torch.cuda.OutOfMemoryError:
+            pass
+        torch.cuda.empty_cache()
+        views[view]["unchunked"] = whole or {
+            "batch": views[view]["batch"], "peak_gb": None, "step_seconds": None,
+            "error": "out of GPU memory"}
     props = torch.cuda.get_device_properties(0)
     return {"gpu": props.name, "gpu_total_gb": round(props.total_memory / 2**30, 1),
             "gpu_views": views, "torch": torch.__version__, "torch_cuda": torch.version.cuda}
@@ -171,7 +184,7 @@ def workers_run(n: int, rounds: int = 4, batch_size: int = 4) -> dict:
 
 
 def main() -> int:
-    from train_all import BATCH, DEFAULT_RUNS, HEAD_CHUNK, RUN_TABLE, SPECTRA
+    from train_all import BATCH, DEFAULT_RUNS, HEAD_CHUNK, RUN_TABLE, SPECTRA, head_chunk_for
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ram-gb", type=float, default=16.0,
@@ -202,11 +215,22 @@ def main() -> int:
     # the training process: what this one holds now (PyTorch, the CUDA context) and the
     # validation spectra it keeps in memory
     main_gb = process_gb(psutil.Process()) + VALIDATION_GB
+    chunks = {view: head_chunk_for(gpu, view, args.gpu_memory_gb, args.batch_size)
+              for view in gpu["gpu_views"]}
     for view, m in gpu["gpu_views"].items():
         if m.get("peak_gb"):
             print(f"  {gpu['gpu']}, {view} view: {m['step_seconds'] * 1000:.0f} ms per training "
                   f"step of {m['batch']} spectra, {m['peak_gb']:.1f} GB of GPU memory at the "
-                  f"peak", flush=True)
+                  f"peak, scoring {HEAD_CHUNK} charges at a time", flush=True)
+            whole = m.get("unchunked") or {}
+            if whole.get("peak_gb"):
+                print(f"    all charges at once: {whole['step_seconds'] * 1000:.0f} ms, "
+                      f"{whole['peak_gb']:.1f} GB", flush=True)
+            else:
+                print(f"    all charges at once: {whole.get('error', 'not measured')}", flush=True)
+            print(f"    training will score "
+                  f"{'all charges at once' if chunks[view] is None else f'{HEAD_CHUNK} at a time'}",
+                  flush=True)
         else:
             print(f"  {view} view: {m.get('error')}", flush=True)
 
@@ -240,6 +264,8 @@ def main() -> int:
     for name in DEFAULT_RUNS:
         view = RUN_TABLE[name]["view"]
         m = gpu["gpu_views"].get(view) or {}
+        if m and chunks.get(view, HEAD_CHUNK) is None:
+            m = m["unchunked"]  # the step train_all will take
         pace = rate
         if m.get("step_seconds"):
             pace = min(rate, m["batch"] / m["step_seconds"])
@@ -247,13 +273,17 @@ def main() -> int:
         hours += 1.1 * SPECTRA / max(pace, 1e-6) / 3600
     info = {"recipe": "v3", "workers": chosen, "ram_budget_gb": args.ram_gb,
             "gpu_memory_gb": args.gpu_memory_gb, "gpu_batch": args.batch_size,
-            "head_chunk": HEAD_CHUNK, "main_gb": round(main_gb, 2), "worker_gb": round(worker_gb, 2),
+            "head_chunk": HEAD_CHUNK, "head_chunks": chunks, "main_gb": round(main_gb, 2), "worker_gb": round(worker_gb, 2),
             "expected_ram_gb": round(main_gb + chosen * worker_gb, 1),
             "v3_spectra_per_second": round(rate, 1), "v3_workers": chosen,
             "expected_hours": round(hours, 1), "cores": cores, "measured": [run], **gpu}
     args.out.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
-    gpu_rates = {v: m["batch"] / m["step_seconds"] for v, m in gpu["gpu_views"].items()
-                 if m.get("step_seconds")}
+    gpu_rates = {}
+    for v, m in gpu["gpu_views"].items():
+        if m and chunks.get(v, HEAD_CHUNK) is None:
+            m = m["unchunked"]
+        if m.get("step_seconds"):
+            gpu_rates[v] = m["batch"] / m["step_seconds"]
     if gpu_rates:
         pace_text = "; ".join(f"the GPU could take {r:.0f} spectra/s in the {v} view"
                               for v, r in gpu_rates.items())

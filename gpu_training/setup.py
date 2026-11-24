@@ -58,6 +58,9 @@ SETUP_INPUTS = ("pyproject.toml", "gpu_training/setup.py", "gpu_training/probe.p
                 "src/lcmsdeconv/nn/train.py", "src/lcmsdeconv/nn/features.py",
                 "src/lcmsdeconv/nn/infer.py", "src/lcmsdeconv/nn/export.py",
                 "src/lcmsdeconv/synth/frames.py")
+#: folders whose Python files count as well, all of them: the network, its training and the
+#: synthetic spectra it trains on
+SETUP_TREES = ("src/lcmsdeconv/nn", "src/lcmsdeconv/synth")
 #: PyTorch CUDA builds, newest first, with the CUDA version the driver must support
 TORCH_BUILDS = [("cu132", (13, 2)), ("cu130", (13, 0)), ("cu128", (12, 8)), ("cu126", (12, 6))]
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"
@@ -77,11 +80,18 @@ def say(msg: str = "") -> None:
 
 
 def fingerprint() -> dict:
-    """The first 16 hex digits of the sha256 of each file in SETUP_INPUTS ('' if missing)."""
+    """The first 16 hex digits of the sha256 of each file in SETUP_INPUTS ('' if missing), and of
+    the names and contents of the Python files in each folder of SETUP_TREES."""
     out = {}
     for rel in SETUP_INPUTS:
         path = ROOT / rel
         out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.exists() else ""
+    for rel in SETUP_TREES:
+        digest = hashlib.sha256()
+        for path in sorted((ROOT / rel).rglob("*.py")):
+            digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+        out[rel + "/"] = digest.hexdigest()[:16]
     return out
 
 

@@ -25,10 +25,12 @@ Both use the whole-spectrum recipe: full size, 20 epochs of 6 000 new spectra ea
 charged ions included), learning rate 0.002, and the **isotope-charge channels**: the charge the
 comb's isotope reader reads from resolved isotope spacing, the strength of that reading, and
 the **isotope limit**, the highest charge whose isotope spacing can be resolved at that m/z
-with the instrument's resolving power. Above the limit the reader answers half the charge
-(an envelope of charge 8 it cannot resolve reads as 4); the network uses the limit to tell such
-readings apart. Untrained, this alone raises the share of charges of z >= 2 read right on
-Orbitrap spectra from 0.39 to 0.66 (0.42 to 0.85 weighted by intensity).
+with the instrument's resolving power. Above the limit the reader answers a lower charge it can
+resolve, mostly one at or just below the limit (at m/z 1 800, where the limit is 5, envelopes of
+charge 6 to 30 read 5); the network uses the limit to tell such readings apart. Untrained, the
+share of charges of z >= 2 read right on Orbitrap spectra is 0.66 with the limit (0.85 weighted
+by intensity), against 0.62 (0.82) without isotope channels and 0.39 (0.42) with the earlier
+layout's two channels, whose wrong readings the limit lets the network discount.
 
 Two more runs exist but are not trained by default: `window-plain` and `comb-plain`, the same
 without isotope channels. Choose the runs with `--runs`, for example
@@ -86,10 +88,14 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
 ## Memory and speed
 
 - **GPU memory:** each step takes 4 spectra of 131 072 bins. The ladder is read at up to
-  24 576 bins per spectrum, which is the bulk of the memory, so it is scored 16 charges at a
-  time and recomputed in the backward pass: the same results in about a third of the memory
-  (measured on a processor, about 2.5 GB per step against 7 GB). Setup measures the real peak
-  of both networks on your GPU (`gpu_views` in `machine.json`).
+  24 576 bins per spectrum, which is the bulk of the memory. Scoring the charges 16 at a time
+  and recomputing them in the backward pass gives the same results in about a third of the
+  memory (measured on a processor, about 2.5 GB per step against 7 GB) for about a third more
+  time per step. Setup measures both ways for both networks on your GPU (`gpu_views` in
+  `machine.json`), and training scores all charges at once where that is faster and its peak,
+  with 30 % to spare, stays under the cap; setup prints the choice. Should a run still run out
+  of GPU memory that way, it continues from its last saved state 16 charges at a time, and so
+  do later runs of that network (`unchunked_failed` in `machine.json`).
 - **Batch size:** `--batch-size 8` takes 8 spectra per step. A batch whose memory, scaled from
   setup's measurement, exceeds the GPU cap is refused before the training starts, with the
   largest size that fits. The learning rate stays the recipe's; the networks were set up at 4.
@@ -98,6 +104,8 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
 - **RAM, at most 16 GB:** the training process plus its data workers, counted as Task Manager
   counts memory. If the budget is reached anyway, the run pauses safely and resumes at once
   with two workers fewer (remembered in `machine.json`). For another budget, `--ram-gb 20`.
+  Exporting the window network to ONNX (after its run, and in setup's check) takes about 9 GB
+  of RAM for a minute or two; no training runs at that time.
 - **Speed:** the data workers and the GPU work at the same time and the slower one sets the
   pace; setup says which. More workers (a larger RAM budget) help only if the workers are the
   slower one. The workers run at below-normal priority, so the computer stays usable.
