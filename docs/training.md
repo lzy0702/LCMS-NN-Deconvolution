@@ -188,17 +188,17 @@ on the whole-spectrum recipe with isotope channels, on the same spectra (seed 0)
   A full-size step at 4 spectra of 131 072 bins, every spectrum at the active-bin cap, peaked
   on the processor at 6.7 GB (window) and 7.1 GB (comb) above the process's baseline, 2.4-2.5
   GB in chunks of 16 charges, for 30 % more step time. The GPU package measures both on the
-  GPU (`gpu_training/probe.py`) and scores all charges at once where that is faster and its
-  peak times 1.3 stays under the cap, 16 at a time otherwise; a run that runs out of GPU memory
-  unchunked continues from its last state in chunks (`train_all.head_chunk_for`).
+  GPU (`gpu_training/probe.py`): `train_all.head_chunk_for` scores all charges at once where
+  that is faster, its peak times 1.3 stays under the cap and the GPU rather than the data
+  workers sets the pace, 16 at a time otherwise, and `train_all.run_stage` continues a run that
+  runs out of GPU memory unchunked from its last saved state in chunks.
 
 **The isotope limit** (channel 6, `nn.features.isotope_limit`): at every bin, the highest charge
 whose isotope spacing the reader resolves at that m/z with the instrument's resolving power, by
 the reader's own rule (spacing at least 2.5 peak widths, a peak at least two bins wide), up to
 60; 0 where none is, and on time-of-flight spectra. At 140 000 (m/z 200) on the 2e-5 grid it is
 20 at m/z 500, 10 at 1 000 and 5 at 2 000. Above the limit the reader answers a resolvable lower
-charge at full strength, mostly at or just below the limit (at m/z 1 800, limit 5, envelopes of
-charge 6-30 read 5; at m/z 1 200, limit 8, charges 10-30 read 7-8). The scorer of each charge z also reads
+charge at full strength, mostly at or a little below the limit, rather than half the true one. The scorer of each charge z also reads
 whether z is resolvable there (`clamp(zlim - z + 1, 0, 1)`), and the isotope prior counts only
 where twice the read charge is still resolvable (`gate = clamp(zlim - 2 zc + 1, 0, 1)`).
 Untrained, on 20 Orbitrap validation spectra of the recipe (the training's validation seeds,

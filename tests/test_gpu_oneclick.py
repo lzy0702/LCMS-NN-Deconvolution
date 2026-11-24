@@ -451,12 +451,103 @@ def test_a_model_failing_the_predictor_check_is_checked_again(tmp_path, monkeypa
     assert train_all.export(stage) == ckpt.with_suffix(".onnx") and len(calls) == 4  # done
 
 
-def test_setup_runs_again_when_any_network_or_spectrum_code_changes(setup_mod):
-    other = setup_mod.ROOT / "src/lcmsdeconv/synth/dataset.py"  # not in SETUP_INPUTS
-    assert "src/lcmsdeconv/synth/dataset.py" not in setup_mod.SETUP_INPUTS
+@pytest.mark.parametrize("rel", ["src/lcmsdeconv/synth/dataset.py",
+                                 "src/lcmsdeconv/chem/isotopes.py"])
+def test_setup_runs_again_when_any_package_code_changes(setup_mod, rel):
+    other = setup_mod.ROOT / rel  # not in SETUP_INPUTS
+    assert rel not in setup_mod.SETUP_INPUTS
+    other.parent.mkdir(parents=True, exist_ok=True)
     other.write_text("frames\n")
     _record(setup_mod)
     assert setup_mod.setup_is_current()[0]
     other.write_text("other frames\n")
     holds, why = setup_mod.setup_is_current()
     assert not holds and "package has changed" in why
+
+
+def test_all_charges_at_once_only_where_the_gpu_sets_the_pace():
+    train_all = _load("train_all")
+    machine = _with_unchunked((8.0, 0.15))  # chunked: 4 spectra in 0.2 s, 20 per second
+    assert train_all.head_chunk_for(machine, "window", 14.0, 4, 30.0) is None
+    assert train_all.head_chunk_for(machine, "window", 14.0, 4, 20.0) == 16  # workers' pace
+    assert train_all.head_chunk_for(machine, "window", 14.0, 4, None) is None  # not measured
+    assert train_all.data_rate({"v3_spectra_per_second": 30.0, "v3_workers": 10}, 5) == 15.0
+    assert train_all.data_rate({}, 5) is None
+
+
+def test_an_interrupted_export_or_check_is_done_again(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    train_all = _train_all_in(tmp_path, monkeypatch)
+    stage = train_all.make_run("comb")
+    ckpt = tmp_path / stage["out"]
+    ckpt.write_text("checkpoint")
+    calls = []
+
+    def closed_during_the_check(cmd, **_kw):
+        calls.append(cmd)
+        if "export-onnx" in cmd:
+            ckpt.with_suffix(".onnx").write_text("model")
+            return SimpleNamespace(returncode=0)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(train_all.subprocess, "run", closed_during_the_check)
+    with pytest.raises(KeyboardInterrupt):
+        train_all.export(stage)
+    assert ckpt.with_suffix(".onnx").exists() and ckpt.with_suffix(".unchecked").exists()
+    monkeypatch.setattr(train_all.subprocess, "run",
+                        lambda cmd, **_kw: calls.append(cmd) or SimpleNamespace(returncode=0))
+    assert train_all.export(stage) == ckpt.with_suffix(".onnx")
+    assert sum("export-onnx" in c for c in calls) == 2
+    assert not ckpt.with_suffix(".unchecked").exists()
+
+
+def test_a_view_out_of_gpu_memory_stays_in_chunks_for_its_later_runs(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    train_all = _train_all_in(tmp_path, monkeypatch)
+    train_all.MACHINE.write_text(json.dumps({**_with_unchunked((8.0, 0.1)), "workers": 6,
+                                             "v3_spectra_per_second": 60.0, "v3_workers": 6}))
+    for name in ("window", "window-plain"):
+        (tmp_path / train_all.RUN_TABLE[name]["out"]).write_text("checkpoint")
+    commands = []
+    oom = ["torch.OutOfMemoryError: CUDA out of memory.\n"]
+    monkeypatch.setattr(train_all.subprocess, "Popen",
+                        _FakeTraining(commands, [(oom, 1), ([], 0), ([], 0)]))
+    monkeypatch.setattr(train_all.subprocess, "run",
+                        lambda cmd, **_kw: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(train_all.signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(sys, "argv", ["train_all.py", "--runs", "window,window-plain",
+                                      "--device", "cpu"])
+    assert train_all.main() == 0
+    chunks = [c[c.index("--head-chunk") + 1] if "--head-chunk" in c else "all" for c in commands]
+    assert chunks == ["all", "16", "16"]  # window, its fallback, then window-plain
+
+
+@pytest.mark.parametrize("cap, kept", [(14.0, True), (12.0, False)])
+def test_measuring_again_keeps_a_view_out_of_gpu_memory_in_chunks(tmp_path, monkeypatch, cap,
+                                                                  kept):
+    import torch
+
+    import lcmsdeconv.nn.machine as nn_machine
+
+    probe = _load("probe")
+    step = {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.8,
+            "unchunked": {"batch": 4, "peak_gb": 5.0, "step_seconds": 0.5}}
+    views = {"window": dict(step), "comb": dict(step)}
+    monkeypatch.setattr(probe, "gpu_steps", lambda *_a: {"gpu": "Fake GPU", "gpu_total_gb": 16.0,
+                                                         "gpu_views": views})
+    monkeypatch.setattr(probe, "workers_run", lambda n, **_k: {
+        "workers": n, "startup_seconds": 1.0, "spectra_per_second": 10.0 * n, "worker_gb": 0.5,
+        "worker_commit_gb": 0.6, "workers_total_gb": 0.5 * n})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(nn_machine, "single_threaded_workers", lambda: None)
+    out = tmp_path / "machine.json"
+    out.write_text(json.dumps({"gpu": "Fake GPU", "gpu_memory_gb": 14.0, "gpu_batch": 4,
+                               "unchunked_failed": ["window"]}))
+    monkeypatch.setattr(sys, "argv", ["probe.py", "--workers", "4", "--gpu-memory-gb", str(cap),
+                                      "--out", str(out)])
+    assert probe.main() == 0
+    info = json.loads(out.read_text())
+    assert info.get("unchunked_failed") == (["window"] if kept else None)
+    assert info["head_chunks"] == {"window": 16 if kept else None, "comb": None}

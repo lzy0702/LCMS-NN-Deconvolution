@@ -21,9 +21,10 @@ Every step is skipped when it is already done, so running it again is safe:
 
 A setup that finishes records itself in gpu_training/setup_done.json. With --if-needed (what
 setup_and_train.bat uses) the whole setup is skipped while that record still holds: the same
-package files (SETUP_INPUTS), the environment and machine.json present, and PyTorch computing
-on the GPU. A new package unzipped over the folder of an earlier one keeps its .venv: PyTorch
-is not downloaded again, and only the measurement and the check run again.
+package files (SETUP_INPUTS and every Python file of src/lcmsdeconv), the environment and
+machine.json present, and PyTorch computing on the GPU. A new package unzipped over the folder
+of an earlier one keeps its .venv: PyTorch is not downloaded again, and only the measurement and
+the check run again.
 
 Output is also written to gpu_training/setup.log.
 """
@@ -58,9 +59,9 @@ SETUP_INPUTS = ("pyproject.toml", "gpu_training/setup.py", "gpu_training/probe.p
                 "src/lcmsdeconv/nn/train.py", "src/lcmsdeconv/nn/features.py",
                 "src/lcmsdeconv/nn/infer.py", "src/lcmsdeconv/nn/export.py",
                 "src/lcmsdeconv/synth/frames.py")
-#: folders whose Python files count as well, all of them: the network, its training and the
-#: synthetic spectra it trains on
-SETUP_TREES = ("src/lcmsdeconv/nn", "src/lcmsdeconv/synth")
+#: folders whose Python files count as well, all of them: the whole package (the network, its
+#: training, the synthetic spectra and the chemistry, profiles and comb they are built from)
+SETUP_TREES = ("src/lcmsdeconv",)
 #: PyTorch CUDA builds, newest first, with the CUDA version the driver must support
 TORCH_BUILDS = [("cu132", (13, 2)), ("cu130", (13, 0)), ("cu128", (12, 8)), ("cu126", (12, 6))]
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"

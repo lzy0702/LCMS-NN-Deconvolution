@@ -26,8 +26,8 @@ charged ions included), learning rate 0.002, and the **isotope-charge channels**
 comb's isotope reader reads from resolved isotope spacing, the strength of that reading, and
 the **isotope limit**, the highest charge whose isotope spacing can be resolved at that m/z
 with the instrument's resolving power. Above the limit the reader answers a lower charge it can
-resolve, mostly one at or just below the limit (at m/z 1 800, where the limit is 5, envelopes of
-charge 6 to 30 read 5); the network uses the limit to tell such readings apart. Untrained, the
+resolve, mostly one at or a little below the limit; the network uses the limit to tell such
+readings apart. Untrained, the
 share of charges of z >= 2 read right on Orbitrap spectra is 0.66 with the limit (0.85 weighted
 by intensity), against 0.62 (0.82) without isotope channels and 0.39 (0.42) with the earlier
 layout's two channels, whose wrong readings the limit lets the network discount.
@@ -92,10 +92,12 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   and recomputing them in the backward pass gives the same results in about a third of the
   memory (measured on a processor, about 2.5 GB per step against 7 GB) for about a third more
   time per step. Setup measures both ways for both networks on your GPU (`gpu_views` in
-  `machine.json`), and training scores all charges at once where that is faster and its peak,
-  with 30 % to spare, stays under the cap; setup prints the choice. Should a run still run out
-  of GPU memory that way, it continues from its last saved state 16 charges at a time, and so
-  do later runs of that network (`unchunked_failed` in `machine.json`).
+  `machine.json`), and training scores all charges at once where that is faster, its peak with
+  30 % to spare stays under the cap, and the GPU rather than the data workers sets the pace
+  (otherwise chunks cost no time); setup prints the choice. Should a run still run out of GPU
+  memory that way, it continues from its last saved state 16 charges at a time, and so do later
+  runs of that network (`unchunked_failed` in `machine.json`, kept when setup measures again
+  with the same GPU, cap and batch size).
 - **Batch size:** `--batch-size 8` takes 8 spectra per step. A batch whose memory, scaled from
   setup's measurement, exceeds the GPU cap is refused before the training starts, with the
   largest size that fits. The learning rate stays the recipe's; the networks were set up at 4.

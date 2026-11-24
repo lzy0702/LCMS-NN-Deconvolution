@@ -215,8 +215,6 @@ def main() -> int:
     # the training process: what this one holds now (PyTorch, the CUDA context) and the
     # validation spectra it keeps in memory
     main_gb = process_gb(psutil.Process()) + VALIDATION_GB
-    chunks = {view: head_chunk_for(gpu, view, args.gpu_memory_gb, args.batch_size)
-              for view in gpu["gpu_views"]}
     for view, m in gpu["gpu_views"].items():
         if m.get("peak_gb"):
             print(f"  {gpu['gpu']}, {view} view: {m['step_seconds'] * 1000:.0f} ms per training "
@@ -228,9 +226,6 @@ def main() -> int:
                       f"{whole['peak_gb']:.1f} GB", flush=True)
             else:
                 print(f"    all charges at once: {whole.get('error', 'not measured')}", flush=True)
-            print(f"    training will score "
-                  f"{'all charges at once' if chunks[view] is None else f'{HEAD_CHUNK} at a time'}",
-                  flush=True)
         else:
             print(f"  {view} view: {m.get('error')}", flush=True)
 
@@ -258,6 +253,18 @@ def main() -> int:
     by_cpu = cores - 2 if cores <= 8 else cores - 4
     chosen = args.workers or max(1, min(by_cpu, fit))
     rate = run["spectra_per_second"] * chosen / max(run["workers"], 1)
+    # a view whose training ran out of GPU memory scoring all charges at once (train_all keeps
+    # the record) stays in chunks while the GPU, its cap and the batch are the ones measured
+    try:
+        before = json.loads(args.out.read_text(encoding="utf-8")) if args.out.exists() else {}
+    except (OSError, ValueError):
+        before = {}
+    same = (before.get("gpu"), before.get("gpu_memory_gb"), before.get("gpu_batch")) == (
+        gpu.get("gpu"), args.gpu_memory_gb, args.batch_size)
+    failed = (before.get("unchunked_failed") or []) if same else []
+    chunks = {view: head_chunk_for({**gpu, "unchunked_failed": failed}, view,
+                                   args.gpu_memory_gb, args.batch_size, rate)
+              for view in gpu["gpu_views"]}
     # train_all.py's default runs, each 20 x 6000 spectra; 10 % more for validation. The data
     # workers and the GPU work at the same time, so the slower of the two sets the pace
     hours, paces = 0.0, {}
@@ -273,10 +280,13 @@ def main() -> int:
         hours += 1.1 * SPECTRA / max(pace, 1e-6) / 3600
     info = {"recipe": "v3", "workers": chosen, "ram_budget_gb": args.ram_gb,
             "gpu_memory_gb": args.gpu_memory_gb, "gpu_batch": args.batch_size,
-            "head_chunk": HEAD_CHUNK, "head_chunks": chunks, "main_gb": round(main_gb, 2), "worker_gb": round(worker_gb, 2),
+            "head_chunk": HEAD_CHUNK, "head_chunks": chunks, "main_gb": round(main_gb, 2),
+            "worker_gb": round(worker_gb, 2),
             "expected_ram_gb": round(main_gb + chosen * worker_gb, 1),
             "v3_spectra_per_second": round(rate, 1), "v3_workers": chosen,
             "expected_hours": round(hours, 1), "cores": cores, "measured": [run], **gpu}
+    if failed:
+        info["unchunked_failed"] = failed
     args.out.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     gpu_rates = {}
     for v, m in gpu["gpu_views"].items():
@@ -292,6 +302,9 @@ def main() -> int:
         pace_text = f" ({pace_text}, so {slower})"
     else:
         pace_text = " (the GPU was not measured)"
+    for view, chunk in chunks.items():
+        how = "all charges at once" if chunk is None else f"{HEAD_CHUNK} charges at a time"
+        print(f"  {view} view: training will score {how}", flush=True)
     print(f"Chosen: {chosen} data workers (about {info['expected_ram_gb']:.1f} GB of RAM with "
           f"the training process, budget {args.ram_gb:g} GB; {cores} cores). Expected "
           f"{rate:.0f} spectra/s from the workers{pace_text}: about {hours:.1f} h for the two "
