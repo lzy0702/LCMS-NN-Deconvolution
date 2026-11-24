@@ -12,14 +12,18 @@ Every step is skipped when it is already done, so running it again is safe:
    supports among CUDA 13.2, 13.0, 12.8 and 12.6 - and checks that it computes on the GPU,
    falling back to the next build if it does not (PyPI only has processor builds for Windows);
 4. installs this package with what training needs (numba, onnx, psutil);
-5. measures the machine within the limits (gpu_training/probe.py): GPU memory of a training
-   step under the GPU cap, memory per data worker, spectra per second, and the number of
-   workers that keeps everything within the RAM budget (gpu_training/machine.json);
-6. runs a two-minute training on the GPU to check everything end to end.
+5. measures the machine within the limits (gpu_training/probe.py): GPU memory and time of a
+   training step of both views under the GPU cap, memory per data worker, spectra per second,
+   and the number of workers that keeps everything within the RAM budget
+   (gpu_training/machine.json);
+6. checks everything end to end in a few minutes (train_all.py --smoke): a few training steps
+   of both views on the GPU, their export to ONNX, and the predictor reading whole spectra.
 
 A setup that finishes records itself in gpu_training/setup_done.json. With --if-needed (what
 setup_and_train.bat uses) the whole setup is skipped while that record still holds: the same
-package files, the environment and machine.json present, and PyTorch computing on the GPU.
+package files (SETUP_INPUTS), the environment and machine.json present, and PyTorch computing
+on the GPU. A new package unzipped over the folder of an earlier one keeps its .venv: PyTorch
+is not downloaded again, and only the measurement and the check run again.
 
 Output is also written to gpu_training/setup.log.
 """
@@ -45,9 +49,15 @@ VPY = VENV / ("Scripts/python.exe" if WINDOWS else "bin/python")
 MACHINE = ROOT / "gpu_training" / "machine.json"
 #: the record of the last setup that finished (read by --if-needed)
 DONE = ROOT / "gpu_training" / "setup_done.json"
-#: files whose change makes --if-needed run the setup again: the package's dependencies and the
-#: setup and the measurement themselves
-SETUP_INPUTS = ("pyproject.toml", "gpu_training/setup.py", "gpu_training/probe.py")
+#: files whose change makes --if-needed run the setup again: the package's dependencies, the
+#: setup, the measurement and the end-to-end check themselves, and the training code they
+#: measure and check (the environment is kept: only the measurement and the check run again)
+SETUP_INPUTS = ("pyproject.toml", "gpu_training/setup.py", "gpu_training/probe.py",
+                "gpu_training/train_all.py", "gpu_training/check_model.py",
+                "scripts/train_charge_net.py", "src/lcmsdeconv/nn/model.py",
+                "src/lcmsdeconv/nn/train.py", "src/lcmsdeconv/nn/features.py",
+                "src/lcmsdeconv/nn/infer.py", "src/lcmsdeconv/nn/export.py",
+                "src/lcmsdeconv/synth/frames.py")
 #: PyTorch CUDA builds, newest first, with the CUDA version the driver must support
 TORCH_BUILDS = [("cu132", (13, 2)), ("cu130", (13, 0)), ("cu128", (12, 8)), ("cu126", (12, 6))]
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"
@@ -347,14 +357,12 @@ def main() -> int:
         run([VPY, "gpu_training/probe.py", "--ram-gb", str(args.ram_gb), "--gpu-memory-gb",
              str(args.gpu_memory_gb)])
 
-    # 6. a short training run on the GPU
+    # 6. a short end-to-end check on the GPU: training steps, export, the predictor
     if not args.skip_smoke:
-        say("A two-minute training run on the GPU ...")
-        workers = []
-        if MACHINE.exists():
-            workers = ["--workers", str(json.loads(MACHINE.read_text(encoding="utf-8"))["workers"])]
-        run([VPY, "scripts/train_charge_net.py", "--smoke", "--max-ram-gb", str(args.ram_gb),
-             "--max-gpu-memory-gb", str(args.gpu_memory_gb), *workers])
+        say("A few minutes' check of both runs on the GPU: training steps, export to ONNX, "
+            "whole spectra read by the predictor ...")
+        run([VPY, "gpu_training/train_all.py", "--smoke", "--ram-gb", str(args.ram_gb),
+             "--gpu-memory-gb", str(args.gpu_memory_gb)])
 
     DONE.write_text(json.dumps({
         "finished": time.strftime("%Y-%m-%d %H:%M"), "torch": current,

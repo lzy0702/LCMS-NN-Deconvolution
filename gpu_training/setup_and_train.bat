@@ -1,6 +1,6 @@
 @echo off
 rem One double-click prepares the training environment (the first time only, 10-20 minutes)
-rem and then trains both stages on the GPU (about 2-3 hours), exports them and packs
+rem and then trains the two runs (window and comb view) on the GPU, exports them and packs
 rem runs\upload_*.zip. Double-click it again after a pause, a crash or a reboot: setup is
 rem skipped once done and the training continues where it stopped.
 rem Options are passed on, for example:  gpu_training\setup_and_train.bat --ram-gb 12

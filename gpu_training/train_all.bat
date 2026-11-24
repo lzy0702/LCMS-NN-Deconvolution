@@ -1,5 +1,6 @@
 @echo off
-rem Trains stage 1 and stage 2 on the GPU, exports them and packs runs\upload_*.zip.
+rem Trains the runs (by default the window and the comb view) on the GPU, exports them and
+rem packs runs\upload_*.zip. Choose other runs with --runs, for example --runs comb.
 rem Run it again after a pause (Ctrl+C once, or a file named PAUSE in runs) to continue.
 rem Options are passed on, for example:  gpu_training\train_all.bat --workers 8
 setlocal

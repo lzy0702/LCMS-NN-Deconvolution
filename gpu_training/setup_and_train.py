@@ -4,18 +4,22 @@
     bash gpu_training/setup_and_train.sh    (Linux)
 
 1. gpu_training/setup.py --if-needed: the first time, the whole setup (10-20 minutes: the
-   environment .venv with PyTorch for CUDA, a measurement of this computer, a two-minute test
-   run). Later it is skipped while that setup still holds (gpu_training/setup_done.json).
-2. gpu_training/train_all.py in .venv: trains both stages on the GPU, exports them and packs
-   runs/upload_*.zip. A finished stage is skipped and an interrupted one continues, so after a
-   pause, a crash or a reboot the same double-click carries on where the training stopped.
+   environment .venv with PyTorch for CUDA, a measurement of this computer, a few minutes'
+   end-to-end check). Later it is skipped while that setup still holds
+   (gpu_training/setup_done.json); after a new package it measures and checks again, keeping
+   the environment.
+2. gpu_training/train_all.py in .venv: trains the runs (the window and the comb view) on the
+   GPU, exports them and packs runs/upload_*.zip. A finished run is skipped and an interrupted
+   one continues, so after a pause, a crash or a reboot the same double-click carries on where
+   the training stopped.
 
 Options, all optional (a double-click passes none):
   --ram-gb N, --gpu-memory-gb N   limits for setup and training (default 16 and 14)
   --workers N                      data workers for the training (default: what setup measured)
-  --batch-size N                   spectra per training step (default 8, the recipe's)
-  --restart                        train both stages from the beginning (needed after changing
-                                   the batch size of a stage already started)
+  --batch-size N                   spectra per training step (default 4, the recipe's)
+  --runs A,B                       the runs to train (default window,comb; see train_all.py)
+  --restart                        train the runs from the beginning (needed after changing
+                                   the batch size of a run already started)
   --redo-setup                     run the whole setup again even if it still holds
 """
 
@@ -61,9 +65,11 @@ def main(argv: list | None = None) -> int:
                     help="GPU memory the training may use")
     ap.add_argument("--workers", type=int, default=None, help="data workers for the training")
     ap.add_argument("--batch-size", type=int, default=None,
-                    help="spectra per training step (default 8, the recipe's)")
+                    help="spectra per training step (default 4, the recipe's)")
+    ap.add_argument("--runs", default=None,
+                    help="the runs to train, comma-separated (default window,comb)")
     ap.add_argument("--restart", action="store_true",
-                    help="discard the saved training states and train both stages afresh")
+                    help="discard the saved training states and train the runs afresh")
     ap.add_argument("--redo-setup", action="store_true",
                     help="run the whole setup again even if it still holds")
     args = ap.parse_args(argv)
@@ -71,7 +77,8 @@ def main(argv: list | None = None) -> int:
     print("=" * 78)
     print("LadderNet training on this computer's GPU")
     print("  1. setup, the first time only (10-20 minutes; about 3 GB to download)")
-    print("  2. training of both stages (about 2-3 hours; setup prints the estimate)")
+    print("  2. training of the two runs, window and comb view (several hours; setup prints the "
+          "estimate)")
     print("Pause at any time: press Ctrl+C once, or put a file named PAUSE in the runs folder.")
     print(f"To continue later, {AGAIN}.")
     print("=" * 78, flush=True)
@@ -106,6 +113,8 @@ def main(argv: list | None = None) -> int:
         train += ["--workers", str(args.workers)]
     if args.batch_size:
         train += ["--batch-size", str(args.batch_size)]
+    if args.runs:
+        train += ["--runs", args.runs]
     if args.restart:
         train.append("--restart")
     rc = run(train)
@@ -123,7 +132,7 @@ def main(argv: list | None = None) -> int:
               f"budget, for example {SCRIPT} --ram-gb 20, then start again.", flush=True)
     else:
         print(f"\nThe training stopped (exit code {rc}); the messages above say why, and the "
-              f"{rel('runs', '*.console.log')} files hold each stage's full output. Saved "
+              f"{rel('runs', '*.console.log')} files hold each run's full output. Saved "
               f"training states are kept: once the cause is fixed, {AGAIN}.", flush=True)
     return rc
 

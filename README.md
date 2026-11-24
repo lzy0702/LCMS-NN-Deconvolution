@@ -71,13 +71,14 @@ for s in result.species[:5]:
 
 The recommended charge network is **LadderNet**, which reads every candidate charge's ladder at
 its exact offsets on the log m/z grid and starts as the comb estimator. To train it on your own
-NVIDIA GPU, follow **`gpu_training/README.md`**: installation, a GPU check, two training stages
-as run scripts for Windows and Linux, pausing and resuming at any time, and what to send back.
+NVIDIA GPU, follow **`gpu_training/README.md`**: installation, a GPU check, the whole-spectrum
+recipe in its two views (a fixed window, and a ladder that reads a spectrum of any length whole)
+with isotope-charge channels, pausing and resuming at any time, and what to send back.
 
 ```bash
 bash gpu_training/setup_linux.sh        # Windows: gpu_training\setup_windows.bat
 bash gpu_training/train_all.sh          # Windows: gpu_training\train_all.bat
-python scripts/eval_charge_bins.py runs/ladder_full_stage2.onnx  # against the comb, same spectra
+python scripts/eval_charge_bins.py runs/ladder_v3_window.onnx runs/ladder_v3_comb.onnx
 ```
 
 Training data is synthesized on the fly, so there is no dataset to obtain and no epoch repeats.

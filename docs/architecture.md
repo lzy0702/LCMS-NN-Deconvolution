@@ -75,9 +75,12 @@ reading, and the comb's own score is added with a learnable weight. Its learned 
 zero, so the untrained network is the comb (a test checks it), and training learns
 corrections. It has 9 500 (`proof`) to 22 000 (`full`) parameters, works on 32 768-bin windows
 (a factor 1.93 in m/z, too narrow to hold a doubly charged ion's z = 1 and z = 3 neighbours),
-and is exported to ONNX with static shifts. It is trained in two stages - singly charged ions
+and is exported to ONNX with static shifts. It was trained in two stages - singly charged ions
 first without weight in the loss, then with them and dense singly charged background - on
-synthetic spectra rendered along the inference path (`gpu_training/README.md`).
+synthetic spectra rendered along the inference path. The GPU package (`gpu_training/README.md`)
+now trains the whole-spectrum recipe of `training.md`: a region's whole grid in one 131 072-bin
+window, or in the comb view, which reads a grid of any length whole, both with isotope-charge
+channels.
 
 The first network, `ChargeUNet`, is a 1D U-Net with six stride-2 levels, 7-wide kernels and a
 dilated residual bottleneck, giving a receptive field of roughly 50 000 bins (about a factor
