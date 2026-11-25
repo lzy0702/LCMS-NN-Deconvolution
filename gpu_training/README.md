@@ -56,7 +56,7 @@ without isotope channels. Choose the runs with `--runs`, for example
 **Updating from an earlier package.** Unzip the new package **over the old folder** (the same
 place, for example `C:\lcms`; let Windows replace the files). The environment `.venv` stays, so
 PyTorch is not downloaded again; because the package changed, the setup measures the computer
-and runs its check again (a few minutes). Delete `gpu_training\run_stage1.bat` and
+and runs its check again (10-15 minutes). Delete `gpu_training\run_stage1.bat` and
 `run_stage2.bat` if they are still there: they belong to the earlier two-stage training. The
 earlier runs' files in `runs` are not touched. This package trains recipe v4 into new files
 (`runs\ladder_v4_*`): a recipe v3 run that has not finished is not continued by it, so finish
@@ -216,6 +216,58 @@ bash gpu_training/setup_and_train.sh   # setup where needed, then training (as t
 bash gpu_training/setup_linux.sh       # or the two steps one at a time
 bash gpu_training/train_all.sh
 ```
+
+## Measuring your computer for the developers (profile)
+
+To tune training for your computer, both the GPU side and the synthesis of the training
+spectra on the processor, the developers need measurements made on it. The profile makes them
+and packs them into one small zip file to send back. It trains nothing for good and reads none
+of your files.
+
+**Run it:** double-click `gpu_training\profile.bat` (Linux: `bash gpu_training/profile.sh`).
+Like `setup_and_train.bat`, it first runs the setup where it no longer holds (after a new
+package: the measurement and the check, 10-15 minutes; `.venv` is kept and PyTorch is not
+downloaded again), then the profile itself: **about 45-50 minutes**, with a line for each
+experiment and the time left. Keep the computer otherwise idle meanwhile (no games, videos or
+other programs using the GPU), plugged in; it keeps Windows from going to sleep. Ctrl+C stops
+it and still packs what is done.
+
+**Send back** the file it names at the end: `runs\profile_upload_YYYYMMDD-HHMMSS.zip` (a few
+MB). It holds `results.json` (one record per experiment: its exact settings, timings, outcome),
+`summary.txt` (the short summary the window prints), each experiment's log, the nvidia-smi
+samples as CSV, setup's `machine.json` and the end of `setup.log`. The package folder's path is
+replaced by `<package>` and your home folder's by `~`; no computer or user name is recorded.
+The large intermediate files (about 1.5 GB of training batches) are deleted at the end.
+
+**What it measures**, each experiment in a process of its own, with a timeout; one that fails
+is recorded with its error and the others go on:
+
+- *the computer*: the processor and the kind of each of its logical processors (performance
+  or efficient core, as Windows reports it), the Windows version, power plan and power mode,
+  the memory, the GPU, its driver and PyTorch;
+- *the GPU* (both networks at full size, 4 spectra a step under the 14 GB cap, on the runs'
+  first training batches): the time of a step with each GPU speedup alone, all four, setup's
+  choice and other head chunkings; a step split into its parts (forward, backward, optimiser
+  ...); the GPU kernels that take the time; memory peaks and allocator retries over 40
+  batches with several allocator settings; nvidia-smi (utilisation, clocks, power,
+  temperature) during a steady minute; and, for information, bf16 arithmetic and 8 spectra a
+  step;
+- *the processor*: the speed of each logical processor alone; Windows' power throttling and
+  the workers' lowered priority on one core of each kind; 20, 22 and 23 workers at once, as
+  training uses them today, each pinned to a core of its own, opted out of power throttling,
+  and through a new loader that gives the next spectrum to whichever worker is free; where the
+  time of a spectrum goes;
+- *a short real training run* (two epochs of 400 steps, written to a throwaway file) with what
+  was found best.
+
+It changes no setting of the computer: priorities, core assignments and power throttling are
+set for its own processes only, which end with each experiment.
+
+**Options:** `--only gpu`, `--only cpu` or `--only e2e` (the short training run) run a part;
+`--minutes 30` sets the time budget (default 60: an experiment that would not fit is skipped
+and recorded as such; the short training run always runs); `--smoke` runs every experiment at
+a tiny size, to check in a few minutes that it runs. For example
+`gpu_training\profile.bat --only cpu --minutes 20`.
 
 ## Troubleshooting
 
