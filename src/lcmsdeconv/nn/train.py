@@ -79,6 +79,10 @@ class TrainConfig:
     #: LadderNet: score this many charges at a time and recompute them in the backward pass
     #: (the same outputs in a fraction of the memory; None: all at once)
     head_chunk: int | None = None
+    #: seconds of the training step setup measured on this GPU for this view and head chunking
+    #: with every spectrum at the active-bin cap (gpu_training/train_all.py passes it): the
+    #: crawl guard's pace (crawling); None: the session's own steps 5 to 20
+    expected_step_seconds: float | None = None
     #: GPU speedups to use (names of GPU_SPEEDUPS): applied on CUDA only, recorded with the run,
     #: and free to differ when a run resumes
     gpu_speedups: tuple = ()
@@ -338,43 +342,60 @@ class _EpochWatch:
 #: driving the display under Windows' WDDM), LadderNet's head scoring all charges at once with
 #: GPU speedups let the caching allocator's reserve climb on the runs' varied batches to 13.2 of
 #: the 13.25 GB the cap left for tensors; the steps then took seconds (a 90th percentile of
-#: 21 s) with no out-of-memory error and no allocator retry, so nothing stopped the run. A step
-#: crawls when it takes more than CRAWL_FACTOR times the median of the session's steps
-#: CRAWL_BASELINE (counted from 0; the first five are left out, as cuDNN's benchmark and the
-#: allocator's first growth slow them) and more than CRAWL_FLOOR_SECONDS; a run crawls when
-#: CRAWL_SLOW of its last CRAWL_RECENT steps do while the allocator reserves CRAWL_RESERVED of
-#: the cap or more
+#: 21 s) with no out-of-memory error and no allocator retry, so nothing stopped the run. It did
+#: so from its first batches, so a run's own early steps are no measure of its pace: the pace is
+#: the step setup measured on this GPU for this view and head chunking with every spectrum at
+#: the active-bin cap (the slowest step a healthy run takes; TrainConfig.expected_step_seconds),
+#: and only without it the median of the session's steps CRAWL_BASELINE (counted from 0). A step
+#: crawls when it takes more than CRAWL_FACTOR times the pace and more than CRAWL_FLOOR_SECONDS;
+#: a run crawls when CRAWL_SLOW of its last CRAWL_RECENT steps do (the session's first
+#: CRAWL_WARMUP steps, CUDA's and cuDNN's start, not counted) while the allocator reserves
+#: CRAWL_RESERVED of the cap or more. In the profile's crawling run the eight batches took
+#: 1.37, 1.80, 16.7, 1.88, 0.67, 0.35, 0.08 and 0.10 s against setup's 0.149 s: four of any
+#: eight steps over 1 s
+CRAWL_WARMUP = 2
 CRAWL_BASELINE = (5, 20)
-CRAWL_RECENT, CRAWL_SLOW = 5, 3
-CRAWL_FACTOR, CRAWL_FLOOR_SECONDS = 10.0, 2.0
+CRAWL_RECENT, CRAWL_SLOW = 8, 3
+CRAWL_FACTOR, CRAWL_FLOOR_SECONDS = 5.0, 1.0
 CRAWL_RESERVED = 0.9
 
 
-def _normal_step(step_seconds) -> float:
-    """A session's pace: the median of its steps CRAWL_BASELINE (``step_seconds`` holds them)."""
+def _pace(step_seconds, expected: float | None) -> float | None:
+    """A run's pace (seconds a step): ``expected``, setup's step at the active-bin cap, where
+    known, else the median of the session's steps CRAWL_BASELINE once it has them, else None."""
+    if expected and expected > 0:
+        return float(expected)
     first, last = CRAWL_BASELINE
+    if len(step_seconds) <= last:
+        return None
     return statistics.median(step_seconds[first:last + 1])
 
 
-def _slow_steps(step_seconds) -> list[float]:
-    """Those of the last CRAWL_RECENT of ``step_seconds`` that crawl: longer than CRAWL_FACTOR
-    times the session's pace (_normal_step) and than CRAWL_FLOOR_SECONDS."""
-    limit = max(CRAWL_FLOOR_SECONDS, CRAWL_FACTOR * _normal_step(step_seconds))
-    return [s for s in step_seconds[-CRAWL_RECENT:] if s > limit]
+def _slow_steps(step_seconds, expected: float | None = None) -> list[float]:
+    """Those of the last CRAWL_RECENT of ``step_seconds`` (the first CRAWL_WARMUP not counted)
+    that crawl: longer than CRAWL_FACTOR times the pace (_pace) and than CRAWL_FLOOR_SECONDS."""
+    pace = _pace(step_seconds, expected)
+    if pace is None:
+        return []
+    limit = max(CRAWL_FLOOR_SECONDS, CRAWL_FACTOR * pace)
+    recent = step_seconds[max(CRAWL_WARMUP, len(step_seconds) - CRAWL_RECENT):]
+    return [s for s in recent if s > limit]
 
 
-def crawling(step_seconds: list[float], reserved_gb: float, cap_gb: float) -> bool:
-    """Whether a CUDA run crawls: at least 3 of the last 5 of ``step_seconds`` (the session's
-    steps in order, each timed on its own) took more than 10 times the median of its steps 5 to
-    20 and more than 2 s, while the caching allocator reserves ``reserved_gb``, at least 90 % of
-    ``cap_gb`` (the cap on tensors the run set: its GPU memory cap less the CUDA context). False
-    until the session has 21 steps, for a run as slow from its start (that is its pace), and
-    with the memory further from the cap, where slow steps have another cause (another program
-    on the GPU, a throttled processor)."""
-    if (len(step_seconds) <= CRAWL_BASELINE[1] or not cap_gb
-            or reserved_gb < CRAWL_RESERVED * cap_gb):
+def crawling(step_seconds: list[float], reserved_gb: float, cap_gb: float,
+             expected: float | None = None) -> bool:
+    """Whether a CUDA run crawls: at least 3 of the last 8 of ``step_seconds`` (the session's
+    steps in order, each timed on its own; its first two not counted) took more than 5 times
+    the pace and more than 1 s, while the caching allocator reserves ``reserved_gb``, at least
+    90 % of ``cap_gb`` (the cap on tensors the run set: its GPU memory cap less the CUDA
+    context). The pace is ``expected``, the step setup measured for this view and chunking with
+    every spectrum at the active-bin cap; without it, the median of the session's steps 5 to 20,
+    so that a run crawling from its start goes unnoticed (that seems its pace) and nothing is
+    decided before step 21. False with the memory further from the cap, where slow steps have
+    another cause (another program on the GPU, a throttled processor)."""
+    if not cap_gb or reserved_gb < CRAWL_RESERVED * cap_gb:
         return False
-    return len(_slow_steps(step_seconds)) >= CRAWL_SLOW
+    return len(_slow_steps(step_seconds, expected)) >= CRAWL_SLOW
 
 
 class _CrawlGuard:
@@ -386,12 +407,13 @@ class _CrawlGuard:
     waits for the GPU at every step's active bins, so the times follow the GPU's within a step)
     and only says so, once: chunks would not help it."""
 
-    def __init__(self, cap_gb: float, stops: bool):
+    def __init__(self, cap_gb: float, stops: bool, expected: float | None = None):
         import torch
 
         self._torch = torch
         self.cap_gb = float(cap_gb)
         self.stops = bool(stops)
+        self.expected = float(expected) if expected and expected > 0 else None
         self.seconds: list[float] = []
         self.warned = False
         self.clock = time.perf_counter
@@ -409,13 +431,16 @@ class _CrawlGuard:
         if len(self.seconds) > 4096:  # crawling reads the baseline and the last steps only
             del self.seconds[CRAWL_BASELINE[1] + 1:-CRAWL_RECENT]
         reserved = torch.cuda.memory_reserved() / 2**30
-        if not crawling(self.seconds, reserved, self.cap_gb):
+        if not crawling(self.seconds, reserved, self.cap_gb, self.expected):
             return None
-        slow = _slow_steps(self.seconds)
+        slow = _slow_steps(self.seconds, self.expected)
+        against = ("setup's step with every spectrum at the active-bin cap" if self.expected
+                   else "early in this session")
         what = (f"{len(slow)} of the last {CRAWL_RECENT} training steps took "
-                f"{min(slow):.1f}-{max(slow):.1f} s against {_normal_step(self.seconds):.2f} s "
-                f"early in this session, with {reserved:.1f} of the {self.cap_gb:.1f} GB the cap "
-                f"leaves for tensors reserved by PyTorch's allocator")
+                f"{min(slow):.1f}-{max(slow):.1f} s against "
+                f"{_pace(self.seconds, self.expected):.2f} s, {against}, with {reserved:.1f} of "
+                f"the {self.cap_gb:.1f} GB the cap leaves for tensors reserved by PyTorch's "
+                f"allocator")
         if self.stops:
             return (f"GPU memory crawl ({what}: the head, scoring all charges at once, has filled "
                     f"the cap on the varied batches)")
@@ -427,13 +452,14 @@ class _CrawlGuard:
         return None
 
 
-def _crawl_guard(device: str, model, cap_gb: float | None) -> _CrawlGuard | None:
+def _crawl_guard(device: str, model, cap_gb: float | None,
+                 expected: float | None = None) -> _CrawlGuard | None:
     """The crawl guard of a run on ``device`` (None off CUDA, or without a cap): one that stops
     a LadderNet whose head scores all charges at once (``head_chunk`` None), and only warns
-    any other run."""
+    any other run; ``expected`` is its pace (TrainConfig.expected_step_seconds)."""
     if not (str(device).startswith("cuda") and cap_gb):
         return None
-    return _CrawlGuard(cap_gb, stops=getattr(model, "head_chunk", 0) is None)
+    return _CrawlGuard(cap_gb, stops=getattr(model, "head_chunk", 0) is None, expected=expected)
 
 
 def train(config: TrainConfig, synth_config=None):
@@ -706,7 +732,7 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
     stats = getattr(tl, "item_stats", None)  # what the workers made, where
     pool = getattr(tl, "pool", None)
     pace = {"steps": 0, "seconds": 0.0}  # training steps done in this session, and their time
-    guard = _crawl_guard(device, model, gpu_cap_gb)
+    guard = _crawl_guard(device, model, gpu_cap_gb, config.expected_step_seconds)
     awake = _KeepAwake()
     awake.start()
     flags = set_gpu_flags(speedups) if speedups else None
@@ -752,6 +778,13 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
                               f"{float(losses['loss'].detach()):.4f} ce "
                               f"{float(losses['ce']):.4f} heat {float(losses['heat']):.4f}",
                               flush=True)
+                    # a crawl first: a pause asked for during a crawling step (Ctrl+C, likely
+                    # while steps take seconds) still records why the run stopped
+                    if crawl:
+                        return stop_here(epoch, i + 1, crawl, "gpu_memory_crawl",
+                                         "run the same command with --resume --head-chunk 16 to "
+                                         "continue in chunks, as gpu_training/train_all.py does "
+                                         "by itself")
                     if paused():
                         return stop_here(epoch, i + 1, "paused")
                     if config.max_seconds and (time.time() - session_start) > config.max_seconds:
@@ -760,11 +793,6 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
                         return stop_here(epoch, i + 1,
                                          f"memory budget of {config.max_ram_gb:g} GB reached "
                                          f"({ram.used_gb():.1f} GB in use)", "memory")
-                    if crawl:
-                        return stop_here(epoch, i + 1, crawl, "gpu_memory_crawl",
-                                         "run the same command with --resume --head-chunk 16 to "
-                                         "continue in chunks, as gpu_training/train_all.py does "
-                                         "by itself")
                     if time.time() - last_save > 60.0 * config.save_every_minutes:
                         save_state(epoch, i + 1)
                         last_save = time.time()

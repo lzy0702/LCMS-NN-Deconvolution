@@ -61,8 +61,9 @@ def train_all_choice(machine: dict, view: str = "window") -> dict:
     (train_all.data_loading_for: setup's choice, None for train_charge_net.py's defaults, which
     are train_all.DATA_DEFAULTS) and its options (train_all.data_flags); the data workers
     (machine.json's, refitted to the RAM budget where train_all.main refits them, else
-    lcmsdeconv.nn.machine.auto_workers); the GPU speedups (train_all.speedups_for) and the head
-    chunk (train_all.head_chunk_for at the data workers' rate, train_all.data_rate)."""
+    lcmsdeconv.nn.machine.auto_workers); the GPU speedups (train_all.speedups_for), the head
+    chunk (train_all.head_chunk_for at the data workers' rate, train_all.data_rate) and the
+    crawl guard's pace (train_all.cap_step_seconds)."""
     import train_all
 
     from lcmsdeconv.nn.machine import (
@@ -91,8 +92,12 @@ def train_all_choice(machine: dict, view: str = "window") -> dict:
         workers = auto_workers(ram, loader=loader)
     workers = int(workers)
     rate = train_all.data_rate(machine, workers, data)
+    chunk = train_all.head_chunk_for(machine, view, gpu, train_all.BATCH, rate)
+    # the crawl guard's pace, as train_all.run_stage passes it (setup's step at the cap)
+    expected = train_all.cap_step_seconds(machine, view, train_all.BATCH)[
+        "chunks" if chunk else "all"]
     return {"view": view, "speedups": list(train_all.speedups_for(machine, view)),
-            "chunk": train_all.head_chunk_for(machine, view, gpu, train_all.BATCH, rate),
+            "chunk": chunk, "expected_step_seconds": expected,
             "workers": workers, "data": data, "data_flags": train_all.data_flags(data),
             "data_words": train_all.data_words(data), "data_rate": rate, "ram_gb": ram,
             "gpu_memory_gb": gpu}
@@ -133,8 +138,10 @@ def train_check(ctx, view: str = "window", workers: int | None = None, epochs: i
     out = out_dir / "ladder_e2e.pt"
     args = run_args(view, size, epochs, train_len, val_len)
     # train_all.run_stage's command, its options in its order, and the check's own at the end
+    expected = choice.get("expected_step_seconds")
     cmd = [sys.executable, str(ROOT / "scripts" / "train_charge_net.py"), "--device", "cuda",
-           *args, *(["--head-chunk", str(chunk)] if chunk else []), "--gpu-speedups",
+           *args, *(["--head-chunk", str(chunk)] if chunk else []),
+           *(["--expected-step-seconds", f"{expected:g}"] if expected else []), "--gpu-speedups",
            ",".join(speedups) or "none", "--workers", str(workers), *flags,
            "--max-ram-gb", f"{ram:g}", "--max-gpu-memory-gb", f"{choice['gpu_memory_gb']:g}",
            "--batch-size", str(BATCH), "--out", str(out), "--keep-pause-files", "--restart",

@@ -781,47 +781,71 @@ def test_the_epoch_watch_measures_the_wait_for_data():
 # ------------------------------------------------------------------ the crawl guard
 #: the cap on tensors of a 14 GB cap on the user's 16 GB GPU (14 - 0.75 GB for the context)
 CAP = 13.25
+#: setup's step with every spectrum at the active-bin cap, all charges at once, window view, on
+#: the user's GPU (the profile of 2026-11-25: machine.json, gpu_views.window.unchunked)
+SETUP_STEP = 0.1487
+#: the median step (s) of each of the runs' first eight training batches in the profile's
+#: window run scoring all charges at once with all four speedups, which crawled at 13.18 GB
+#: reserved (raw/gpu.steps.window.all.json: real.per_batch), and in its run without speedups,
+#: which ran normally at 11.45 GB (gpu.steps.window.none), in the order the batches come
+CRAWLED = [1.3709, 1.7994, 16.7094, 1.8849, 0.6707, 0.345, 0.0756, 0.0989]
+NORMAL = [0.1247, 0.1227, 0.1486, 0.1246, 0.105, 0.1023, 0.1193, 0.1438]
 
 
-def _session(*later: float, normal: float = 0.15, warm: float = 1.2, n: int = 21) -> list:
-    """A session's step times: five warm-up steps, ``normal`` ones up to ``n`` steps, then
-    ``later``."""
-    return [warm] * 5 + [normal] * (n - 5) + list(later)
+def _first_crawl(steps, reserved, expected=None):
+    """The number of steps after which crawling() first says the run crawls, else None."""
+    from lcmsdeconv.nn.train import crawling
+
+    for k in range(1, len(steps) + 1):
+        if crawling(steps[:k], reserved, CAP, expected):
+            return k
+    return None
 
 
-@pytest.mark.parametrize("steps, reserved, crawls", [
-    # the profile's window run with index_select (2.6-16.7 s a step at 13.17 GB): three of five
-    (_session(4.1, 0.15, 16.7, 0.2, 2.6), 13.17, True),
-    (_session(4.1, 0.15, 16.7, 0.2, 0.2), 13.17, False),          # two of five
-    (_session(4.1, 0.15, 16.7, 0.2, 2.6), 11.45, False),          # memory under 0.9 x the cap
-    (_session(4.1, 16.7, 2.6, normal=0.15, n=18), 13.17, True),   # step 21 already
-    (_session(4.1, 16.7, 2.6, normal=0.15, n=17), 13.17, False),  # 20 steps: too short
-    (_session(30.0, 30.0, 30.0, n=13), 13.25, False),             # 16 steps: too short
-    ([3.0] * 40, 13.2, False),                                     # as slow from the start
-    (_session(1.5, 1.5, 1.5, normal=0.05), 13.2, False),          # 30 x slower, under 2 s
-    (_session(2.1, 2.1, 2.1, normal=0.05), 13.2, True),           # over 2 s
-    (_session(3.0, 3.0, 3.0, normal=0.25), 13.2, True),           # 12 x slower
-    (_session(2.4, 2.4, 2.4, normal=0.25), 13.2, False),          # 9.6 x slower
-    (_session(4.1, 16.7, 2.6), 0.0, False),                       # no memory reading
+def test_the_profiles_crawl_is_caught_within_nine_steps_of_its_start():
+    """Against setup's step at the cap (0.149 s: steps over 1 s crawl), the crawling run's
+    batches put four of any eight steps over 1 s: the guard fires by the ninth step, from the
+    run's first batches as in the profile, and on a run taking 15 s a step from its start."""
+    assert _first_crawl(CRAWLED * 5, 13.18, SETUP_STEP) == 9
+    assert _first_crawl([15.0] * 40, 13.18, SETUP_STEP) == 5    # two warm-up steps, then three
+    # two slow first steps are not counted; the crawl's first three batches all take over 1 s
+    assert _first_crawl([60.0, 60.0] + CRAWLED * 5, 13.18, SETUP_STEP) == 5
+    # the memory under 0.9 x the cap: slow steps have another cause, nothing is decided
+    assert _first_crawl(CRAWLED * 5, 11.45, SETUP_STEP) is None
+    # without setup's step the run's own steps 5 to 20 set the pace: a run crawling from its
+    # start is at its pace and goes on (train_all always passes setup's step)
+    assert _first_crawl(CRAWLED * 5, 13.18) is None
+    assert _first_crawl([15.0] * 40, 13.18) is None
+
+
+def test_a_healthy_run_is_never_taken_for_a_crawl():
+    """The profile's run without speedups, at any memory; a slow start (CUDA's and cuDNN's
+    first steps); one or two stalls in eight steps (Windows, the display): no crawl."""
+    assert _first_crawl(NORMAL * 50, 13.2, SETUP_STEP) is None
+    assert _first_crawl(NORMAL * 50, 13.2) is None
+    assert _first_crawl([30.0, 30.0] + NORMAL * 10, 13.2, SETUP_STEP) is None
+    stalls = NORMAL * 3 + [10.0] + NORMAL[:6] + [10.0] + NORMAL * 3
+    assert _first_crawl(stalls, 13.2, SETUP_STEP) is None
+    three = NORMAL * 3 + [10.0, 0.12, 10.0, 0.12, 10.0] + NORMAL * 3
+    assert _first_crawl(three, 13.2, SETUP_STEP) == 24 + 5     # the third stall in eight steps
+
+
+@pytest.mark.parametrize("steps, reserved, expected, crawls", [
+    ([0.15] * 21 + [1.1] * 3, 13.2, 0.15, True),       # over 1 s and 5 x the pace
+    ([0.15] * 21 + [0.95] * 3, 13.2, 0.15, False),     # 6 x the pace, under 1 s
+    ([0.5] * 21 + [2.4] * 3, 13.2, 0.5, False),        # over 1 s, under 5 x the pace
+    ([0.5] * 21 + [2.6] * 3, 13.2, 0.5, True),
+    ([0.15] * 21 + [1.1] * 3, 13.2, None, True),       # the session's own pace, step 21 on
+    ([0.15] * 17 + [1.1] * 3, 13.2, None, False),      # 20 steps: step 20 not there yet
+    ([0.15] * 21 + [1.1] * 3, 0.0, 0.15, False),       # no memory reading
 ])
-def test_a_run_crawls_when_its_steps_slow_tenfold_with_the_memory_near_the_cap(steps, reserved,
-                                                                               crawls):
+def test_a_step_crawls_over_five_times_the_pace_and_one_second(steps, reserved, expected,
+                                                                 crawls):
     from lcmsdeconv.nn.train import crawling
 
-    assert crawling(steps, reserved, CAP) is crawls
-    assert crawling(steps, reserved, 0.0) is False and crawling(steps, reserved, None) is False
-
-
-def test_the_pace_is_that_of_steps_5_to_20():
-    """A slow start (cuDNN's benchmark, the allocator's first growth) changes nothing, and five
-    fast first steps do not make steps 5 to 20 that are slow already the exception: a run slow
-    from there on is at its pace."""
-    from lcmsdeconv.nn.train import crawling
-
-    slow_start = [60.0] * 5 + [0.15] * 16 + [3.0] * 3
-    assert crawling(slow_start, 13.2, CAP)
-    slow_baseline = [0.15] * 5 + [0.15] * 7 + [3.0] * 9 + [3.0] * 3  # most of steps 5-20 slow
-    assert not crawling(slow_baseline, 13.2, CAP)
+    assert crawling(steps, reserved, CAP, expected) is crawls
+    assert crawling(steps, reserved, 0.0, expected) is False
+    assert crawling(steps, reserved, None, expected) is False
 
 
 def _guard_run(guard, steps, monkeypatch, reserved_gb: float):
@@ -845,24 +869,32 @@ def test_the_crawl_guard_stops_an_unchunked_run_and_warns_a_chunked_one_once(mon
                                                                             capsys):
     from lcmsdeconv.nn.train import _CrawlGuard
 
-    steps = _session(4.1, 0.15, 16.7, 0.2, 2.6, 30.0, 30.0)
+    steps = CRAWLED * 5
     # the head scoring all charges at once: every step waited for, the run stops at the crawl
-    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=True), steps, monkeypatch, 13.17)
-    assert (ran, waits) == (26, 26)
-    assert why == ("GPU memory crawl (3 of the last 5 training steps took 2.6-16.7 s against "
-                   "0.15 s early in this session, with 13.2 of the 13.2 GB the cap leaves for "
-                   "tensors reserved by PyTorch's allocator: the head, scoring all charges at "
-                   "once, has filled the cap on the varied batches)")
+    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=True, expected=SETUP_STEP), steps,
+                                 monkeypatch, 13.18)
+    assert (ran, waits) == (9, 9)
+    assert why == ("GPU memory crawl (3 of the last 8 training steps took 1.4-16.7 s against "
+                   "0.15 s, setup's step with every spectrum at the active-bin cap, with 13.2 of "
+                   "the 13.2 GB the cap leaves for tensors reserved by PyTorch's allocator: the "
+                   "head, scoring all charges at once, has filled the cap on the varied batches)")
     # further from the cap the same steps have another cause: the run goes on
-    ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True), steps, monkeypatch, 11.45)
+    ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True, expected=SETUP_STEP), steps,
+                              monkeypatch, 11.45)
     assert (ran, why) == (len(steps), None)
     # in chunks the head cannot do better: never waited for, never stopped, said once
-    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=False), steps, monkeypatch, 13.17)
+    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=False, expected=SETUP_STEP), steps,
+                                 monkeypatch, 13.18)
     assert (ran, why, waits) == (len(steps), None, 0)
     text = capsys.readouterr().out
-    assert text.count("warning: the GPU slowed down: 3 of the last 5 training steps took "
-                      "2.6-16.7 s") == 1
+    assert text.count("warning: the GPU slowed down: 3 of the last 8 training steps took "
+                      "1.4-16.7 s") == 1
     assert "The head already scores the charges in chunks, so the run goes on" in text
+    # without setup's step: the pace of the session's steps 5 to 20
+    late = [0.15] * 21 + [3.0] * 3
+    ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True), late, monkeypatch, 13.2)
+    assert ran == 24 and why.startswith("GPU memory crawl (3 of the last 8 training steps took "
+                                        "3.0-3.0 s against 0.15 s, early in this session, ")
 
 
 def test_the_crawl_guard_keeps_the_steps_it_reads_only(monkeypatch):
@@ -872,7 +904,7 @@ def test_the_crawl_guard_keeps_the_steps_it_reads_only(monkeypatch):
     _guard_run(guard, [0.15] * 5000, monkeypatch, 13.2)
     assert len(guard.seconds) < 4100  # the baseline and the latest, not every step
     ran, why, _w = _guard_run(guard, [3.0] * 3, monkeypatch, 13.2)
-    assert (ran, why.startswith("GPU memory crawl (3 of the last 5")) == (3, True)
+    assert (ran, why.startswith("GPU memory crawl (3 of the last 8")) == (3, True)
 
 
 def test_the_guard_watches_cuda_runs_and_stops_an_unchunked_ladder_only():
@@ -886,6 +918,8 @@ def test_the_guard_watches_cuda_runs_and_stops_an_unchunked_ladder_only():
     assert _crawl_guard("cuda:0", chunked, CAP).stops is False
     assert _crawl_guard("cuda", unet, CAP).stops is False
     assert _crawl_guard("cuda", whole, CAP).cap_gb == CAP
+    assert _crawl_guard("cuda", whole, CAP, SETUP_STEP).expected == SETUP_STEP
+    assert _crawl_guard("cuda", whole, CAP, 0.0).expected is None
     assert _crawl_guard("cpu", whole, CAP) is None and _crawl_guard("cuda", whole, None) is None
 
 
@@ -907,7 +941,7 @@ def test_a_crawl_stops_the_run_with_its_state_saved_and_exit_code_5(tmp_path, mo
             self.steps += 1
             return "GPU memory crawl (stood in for)" if self.steps == 3 else None
 
-    monkeypatch.setattr(nn_train, "_crawl_guard", lambda device, model, cap: Crawls())
+    monkeypatch.setattr(nn_train, "_crawl_guard", lambda device, model, cap, expected: Crawls())
     out = tmp_path / "net.pt"
     nn_train.train(nn_train.TrainConfig(**_cfg(out, train_len=8)), synth_config=_synth())
     state = torch.load(out.with_suffix(".resume.pt"), weights_only=False)
@@ -923,6 +957,61 @@ def test_a_crawl_stops_the_run_with_its_state_saved_and_exit_code_5(tmp_path, mo
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)
     assert script.exit_code(out) == script.GPU_CRAWL == 5
+
+
+def test_a_crawl_is_decided_before_a_pause_asked_for_in_the_same_step(tmp_path, monkeypatch):
+    """A PAUSE file (or Ctrl+C) during a crawling step: the run stops for the crawl, so that
+    train_all continues it in chunks instead of resuming it all charges at once."""
+    import lcmsdeconv.nn.train as nn_train
+
+    out = tmp_path / "net.pt"
+
+    class CrawlsAsAPauseComes:
+        def __init__(self):
+            self.steps = 0
+
+        def step_starts(self):
+            pass
+
+        def step_ends(self):
+            self.steps += 1
+            if self.steps == 3:
+                (tmp_path / "PAUSE").write_text("")
+                return "GPU memory crawl (stood in for)"
+            return None
+
+    monkeypatch.setattr(nn_train, "_crawl_guard",
+                        lambda device, model, cap, expected: CrawlsAsAPauseComes())
+    nn_train.train(nn_train.TrainConfig(**_cfg(out, train_len=8)), synth_config=_synth())
+    state = torch.load(out.with_suffix(".resume.pt"), weights_only=False)
+    assert (state["epoch"], state["step"], state["stop_reason"]) == (0, 3, "gpu_memory_crawl")
+
+
+def test_the_training_script_passes_setups_step_to_the_guard(monkeypatch):
+    """--expected-step-seconds reaches TrainConfig.expected_step_seconds (the guard's pace)."""
+    spec = importlib.util.spec_from_file_location("_speedups_train_charge_net2",
+                                                  ROOT / "scripts" / "train_charge_net.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    got = {}
+
+    def fake_train(cfg, synth_config=None):
+        got["cfg"] = cfg
+        return None, []
+
+    monkeypatch.setattr(script, "train", fake_train, raising=False)
+    import lcmsdeconv.nn.train as nn_train
+
+    monkeypatch.setattr(nn_train, "train", fake_train)
+    monkeypatch.setattr(sys, "argv", ["train_charge_net.py", "--device", "cpu", "--epochs", "1",
+                                      "--train-len", "4", "--val-len", "2", "--workers", "0",
+                                      "--expected-step-seconds", "0.1815", "--out",
+                                      str(ROOT / "runs" / "never_written.pt"), "--restart"])
+    try:
+        script.main()
+    except SystemExit:
+        pass
+    assert got["cfg"].expected_step_seconds == pytest.approx(0.1815)
 
 
 # ------------------------------------------------------------------ the GPU package

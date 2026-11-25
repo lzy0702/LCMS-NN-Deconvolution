@@ -232,6 +232,12 @@ def main():
     ap.add_argument("--head-chunk", type=int, default=None,
                     help="LadderNet: score this many charges at a time and recompute them in "
                          "the backward pass (the same outputs in less GPU memory)")
+    ap.add_argument("--expected-step-seconds", type=float, default=None, metavar="S",
+                    help="the training step setup measured on this GPU for this view and head "
+                         "chunking with every spectrum at the active-bin cap: the pace against "
+                         "which the GPU memory crawl guard judges the steps "
+                         "(gpu_training/train_all.py passes it; default: the run's own steps "
+                         "5 to 20)")
     ap.add_argument("--arch", default="ladder", choices=["ladder", "unet"])
     ap.add_argument("--model-size", default="proof", choices=["small", "proof", "full"])
     ap.add_argument("--singly-charged", default=None, choices=["drop", "ignore", "keep"],
@@ -340,7 +346,9 @@ def main():
                       clear_pause_files=not args.keep_pause_files,
                       max_gpu_memory_gb=args.max_gpu_memory_gb,
                       window=args.window, iso_channels=args.iso_channels, view=args.view,
-                      head_chunk=args.head_chunk, gpu_speedups=speedups, loader=loader,
+                      head_chunk=args.head_chunk,
+                      expected_step_seconds=args.expected_step_seconds,
+                      gpu_speedups=speedups, loader=loader,
                       loader_window=args.loader_window, cpu_binding=args.cpu_binding,
                       worker_priority=args.worker_priority, worker_qos=args.worker_qos)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "

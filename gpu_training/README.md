@@ -113,9 +113,10 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   reserves grows with it. On the RTX 4080 SUPER of the profile of 2026-11-25, all charges at
   once with the index_select head took the reserve from the 8.9 GB setup measured to 13.2 GB of
   the 13.25 the cap leaves, and the steps then took seconds instead of a tenth of a second, with
-  no error; with cuDNN's benchmark as well, setup's choice, a test gave no result within 15
-  minutes. In chunks of 16 the same speedups took about 105 ms a step with about 4 GB reserved,
-  the fastest way that held.
+  no error; with cuDNN's benchmark as well (setup's choice), and with cuDNN's benchmark alone,
+  a test gave no result within 15 minutes, so the rule covers every speedup. In chunks of 16
+  the same speedups took about 105 ms a step with about 4 GB reserved, the fastest way that
+  held.
 - **When the GPU runs out of memory or crawls:** should a run scoring all charges at once
   still run out of GPU memory, or its steps slow to seconds with the memory PyTorch reserves
   near the cap (which raises no error: the training's crawl guard watches for it, below), it
@@ -281,14 +282,18 @@ reserve near the cap, mean the GPU is crawling.
 
 **The crawl guard.** The steps of a run can slow from a tenth of a second to several seconds,
 without any error, once the memory PyTorch reserves comes close to the cap (on a GPU that also
-drives the display, Windows then appears to move part of it to the computer's RAM). Training
-watches for this from its 21st step on: when 3 of the last 5 steps each took more than 10 times
-the usual step of the run's start (the median of its steps 5 to 20) and more than 2 seconds,
-with the reserve at 90 % of the cap or more, a run scoring all charges at once stops with
-`GPU memory crawl (...)`, its state saved (exit code 5), and train_all continues it at once 16
-charges at a time with the same GPU speedups, as after running out of GPU memory. A run that
-already scores the charges in chunks only prints `warning: the GPU slowed down: ...` once and
-goes on; close other programs that use the GPU if you see it.
+drives the display, Windows then appears to move part of it to the computer's RAM). In the
+profile this began with the runs' first batches, so training judges its steps against the step
+setup measured on this GPU with every spectrum at the active-bin cap, the slowest a healthy
+step is (train_all passes it): when 3 of the last 8 steps each took more than 5 times that and
+more than 1 second (the run's first two steps not counted), with the reserve at 90 % of the cap
+or more, a run scoring all charges at once stops with `GPU memory crawl (...)`, its state saved
+(exit code 5), and train_all continues it at once 16 charges at a time with the same GPU
+speedups, as after running out of GPU memory; pressing Ctrl+C meanwhile does not lose this, the
+next start goes on in chunks. In the profile's crawling run the guard would have stopped it
+after 9 steps. A run that already scores the charges in chunks only prints
+`warning: the GPU slowed down: ...` once and goes on; close other programs that use the GPU if
+you see it.
 
 ## Pausing and resuming
 

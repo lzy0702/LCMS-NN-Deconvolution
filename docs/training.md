@@ -421,9 +421,10 @@ batches, whose active rows vary from 28 000 to 98 000, the unchunked head's larg
 with them: with the `index_select` head (alone, or with the other speedups) the caching
 allocator's reserve climbed to 13.2 of the 13.25 GB the cap left for tensors, 1.48 times what
 setup had measured on one batch (without speedups 11.45 GB, 1.29 times), and the steps then
-took seconds (a 90th percentile of 21 s with all four speedups; setup's own choice gave no
-result within 900 s) with no out-of-memory error and no allocator retry, so the out-of-memory
-fallback could not fire. In chunks of 16 the same speedups took about 105 ms a step with about
+took seconds (a 90th percentile of 21 s with all four speedups; setup's own choice, and cuDNN's
+benchmark alone, gave no result within 900 s in the window view) with no out-of-memory error
+and no allocator retry, so the out-of-memory fallback could not fire. The rule therefore covers
+every speedup, not the `index_select` head alone. In chunks of 16 the same speedups took about 105 ms a step with about
 4 GB reserved, the fastest configuration that held; a short real training in chunks of 32 ran
 at 109 ms a step, 98 % GPU busy, 5 % of the time waiting for data. Hence the rule above, and
 the margin of 1.5 with 2 GB to spare for a run without speedups. The four 900 s timeouts used
@@ -431,17 +432,26 @@ the profile's whole hour, so none of its processor experiments ran.
 
 **The crawl guard** (`nn.train.crawling`) is the runtime defence against a crawl that raises no
 error. On CUDA every training step is timed from the arrival of its batch to its end, and after
-it the allocator's reserve is read (`torch.cuda.memory_reserved`). A run crawls when, from its
-21st step on, 3 of the last 5 steps each took more than 10 times the median of the session's
-steps 5 to 20 and more than 2 s, while the reserve is at least 90 % of the cap on tensors (the
-GPU memory cap less the context). A LadderNet whose head scores all charges at once waits for
-the GPU (`torch.cuda.synchronize`) at the end of every step, so that each time is the step's
-own, and stops on a crawl through the pause path with the reason `gpu_memory_crawl`, which
+it the allocator's reserve is read (`torch.cuda.memory_reserved`). The pace a step is judged
+against is the step setup measured on this GPU for this view and chunking with every spectrum
+at the active-bin cap, the slowest a healthy step is (`train_all.cap_step_seconds`, passed as
+`--expected-step-seconds`, `TrainConfig.expected_step_seconds`): the profile's crawls began
+with the runs' first batches, so a run's own early steps are no measure. A run crawls when 3 of
+its last 8 steps (its first two not counted) each took more than 5 times the pace and more than
+1 s, while the reserve is at least 90 % of the cap on tensors (the GPU memory cap less the
+context). The profile's crawling run took 1.37, 1.80, 16.7, 1.88, 0.67, 0.35, 0.08 and 0.10 s
+on the runs' eight first batches against setup's 0.149 s, four of any eight steps over 1 s: the
+guard stops it after 9 steps, and a run taking 15 s a step from its start after 5; the same
+batches without speedups (0.10-0.15 s) and one or two stalls in eight steps never trip it.
+Without setup's step (a run started by hand) the pace is the median of the session's steps 5
+to 20, and a run crawling from its start is then taken for its pace. A LadderNet whose head
+scores all charges at once waits for the GPU (`torch.cuda.synchronize`) at the end of every
+step, so that each time is the step's own, and stops on a crawl through the pause path with the
+reason `gpu_memory_crawl` (decided before a pause asked for in the same step), which
 `train_charge_net.py` turns into exit code 5; `train_all.run_stage` then resumes it with
-`--head-chunk 16` and the same speedups and records `unchunked_failed` for the view. Any other
-CUDA run is timed without that wait (LadderNet's `nonzero` keeps it within a step of the GPU)
-and only warns once: chunks would not help it. A run slow from its start does not trip the
-guard: that is its pace.
+`--head-chunk 16` and the same speedups and records `unchunked_failed` for the view, also when
+Ctrl+C stops train_all meanwhile. Any other CUDA run is timed without that wait (LadderNet's
+`nonzero` keeps it within a step of the GPU) and only warns once: chunks would not help it.
 
 Every epoch records what set its pace, without waiting for the GPU at any step (the crawl
 guard's wait aside): the share of the training time spent waiting for the data loader, and on

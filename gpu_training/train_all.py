@@ -198,8 +198,11 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
         data = pool.get("data")
         chunk = stage.get("head_chunk")
         speedups = list(stage.get("gpu_speedups") or [])
+        # the crawl guard's pace: setup's step at the active-bin cap, in this chunking
+        expected = (stage.get("cap_step_seconds") or {}).get("chunks" if chunk else "all")
         cmd = [sys.executable, "scripts/train_charge_net.py", "--device", device,
                *stage["args"], *(["--head-chunk", str(chunk)] if chunk else []),
+               *(["--expected-step-seconds", f"{expected:g}"] if expected else []),
                "--gpu-speedups", ",".join(speedups) or "none",
                "--workers", str(workers), *data_flags(data), *limits, "--out", stage["out"],
                "--keep-pause-files", *flag]
@@ -228,6 +231,10 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
         # guard stopped the run, its state saved)
         crawled = rc == GPU_CRAWL
         out_of_memory = rc not in (0, PAUSED, MEMORY, GPU_CRAWL) and out_of_gpu_memory
+        if (crawled or out_of_memory) and not chunk and interrupted["count"]:
+            # stopping (Ctrl+C) as it happened: the next start goes on in chunks all the same
+            failed_views.add(stage["view"])
+            _remember_unchunked_failure(stage["view"])
         if (crawled or out_of_memory) and not chunk and not interrupted["count"]:
             # in chunks from here on, with the same GPU speedups: in chunks they held
             stage["head_chunk"] = HEAD_CHUNK
@@ -619,6 +626,22 @@ def pack(stages: list, tag: str) -> Path:
     return zpath
 
 
+def cap_step_seconds(machine: dict, view: str, batch: int) -> dict:
+    """The training step setup measured for ``view`` on this GPU with every spectrum at the
+    active-bin cap (the slowest step a healthy run takes), at ``batch`` spectra (in proportion
+    to the batch measured): ``{"chunks": s, "all": s}`` for the head in HEAD_CHUNK chunks and
+    all charges at once, either None where setup did not measure it. Training's crawl guard
+    judges the steps against it (--expected-step-seconds)."""
+    m = gpu_measurement(machine, view) or {}
+
+    def at(rec: dict) -> float | None:
+        if not (rec.get("step_seconds") and rec.get("batch")):
+            return None
+        return round(float(rec["step_seconds"]) * batch / float(rec["batch"]), 4)
+
+    return {"chunks": at(m), "all": at(m.get("unchunked") or {})}
+
+
 def gpu_measurement(machine: dict, view: str) -> dict | None:
     """What setup measured on the GPU for ``view`` at the recipe's batch: ``{"batch", "peak_gb",
     "step_seconds"}``, or None (no measurement, or one of an earlier package)."""
@@ -771,6 +794,7 @@ def main() -> int:
     for st in stages:  # the smoke checks the choices training makes, at the recipe's batch
         st["head_chunk"] = head_chunk_for(machine, st["view"], gpu, args.batch_size, rate)
         st["gpu_speedups"] = speedups_for(machine, st["view"])
+        st["cap_step_seconds"] = cap_step_seconds(machine, st["view"], args.batch_size)
     lock = single_instance(RUNS / ".train_all.lock")
     if lock is None:
         print("[train_all] a training is already running in another window; this one stops.",

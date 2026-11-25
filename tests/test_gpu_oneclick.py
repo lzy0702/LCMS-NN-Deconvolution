@@ -425,6 +425,7 @@ def test_a_run_the_crawl_guard_stops_continues_in_chunks_with_its_speedups(tmp_p
     train_all = _train_all_in(tmp_path, monkeypatch)
     stage = train_all.make_run("window")
     stage["head_chunk"], stage["gpu_speedups"] = None, ["cudnn_benchmark", "index_select"]
+    stage["cap_step_seconds"] = {"chunks": 0.1815, "all": 0.1487}
     out = tmp_path / stage["out"]
     commands = []
     crawl = ["  epoch 0 step 40/1500 loss 0.9134 ce 0.8011 heat 0.5615\n",
@@ -451,6 +452,8 @@ def test_a_run_the_crawl_guard_stops_continues_in_chunks_with_its_speedups(tmp_p
     assert commands[0][-1] == "--restart"  # nothing saved before (or set aside by a restart)
     assert (_flag(commands[1], "--head-chunk"), commands[1][-1]) == ("16", "--resume")
     assert [_flag(c, "--gpu-speedups") for c in commands] == ["cudnn_benchmark,index_select"] * 2
+    # the guard's pace follows the chunking: setup's step at the cap all at once, then in chunks
+    assert [_flag(c, "--expected-step-seconds") for c in commands] == ["0.1487", "0.1815"]
     assert json.loads(train_all.MACHINE.read_text()) == {"workers": 6,
                                                          "unchunked_failed": ["window"]}
     assert train_all.failed_views == {"window"}  # later runs of the view in this call: chunks
@@ -460,6 +463,24 @@ def test_a_run_the_crawl_guard_stops_continues_in_chunks_with_its_speedups(tmp_p
             "view)") in text
     assert "window: resuming with 6 data workers, scoring 16 charges at a time; GPU speedups " \
            "cudnn_benchmark, index_select" in text
+
+
+def test_a_crawl_stopped_with_ctrl_c_is_remembered_for_the_next_start(tmp_path, monkeypatch):
+    """Ctrl+C while the crawl guard stops the run (likely, with steps of seconds): train_all
+    stops too, but machine.json remembers the view, so the next start goes on in chunks."""
+    train_all = _train_all_in(tmp_path, monkeypatch)
+    stage = train_all.make_run("window")
+    stage["head_chunk"], stage["gpu_speedups"] = None, []
+    commands = []
+    monkeypatch.setattr(train_all.subprocess, "Popen",
+                        _FakeTraining(commands, [([], train_all.GPU_CRAWL), (["done\n"], 0)]))
+    monkeypatch.setitem(train_all.interrupted, "count", 1)
+    assert train_all.run_stage(stage, {"workers": 6}, [], "cuda", False) == train_all.GPU_CRAWL
+    assert len(commands) == 1  # not continued now: train_all is stopping
+    assert json.loads(train_all.MACHINE.read_text())["unchunked_failed"] == ["window"]
+    assert train_all.head_chunk_for({**_roomy(USER_MACHINE), "gpu_speedups": {},
+                                     **json.loads(train_all.MACHINE.read_text())},
+                                    "window", 14.0, 4) == 16
 
 
 def test_the_smoke_always_starts_afresh_and_checks_again(tmp_path, monkeypatch):
@@ -1119,10 +1140,23 @@ def test_train_all_trains_the_users_setup_in_chunks_with_its_speedups(tmp_path, 
     assert [_flag(c, "--view") for c in commands] == ["window", "comb"]
     assert [_flag(c, "--head-chunk") for c in commands] == ["16", "16"]
     assert [_flag(c, "--gpu-speedups") for c in commands] == ["cudnn_benchmark,index_select"] * 2
+    # the crawl guard's pace: setup's step at the cap, in chunks, of each view
+    assert [_flag(c, "--expected-step-seconds") for c in commands] == ["0.1815", "0.1933"]
     text = capsys.readouterr().out
     assert text.count("scoring 16 charges at a time; GPU speedups cudnn_benchmark, "
                       "index_select") == 2
     assert "all charges at once" not in text
+
+
+def test_the_crawl_guards_pace_is_setups_step_at_the_cap_in_the_runs_chunking():
+    train_all = _load("train_all")
+    assert train_all.cap_step_seconds(USER_MACHINE, "window", 4) == {"chunks": 0.1815,
+                                                                     "all": 0.1487}
+    assert train_all.cap_step_seconds(USER_MACHINE, "comb", 8) == {"chunks": 0.3866,
+                                                                   "all": 0.3216}
+    assert train_all.cap_step_seconds({}, "window", 4) == {"chunks": None, "all": None}
+    earlier = {"gpu_views": {"window": {"batch": 4, "peak_gb": 2.98, "step_seconds": 0.1815}}}
+    assert train_all.cap_step_seconds(earlier, "window", 4) == {"chunks": 0.1815, "all": None}
 
 
 def test_the_estimate_takes_a_speedup_timing_only_with_its_chunking():
