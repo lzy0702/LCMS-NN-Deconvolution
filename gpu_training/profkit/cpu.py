@@ -1,4 +1,4 @@
-"""CPU experiments: synthesis of the runs' training spectra (items of train_all's recipe, v4
+"""CPU experiments: synthesis of the runs' training spectra (items of train_all's recipe, v5
 today, exactly as FrameDataset makes them, with the GPU package's settings: singly charged ions
 kept, isotope-charge channels, the measured channel, 131 072-bin crops), by single-threaded
 workers as in training.

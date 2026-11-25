@@ -15,16 +15,17 @@ and **14 GB of GPU memory**, leaving the rest to Windows.
 Two networks, one after the other, on the same spectra (the same seed), so that they can be
 compared:
 
-- **`window`** (`runs\ladder_v4_window.pt`): the ladder reads a fixed window of 131 072 grid
+- **`window`** (`runs\ladder_v5_window.pt`): the ladder reads a fixed window of 131 072 grid
   bins, a region's whole spectrum; inference cuts a longer spectrum into such windows.
-- **`comb`** (`runs\ladder_v4_comb.pt`): the same ladder for a spectrum of any length, read
+- **`comb`** (`runs\ladder_v5_comb.pt`): the same ladder for a spectrum of any length, read
   whole in one pass. Its layers do not depend on the input's length, it is told which bins were
   measured, and where a rung of a charge ladder falls outside the spectrum it reads a learned
   "not measured" value instead of zeros.
 
-Both use **recipe v4**, the whole-spectrum recipe in which 40 % of the oligonucleotides of the
-real-like Orbitrap spectra show a single charge state (so that the network learns that a lone
-envelope can be multiply charged, as its isotope spacing says): full size, 20 epochs of 6 000
+Both use **recipe v5**, the whole-spectrum recipe in which every oligonucleotide of 0.9 to
+5 kDa in the real-like Orbitrap spectra (three in four) shows a single charge state, so that the
+network learns that a lone envelope can be multiply charged where its isotope spacing says so
+(above 5 kDa the spacing no longer tells z from z + 1 reliably): full size, 20 epochs of 6 000
 new spectra each (singly charged ions included), learning rate 0.002, and the **isotope-charge
 channels**: the charge the comb's isotope reader reads from resolved isotope spacing, the
 strength of that reading, and the **isotope limit**, the highest charge whose isotope spacing
@@ -58,9 +59,9 @@ place, for example `C:\lcms`; let Windows replace the files). The environment `.
 PyTorch is not downloaded again; because the package changed, the setup measures the computer
 and runs its check again (10-15 minutes). Delete `gpu_training\run_stage1.bat` and
 `run_stage2.bat` if they are still there: they belong to the earlier two-stage training. The
-earlier runs' files in `runs` are not touched. This package trains recipe v4 into new files
-(`runs\ladder_v4_*`): a recipe v3 run that has not finished is not continued by it, so finish
-that one with the earlier package first if you want it.
+earlier runs' files in `runs` are not touched. This package trains recipe v5 into new files
+(`runs\ladder_v5_*`): a run of an earlier recipe (v3 or v4) that has not finished is not
+continued by it, so finish that one with the earlier package first if you want it.
 
 **The easy way: one double-click.** Double-click `gpu_training\setup_and_train.bat`. The first
 time, it sets up (step 1) and then trains (step 2) in the same window; at the end it names the

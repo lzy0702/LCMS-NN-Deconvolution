@@ -211,13 +211,13 @@ def test_runs_are_chosen_by_name():
         train_all.parse_runs("stage1")
     runs = {n: train_all.make_run(n) for n in train_all.RUN_TABLE}
     assert {n: (r["view"], r["out"]) for n, r in runs.items()} == {
-        "window": ("window", "runs/ladder_v4_window.pt"),
-        "comb": ("comb", "runs/ladder_v4_comb.pt"),
-        "window-plain": ("window", "runs/ladder_v4_window_plain.pt"),
-        "comb-plain": ("comb", "runs/ladder_v4_comb_plain.pt")}
+        "window": ("window", "runs/ladder_v5_window.pt"),
+        "comb": ("comb", "runs/ladder_v5_comb.pt"),
+        "window-plain": ("window", "runs/ladder_v5_window_plain.pt"),
+        "comb-plain": ("comb", "runs/ladder_v5_comb_plain.pt")}
     for name, run in runs.items():
         a = run["args"]
-        assert a[a.index("--recipe") + 1] == "v4" and a[a.index("--view") + 1] == run["view"]
+        assert a[a.index("--recipe") + 1] == "v5" and a[a.index("--view") + 1] == run["view"]
         assert ("--iso-channels" in a) == (not name.endswith("plain"))
         for flag, value in (("--model-size", "full"), ("--singly-charged", "keep"),
                             ("--epochs", "20"), ("--train-len", "6000"), ("--val-len", "128"),
@@ -225,7 +225,7 @@ def test_runs_are_chosen_by_name():
             assert a[a.index(flag) + 1] == value, flag
         assert run["spectra"] == 120000
     smoke = train_all.make_run("comb", smoke=True)
-    assert smoke["out"] == "runs/smoke_v4_comb.pt"
+    assert smoke["out"] == "runs/smoke_v5_comb.pt"
     a = smoke["args"]
     assert a[a.index("--epochs", a.index("--epochs") + 1) + 1] == "1"  # the smoke's own last
     assert a[-2:] == ["--batch-size", "2"]
@@ -233,7 +233,7 @@ def test_runs_are_chosen_by_name():
 
 def test_time_estimate_takes_the_slower_of_workers_and_gpu():
     train_all = _load("train_all")
-    machine = {**MACHINE, "v4_spectra_per_second": 30.0, "v4_workers": 10}
+    machine = {**MACHINE, "v5_spectra_per_second": 30.0, "v5_workers": 10}
     runs = [train_all.make_run("window"), train_all.make_run("comb")]
     text = train_all.time_estimate(runs, machine, 10)
     # window: the workers' 30 spectra/s (the GPU could take 20 at 0.2 s per 4); comb: 16
@@ -283,8 +283,8 @@ def test_the_upload_holds_every_finished_run(tmp_path, monkeypatch):
     runs = train_all.finished_runs(chosen)
     assert [r["name"] for r in runs] == ["comb", "window", "comb-plain"]
     names = zipfile.ZipFile(train_all.pack(runs, "")).namelist()
-    assert "runs/ladder_v4_window.onnx" in names and "runs/ladder_v4_comb_plain.json" in names
-    assert "runs/ladder_v4_comb.status.json" in names
+    assert "runs/ladder_v5_window.onnx" in names and "runs/ladder_v5_comb_plain.json" in names
+    assert "runs/ladder_v5_comb.status.json" in names
     assert not any(n.endswith(".resume.pt") for n in names)
 
 
@@ -317,7 +317,7 @@ def test_all_charges_at_once_only_where_measured_faster_with_room(whole, gpu_gb,
 
 def test_time_estimate_follows_the_chunk_choice():
     train_all = _load("train_all")
-    machine = {**_with_unchunked((8.0, 0.1)), "v4_spectra_per_second": 30.0, "v4_workers": 10}
+    machine = {**_with_unchunked((8.0, 0.1)), "v5_spectra_per_second": 30.0, "v5_workers": 10}
     run = train_all.make_run("window")
     assert "window 1.8 h at 20 spectra/s" in train_all.time_estimate([run], machine, 10)
     run["head_chunk"] = None  # the GPU could then take 40 spectra/s: the workers set the pace
@@ -445,7 +445,7 @@ def test_a_model_failing_the_predictor_check_is_checked_again(tmp_path, monkeypa
     assert train_all.export(stage) is None
     assert ckpt.with_suffix(".onnx").exists() and ckpt.with_suffix(".unchecked").exists()
     names = __import__("zipfile").ZipFile(train_all.pack([stage], "")).namelist()
-    assert "runs/ladder_v4_comb.onnx" in names and "runs/ladder_v4_comb.unchecked" in names
+    assert "runs/ladder_v5_comb.onnx" in names and "runs/ladder_v5_comb.unchecked" in names
     check["rc"] = 0
     assert train_all.export(stage) == ckpt.with_suffix(".onnx") and len(calls) == 4
     assert not ckpt.with_suffix(".unchecked").exists()
@@ -472,7 +472,7 @@ def test_all_charges_at_once_only_where_the_gpu_sets_the_pace():
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, 30.0) is None
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, 20.0) == 16  # workers' pace
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, None) is None  # not measured
-    assert train_all.data_rate({"v4_spectra_per_second": 30.0, "v4_workers": 10}, 5) == 15.0
+    assert train_all.data_rate({"v5_spectra_per_second": 30.0, "v5_workers": 10}, 5) == 15.0
     assert train_all.data_rate({}, 5) is None
     # measured on the spectra of an earlier recipe: no rate for this one
     assert train_all.data_rate({"v3_spectra_per_second": 30.0, "v3_workers": 10}, 5) is None
@@ -510,7 +510,7 @@ def test_a_view_out_of_gpu_memory_stays_in_chunks_for_its_later_runs(tmp_path, m
 
     train_all = _train_all_in(tmp_path, monkeypatch)
     train_all.MACHINE.write_text(json.dumps({**_with_unchunked((8.0, 0.1)), "workers": 6,
-                                             "v4_spectra_per_second": 60.0, "v4_workers": 6}))
+                                             "v5_spectra_per_second": 60.0, "v5_workers": 6}))
     for name in ("window", "window-plain"):
         (tmp_path / train_all.RUN_TABLE[name]["out"]).write_text("checkpoint")
     commands = []
@@ -568,7 +568,7 @@ def test_measuring_again_keeps_a_view_out_of_gpu_memory_in_chunks(tmp_path, monk
     # the speedups are measured with the chunking each view's run will use
     assert asked == [(["window", "comb"], 4, {"window": 16 if kept else None, "comb": None}, cap)]
     assert info["gpu_speedups"] == {"window": ["tf32"], "comb": []}
-    assert info["recipe"] == "v4" and info["v4_workers"] == 4
+    assert info["recipe"] == "v5" and info["v5_workers"] == 4
 
 
 # ------------------------------------------------------------------ data workers and RAM budget
@@ -688,9 +688,9 @@ def test_the_probe_measures_the_workers_at_the_number_it_chooses(tmp_path, monke
                                                                  budget):
     info, measured = _probe_on(monkeypatch, tmp_path, total, worker_gb=worker_gb)
     assert measured == asked and [m["workers"] for m in info["measured"]] == asked
-    assert info["workers"] == info["v4_workers"] == chosen
+    assert info["workers"] == info["v5_workers"] == chosen
     # the speed of that many workers, not of fewer scaled up
-    assert info["v4_spectra_per_second"] == round(_hybrid_rate(chosen), 1)
+    assert info["v5_spectra_per_second"] == round(_hybrid_rate(chosen), 1)
     assert (info["ram_budget_gb"], info["ram_budget_default"]) == (budget, True)
     assert info["physical_ram_gb"] == total and info["processor_workers"] == 22
     assert info["pace"]["window"]["set_by"] == "workers"  # the GPU was not measured
@@ -700,13 +700,13 @@ def test_the_probe_keeps_fewer_workers_where_more_do_not_run(tmp_path, monkeypat
     # 22 do not start (the paging file): half as many are measured and chosen
     info, asked = _probe_on(monkeypatch, tmp_path, 96, fails=lambda n: n > 12)
     assert asked == [22, 11] and info["workers"] == 11
-    assert info["v4_spectra_per_second"] == round(_hybrid_rate(11), 1)
+    assert info["v5_spectra_per_second"] == round(_hybrid_rate(11), 1)
     assert "as many as ran: 22 did not" in capsys.readouterr().out
     # the 13 the memory holds do not run: the 10 measured first are kept, not scaled up, and
     # the reason is that more did not run, not the budget
     info, asked = _probe_on(monkeypatch, tmp_path, 32, fails=lambda n: n > 12)
     assert asked == [10, 13] and info["workers"] == 10
-    assert info["v4_spectra_per_second"] == round(_hybrid_rate(10), 1)
+    assert info["v5_spectra_per_second"] == round(_hybrid_rate(10), 1)
     text = capsys.readouterr().out
     assert "Chosen: 10 data workers (as many as ran: 13 did not)" in text
     assert "as many as the RAM budget holds" not in text
@@ -719,7 +719,7 @@ def test_the_probe_keeps_fewer_workers_where_more_do_not_run(tmp_path, monkeypat
 
 def test_workers_and_budget_asked_for_win(tmp_path, monkeypatch):
     info, asked = _probe_on(monkeypatch, tmp_path, 96, argv=["--workers", "8"])
-    assert asked == [8] and info["workers"] == info["v4_workers"] == 8
+    assert asked == [8] and info["workers"] == info["v5_workers"] == 8
     info, asked = _probe_on(monkeypatch, tmp_path, 96, argv=["--ram-gb", "16"])
     assert asked == [10, 13] and info["workers"] == 13
     assert (info["ram_budget_gb"], info["ram_budget_default"]) == (16, False)
@@ -814,9 +814,9 @@ def test_the_probe_compares_the_workers_with_the_gpu_on_a_real_batch(tmp_path, m
 #: machine.json of the setup before the budget followed the computer (the user's: 16 GB, 13
 #: workers, their speed scaled from 10)
 OLD_MACHINE = {
-    "recipe": "v4", "workers": 13, "ram_budget_gb": 16.0, "gpu_memory_gb": 14.0, "gpu_batch": 4,
+    "recipe": "v5", "workers": 13, "ram_budget_gb": 16.0, "gpu_memory_gb": 14.0, "gpu_batch": 4,
     "head_chunk": 16, "head_chunks": {"window": 16, "comb": 16}, "main_gb": 2.4,
-    "worker_gb": 0.88, "expected_ram_gb": 13.8, "v4_spectra_per_second": 30.4, "v4_workers": 13,
+    "worker_gb": 0.88, "expected_ram_gb": 13.8, "v5_spectra_per_second": 30.4, "v5_workers": 13,
     "expected_hours": 2.8, "cores": 24, "gpu": "Fake GPU", "gpu_total_gb": 16.0,
     "gpu_views": {"window": {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.153},
                   "comb": {"batch": 4, "peak_gb": 3.2, "step_seconds": 0.16}},
@@ -824,7 +824,7 @@ OLD_MACHINE = {
     "speedup_timings": {"window": {"none": 100.0, "tf32": 95.0}, "comb": {"none": 105.0}}}
 #: the same computer measured by this setup: the default budget, 20 workers measured as 20
 NEW_MACHINE = {**OLD_MACHINE, "workers": 20, "ram_budget_gb": 48.0, "ram_budget_default": True,
-               "physical_ram_gb": 95.7, "v4_spectra_per_second": 26.8, "v4_workers": 20,
+               "physical_ram_gb": 95.7, "v5_spectra_per_second": 26.8, "v5_workers": 20,
                "processor_workers": 20}
 #: an earlier package's: no record of the speedups or of the chunking they were measured with
 OLDER_MACHINE = {k: v for k, v in OLD_MACHINE.items()
@@ -933,7 +933,7 @@ def test_the_estimate_names_what_sets_the_pace_and_its_bounds():
     assert train_all.speedup_name(["index_select", "tf32"]) == "tf32+index_select"
     assert train_all.speedup_name([]) == "none"
     assert _load("probe").config_name(("index_select", "tf32")) == "tf32+index_select"
-    machine = {**OLD_MACHINE, "v4_spectra_per_second": 30.0, "v4_workers": 10,
+    machine = {**OLD_MACHINE, "v5_spectra_per_second": 30.0, "v5_workers": 10,
                "gpu_views": {"window": {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.25,
                                         "unchunked": {"batch": 4, "peak_gb": 5.0,
                                                       "step_seconds": 0.125}}},

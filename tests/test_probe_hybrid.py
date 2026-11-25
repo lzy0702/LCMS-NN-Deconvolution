@@ -539,7 +539,7 @@ def _table(workers: int, today: float = 27.0, best: float = 36.0, **extra) -> di
                "core_high": {**CORE_HIGH, **_way(best, applied=workers),
                              "by_kind": {"P": {"items": 400, "per_worker_per_second": 2.3},
                                          "E": {"items": 600, "per_worker_per_second": 1.4}}}}
-    return {"recipe": "v4", "workers": workers, "batch": 4, "timed_spectra": 264,
+    return {"recipe": "v5", "workers": workers, "batch": 4, "timed_spectra": 264,
             "load": "a training step of the window view on the GPU for every batch",
             "seconds": 250.0, "checks": {"why_not": {}}, "order": [], "configs": configs,
             **extra}
@@ -558,7 +558,7 @@ def test_setup_records_the_way_it_measured_fastest_and_its_rate(tmp_path, monkey
     assert rec["today_spectra_per_second"] == 27.0
     assert info["data_loader_test"] == _table(22)
     # the time estimate takes what that way delivered under the training-like load
-    assert (info["v4_spectra_per_second"], info["v4_workers"], info["workers"]) == (36.0, 22, 22)
+    assert (info["v5_spectra_per_second"], info["v5_workers"], info["workers"]) == (36.0, 22, 22)
     assert info["pace"]["window"]["data_spectra_per_second"] == 36.0
     # 0.06 GB of shared slots a worker for the ordered loader
     assert info["expected_ram_gb"] == round(2.4 + 22 * (0.88 + 0.06), 1)
@@ -574,8 +574,8 @@ def test_the_ordered_loaders_slots_count_against_the_ram_budget(tmp_path, monkey
     # 32 GB: a budget of 16 holds 13 workers of 0.88 GB, 12 with the slots
     info, asked = _probe_main(monkeypatch, tmp_path, total=32, test=_table)
     assert asked[0]["workers"] == 13
-    assert info["workers"] == info["v4_workers"] == info["data_loader"]["workers"] == 12
-    assert info["v4_spectra_per_second"] == round(36.0 * 12 / 13, 1)
+    assert info["workers"] == info["v5_workers"] == info["data_loader"]["workers"] == 12
+    assert info["v5_spectra_per_second"] == round(36.0 * 12 / 13, 1)
     text = capsys.readouterr().out
     assert ("Chosen: 12 data workers (as many as the RAM budget holds with the ordered loader's "
             "shared slots; 13 were tested)") in text
@@ -598,17 +598,17 @@ def test_setup_keeps_today_where_the_test_does_not_decide(tmp_path, monkeypatch,
     assert reason in rec["reason"]
     assert ("data_loader_test" in info) == (how != "skipped")
     # the workers' rate: today's way, measured by the test where it measured it
-    assert info["v4_spectra_per_second"] == (27.0 if how == "busy" else 26.4)
+    assert info["v5_spectra_per_second"] == (27.0 if how == "busy" else 26.4)
     assert info["workers"] == 22
     assert "training uses: torch's DataLoader, workers not bound" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------------------------ train_all
 NEW_MACHINE = {
-    "recipe": "v4", "workers": 22, "ram_budget_gb": 48.0, "ram_budget_default": True,
+    "recipe": "v5", "workers": 22, "ram_budget_gb": 48.0, "ram_budget_default": True,
     "gpu_memory_gb": 14.0, "gpu_batch": 4, "head_chunk": 16,
     "head_chunks": {"window": 16, "comb": 16}, "main_gb": 2.4, "worker_gb": 0.88,
-    "v4_spectra_per_second": 36.0, "v4_workers": 22, "cores": 24, "gpu": "Fake GPU",
+    "v5_spectra_per_second": 36.0, "v5_workers": 22, "cores": 24, "gpu": "Fake GPU",
     "gpu_views": {"window": {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.153},
                   "comb": {"batch": 4, "peak_gb": 3.2, "step_seconds": 0.16}},
     "gpu_speedups": {"window": ["tf32"], "comb": []},
@@ -746,7 +746,7 @@ def test_the_ordered_loaders_slots_count_against_the_budget_in_training(tmp_path
     _computer(monkeypatch, 32)
     old = {**{k: v for k, v in NEW_MACHINE.items() if k not in ("data_loader",
                                                                  "data_loader_test")},
-           "workers": 13, "ram_budget_gb": 16.0, "v4_workers": 13}
+           "workers": 13, "ram_budget_gb": 16.0, "v5_workers": 13}
     train_all, commands = _train_all(tmp_path, monkeypatch, old)
     monkeypatch.setattr(sys, "argv", ["train_all.py", "--device", "cpu", "--loader", "ordered"])
     assert train_all.main() == 0
@@ -787,7 +787,7 @@ def test_a_run_whose_new_data_loading_fails_continues_as_before(tmp_path, monkey
     assert {k: rec[k] for k in TODAY} == TODAY and rec["failed"] == CORE_HIGH
     assert "exited unexpectedly" in rec["reason"]
     # the time estimate now takes today's way as setup measured it
-    assert (machine["v4_spectra_per_second"], machine["v4_workers"]) == (27.0, 22)
+    assert (machine["v5_spectra_per_second"], machine["v5_workers"]) == (27.0, 22)
     assert machine["data_loader_test"] == NEW_MACHINE["data_loader_test"]
     text = capsys.readouterr().out
     assert "the data loading (the ordered loader, each worker on a core of its own" in text

@@ -970,7 +970,8 @@ def test_the_profile_measures_train_all_s_recipe_even_where_probe_names_another(
     for measured in (True, False):
         assert (settings_repr(common.recipe_mixture(measured))
                 == settings_repr(probe.recipe_mixture(measured)))
-    # train_all moved on to another recipe while probe still makes the old one's spectra
+    # train_all moved on to another recipe: the profile measures its spectra (and probe, which
+    # reads train_all.RECIPE, makes them too)
     other = "v3" if train_all.RECIPE != "v3" else "v4"
     args = list(train_all.COMMON)
     args[args.index("--recipe") + 1] = other
@@ -980,7 +981,17 @@ def test_the_profile_measures_train_all_s_recipe_even_where_probe_names_another(
     for _w, c in want:
         c.singly_charged, c.iso_channels, c.measured_channel = "keep", True, True
     assert settings_repr(common.recipe_mixture()) == settings_repr(want)
-    assert settings_repr(probe.recipe_mixture()) != settings_repr(want)
+    assert settings_repr(probe.recipe_mixture()) == settings_repr(want)
+    # a probe that still made the old recipe's spectra: the profile keeps train_all's
+
+    def stale(measured=True):
+        mix = train_charge_net.mixture_v5()
+        for _w, c in mix:
+            c.singly_charged, c.iso_channels, c.measured_channel = "keep", True, measured
+        return mix
+
+    monkeypatch.setattr(probe, "recipe_mixture", stale)
+    assert settings_repr(common.recipe_mixture()) == settings_repr(want)
     run = e2e.run_args("window", "full", 2, 1600, 8)
     assert run[run.index("--recipe") + 1] == other
 

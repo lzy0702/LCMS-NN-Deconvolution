@@ -84,7 +84,7 @@ are generated once and kept in memory. A run stopped at the memory budget pauses
 the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
 
 `gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
-`setup_linux.sh`) installs and measures the machine, `train_all.bat` trains recipe v4 in both
+`setup_linux.sh`) installs and measures the machine, `train_all.bat` trains recipe v5 in both
 views (below) within the RAM and GPU memory limits, with the GPU speedups setup measured
 faster, resumes after any interruption and packs what to send back. Its RAM budget is by
 default half the computer's memory, at least 16 GB, at most 48 and at most the memory less 4
@@ -213,7 +213,7 @@ right nine times in ten on real spectra.
 ### Two views of the ladder, and the isotope limit
 
 `--view` (`TrainConfig.view`) chooses how LadderNet reads a spectrum; `gpu_training` trains both
-on recipe v4 (below) with isotope channels, on the same spectra (seed 0).
+on recipe v5 (below) with isotope channels, on the same spectra (seed 0).
 
 - **`window`** (the default, every network before): a fixed window, the training crop;
   inference cuts a longer grid into windows of that length.
@@ -268,7 +268,7 @@ the first layout (two isotope channels, in_ch 6, as 07cdc43 saved them) still lo
 they did (`tests/test_ladder_views.py`); every isotope-channel network now records its
 `iso_count`.
 
-### Recipe v4: what the GPU package trains
+### Recipe v4
 
 `--recipe v4` is v3 with lone multiply charged oligonucleotides: in the real-like Orbitrap
 spectra (half of them), 40 % of the oligonucleotide main compounds show a single charge state,
@@ -284,9 +284,53 @@ in its absolute m/z, which only the isotope-charge channels carry. The option dr
 while it is 0, so default and v3 frames, and their resume fingerprints, are unchanged
 (`tests/test_recipe_v4.py`).
 
-`gpu_training` trains v4 (`train_all.RECIPE`): `runs/ladder_v4_window.pt` and
-`runs/ladder_v4_comb.pt`, checked by `check_model.py` on a v4 Orbitrap spectrum. Setup measures
-the data workers on v4's spectra and records the recipe in `machine.json`; with a `machine.json`
+### Recipe v5: what the GPU package trains
+
+`--recipe v5` is v4 with clean lone envelopes: three in four Orbitrap spectra are real-like
+(v4: half), and in those every oligonucleotide main compound of 0.9 to 5 kDa shows a single
+charge state, its impurities with it (`oligo_single_state_prob` 1.0 and
+`SynthConfig.oligo_single_state_max_mass` 5 000 Da; `V5_SINGLE_STATE_MAX_MASS` and
+`V5_REAL_LIKE` in `scripts/train_charge_net.py`). The ceiling is where the isotope reader stops
+being right: on lone envelopes of z >= 2 it reads the charge right on 0.83-0.96 of the signal
+below 5 kDa, 0.40-0.67 at 5-8 kDa and 0.01-0.52 above 8 kDa (z + 1 or a divisor), and most of
+v4's single-state compounds were heavier. At lone peaks the reader reads as k >= 2, v4's label
+was k for 0.20 of the signal, another charge for 0.33 and z = 1 for 0.47, so a network had no
+use for the reading there; in v5 it is k for 0.36, another charge for 0.07 and z = 1 for 0.57
+(in the real-like spectra k 0.47, z = 1 0.44). A higher isotope-width floor in the reader would
+not help above 5 kDa: there the reading's doubt is between z and z + 1, which a floor does not
+resolve.
+
+Proof-size arms (10 epochs of 600 spectra, batch 4, seed 0, on the processor; the first layout's
+two isotope channels, as A1) scored on the four real runs, intensity-weighted shares of the
+envelopes read right:
+
+| check | bar | A1 (v3) | A1V4 (v4) | A1V5 (v5) |
+| --- | --- | --- | --- | --- |
+| lone multiply charged envelopes (15 cases) | - | 7/15 | 6/15 | 11/15 |
+| all envelopes of z >= 2 (120) | >= 0.88 | 0.90 | 0.93 | 0.94 |
+| with a ladder rung at S/N >= 100 (67) | >= 0.90 | 0.92 | 0.94 | 0.96 |
+| without rungs in any run (3) | - | 0.57 | 0.74 | 0.83 |
+| species of 5 kDa or more, z >= 2 (46) | - | 0.96 | 0.95 | 0.97 |
+| envelopes of z = 1 (8) | >= 0.80 | 1.00 | 0.93 | 0.80 |
+| species: paper / SI / traced | 20/20, >= 28/29, 8/8 | 20/20, 28/29, 7/8 | the same | the same |
+| reports not confirmed | <= 64 | 73 | 82 | 76 |
+| of them singly charged background | <= 3 | 1 | 2 | 3 |
+
+v5 reads lone envelopes and rungless species better and keeps the laddered ones; it pays on the
+few singly charged envelopes (at the bar). None of the three finds 3206.4 of the IP-RPLC NC run,
+whose envelope stands nearly alone (the comb finds it): in the lone-envelope test A1V5 reads it
+z = 1 at every charge, while it follows 4512.8 from z = 2 to 5. The synthetic Orbitrap
+validation share falls (A1 0.853, A1V5 0.760) because v5's validation spectra hold the hard lone
+envelopes; the time-of-flight share, on the same spectra in every recipe, is unchanged
+(0.866-0.876). The gated three-channel layout the package trains reads 14 of the 15 lone
+envelopes at proof size on v3 already (13 on v4), but the full-size networks trained on the GPU
+on v3 read only 5 and 4 of them, while reading laddered envelopes better (0.96 of z >= 2,
+0.99-1.00 of the species of 5 kDa or more): at full size the network learns the rule that a peak
+without rungs is z = 1 more firmly, so the recipe, not the size, has to teach the exception.
+
+`gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
+`runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures
+the data workers on v5's spectra and records the recipe in `machine.json`; with a `machine.json`
 measured for another recipe, train_all gives no time estimate and asks for setup to run again.
 
 ### GPU speedups and the pace of an epoch

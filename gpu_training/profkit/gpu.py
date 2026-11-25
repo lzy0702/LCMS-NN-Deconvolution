@@ -1,4 +1,4 @@
-"""GPU experiments: training steps of the full LadderNet of both views (train_all's recipe, v4
+"""GPU experiments: training steps of the full LadderNet of both views (train_all's recipe, v5
 today, isotope-charge channels, as train_all trains them) on the runs' real batches, under the
 GPU memory cap.
 

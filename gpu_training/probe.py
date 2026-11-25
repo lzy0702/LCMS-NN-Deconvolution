@@ -1,18 +1,18 @@
 """Measure this computer for training, within the given memory limits.
 
-Runs real training steps of the full-size networks of both views (recipe v4 with isotope-charge
-channels, at the recipe's batch size, every spectrum at the active-bin cap: the most memory a
-step can need) on the GPU under the GPU memory cap, scoring the charges in chunks and all at
-once (train_all.py chooses between the two from these measurements), then starts data workers
-the way training does on the recipe's spectra and measures how much memory each one takes and
-how many spectra per second they deliver together. It chooses as many workers as the processor
-is given (one per logical processor of every core but the one or two the training process
-keeps, lcmsdeconv.nn.machine.cpu_workers) where the RAM budget holds them with the training
-process, fewer where it does not, and measures their speed at the number it chooses: on a
-processor with performance and efficiency cores each further worker adds less, and torch's
-DataLoader delivers batches in order, so that a worker that is ahead waits for the slower ones.
-The RAM budget is by default half the computer's memory, at least 16 GB and at most 48
-(lcmsdeconv.nn.machine).
+Runs real training steps of the full-size networks of both views (the runs' recipe,
+train_all.RECIPE, with isotope-charge channels, at the recipe's batch size, every spectrum at
+the active-bin cap: the most memory a step can need) on the GPU under the GPU memory cap,
+scoring the charges in chunks and all at once (train_all.py chooses between the two from these
+measurements), then starts data workers the way training does on the recipe's spectra and
+measures how much memory each one takes and how many spectra per second they deliver together.
+It chooses as many workers as the processor is given (one per logical processor of every core
+but the one or two the training process keeps, lcmsdeconv.nn.machine.cpu_workers) where the RAM
+budget holds them with the training process, fewer where it does not, and measures their speed
+at the number it chooses: on a processor with performance and efficiency cores each further
+worker adds less, and torch's DataLoader delivers batches in order, so that a worker that is
+ahead waits for the slower ones. The RAM budget is by default half the computer's memory, at
+least 16 GB and at most 48 (lcmsdeconv.nn.machine).
 
 Then it measures the GPU speedups (lcmsdeconv.nn.train.GPU_SPEEDUPS: cuDNN's benchmark, TF32
 matrix products, LadderNet's index_select head, fused AdamW), which change only the rounding of
@@ -110,11 +110,12 @@ def commit_gb(proc) -> float:
 
 
 def recipe_mixture(measured: bool = True) -> list:
-    """The training spectra of train_all's runs (recipe v4), as training configures them (singly
+    """The training spectra of train_all's runs (its RECIPE), as training configures them (singly
     charged ions labelled, isotope-charge channels, and the comb view's measured channel)."""
-    from train_charge_net import mixture_v4
+    import train_charge_net
+    from train_all import RECIPE
 
-    mix = mixture_v4()
+    mix = getattr(train_charge_net, f"mixture_{RECIPE}")()
     for _w, c in mix:
         c.singly_charged = "keep"
         c.iso_channels = True

@@ -4,8 +4,8 @@
     bash gpu_training/train_all.sh           (Linux)
 
 The runs are those of RUN_TABLE (by default "window" and "comb": LadderNet at full size on
-recipe v4, the whole-spectrum recipe with lone multiply charged oligonucleotides, with
-isotope-charge channels, one in each view), one after the other; --runs chooses others, for
+recipe v5, the whole-spectrum recipe with lone multiply charged oligonucleotides of 0.9-5 kDa,
+with isotope-charge channels, one in each view), one after the other; --runs chooses others, for
 example --runs comb or --runs window,comb,window-plain. Run it again after a pause, a crash or a
 reboot: a finished run is skipped and an interrupted one resumes where it stopped. To pause,
 press Ctrl+C once (or put a file named PAUSE in the runs folder); the state is saved and the
@@ -63,7 +63,7 @@ SPECTRA = EPOCHS * TRAIN_LEN
 #: the recipe the runs train (train_charge_net.py --recipe). Setup records it in machine.json
 #: ("recipe") with the data workers' speed on its spectra (RATE_KEY), so a machine.json from a
 #: setup of another recipe gives no time estimate and asks for setup to run again
-RECIPE = "v4"
+RECIPE = "v5"
 RATE_KEY, RATE_WORKERS_KEY = f"{RECIPE}_spectra_per_second", f"{RECIPE}_workers"
 #: what every run shares: the recipe at full size, singly charged ions labelled
 COMMON = ["--recipe", RECIPE, "--arch", "ladder", "--model-size", "full", "--singly-charged",

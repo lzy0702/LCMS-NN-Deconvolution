@@ -1,14 +1,14 @@
 """Read whole spectra with a trained charge model, the way the pipeline reads them.
 
-    python gpu_training/check_model.py runs/ladder_v4_comb.onnx [more models]
+    python gpu_training/check_model.py runs/ladder_v5_comb.onnx [more models]
 
 Each model (.onnx, or a .pt checkpoint) is loaded through ChargePredictor with the instrument of
-the Orbitrap oligonucleotide method and reads two whole grids: an Orbitrap spectrum of recipe v4
-(the one the runs train), and the same spectrum on a grid extended 50 000 bins to lower m/z, so
-that it is longer than the 131 072-bin training window (a comb-view model reads it in one
-pass, a window-view model in overlapping windows). It prints the time taken and the share of
-ion bins whose charge it reads right; the exit code is 0 when every model gave a charge for
-every bin above three sigma of both grids.
+the Orbitrap oligonucleotide method and reads two whole grids: an Orbitrap spectrum of the
+recipe the runs train (train_all.RECIPE), and the same spectrum on a grid extended 50 000 bins
+to lower m/z, so that it is longer than the 131 072-bin training window (a comb-view model reads
+it in one pass, a window-view model in overlapping windows). It prints the time taken and the
+share of ion bins whose charge it reads right; the exit code is 0 when every model gave a charge
+for every bin above three sigma of both grids.
 """
 
 from __future__ import annotations
@@ -28,13 +28,15 @@ EXTRA_BINS = 50000
 def spectra() -> list:
     """``(name, grid, intensity, noise sigma, true charge per bin, log-SNR feature per bin)`` of
     the two grids read."""
-    from train_charge_net import mixture_v4
+    import train_charge_net
+    from train_all import RECIPE
 
     from lcmsdeconv.nn import baseline as bl
     from lcmsdeconv.nn.grid import LogMzGrid
     from lcmsdeconv.synth.frames import generate_frame
 
-    cfg = mixture_v4()[3][1]  # Orbitrap oligonucleotides at the real runs' resolving power
+    mix = getattr(train_charge_net, f"mixture_{RECIPE}")()
+    cfg = mix[3][1]  # Orbitrap oligonucleotides at the real runs' resolving power
     fs = generate_frame(cfg, np.random.default_rng(5))
     grid, y, sigma = bl.frame_grid(cfg, fs)
     true, f0 = np.zeros(grid.size, dtype=np.int64), np.zeros(grid.size)

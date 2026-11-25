@@ -436,7 +436,7 @@ def test_a_failed_speedup_measurement_does_not_stop_the_probe(tmp_path, monkeypa
     info = json.loads(out.read_text())
     assert info["gpu_speedups"] == {"window": [], "comb": []}
     assert "no room" in info["speedup_error"]
-    assert info["recipe"] == "v4" and info["v4_spectra_per_second"] == 40.0
+    assert info["recipe"] == "v5" and info["v5_spectra_per_second"] == 40.0
     assert "v3_spectra_per_second" not in info
 
 
@@ -823,42 +823,47 @@ def test_an_earlier_machine_json_gives_no_speedups_and_asks_for_setup(tmp_path, 
     assert train_all.main() == 0
     assert [_speedups_of(c) for c in commands] == ["none"]
     text = capsys.readouterr().out
-    assert "holds no measurement of this recipe (v4" in text
+    assert "holds no measurement of this recipe (v5" in text
     assert "no GPU speedups: gpu_training/machine.json does not say" in text
     assert "running setup again measures them" in text
 
 
-def test_the_package_trains_recipe_v4():
+def test_the_package_trains_recipe_v5():
     train_all = _load("train_all")
     probe = _load("probe")
     import train_charge_net
 
-    assert train_all.RECIPE == "v4" and (train_all.RATE_KEY, train_all.RATE_WORKERS_KEY) == (
-        "v4_spectra_per_second", "v4_workers")
+    assert train_all.RECIPE == "v5" and (train_all.RATE_KEY, train_all.RATE_WORKERS_KEY) == (
+        "v5_spectra_per_second", "v5_workers")
     for name in train_all.RUN_TABLE:
         run = train_all.make_run(name)
-        assert run["args"][run["args"].index("--recipe") + 1] == "v4"
-        assert run["out"].startswith("runs/ladder_v4_")
-        assert train_all.make_run(name, smoke=True)["out"].startswith("runs/smoke_v4_")
-    mix, v4 = probe.recipe_mixture(), train_charge_net.mixture_v4()
-    assert [w for w, _c in mix] == [w for w, _c in v4]
-    for (_w, c), (_w4, c4) in zip(mix, v4):
+        assert run["args"][run["args"].index("--recipe") + 1] == "v5"
+        assert run["out"].startswith("runs/ladder_v5_")
+        assert train_all.make_run(name, smoke=True)["out"].startswith("runs/smoke_v5_")
+    mix, v5 = probe.recipe_mixture(), train_charge_net.mixture_v5()
+    assert [w for w, _c in mix] == [w for w, _c in v5]
+    for (_w, c), (_w5, c5) in zip(mix, v5):
         assert (c.singly_charged, c.iso_channels, c.measured_channel) == ("keep", True, True)
-        assert c.oligo_single_state_prob == c4.oligo_single_state_prob
-        assert c.classes == c4.classes and c.resolution_range == c4.resolution_range
-    assert any(c.oligo_single_state_prob > 0 for _w, c in mix)
+        assert (c.oligo_single_state_prob, c.oligo_single_state_max_mass,
+                c.oligo_real_like_prob) == (c5.oligo_single_state_prob,
+                                            c5.oligo_single_state_max_mass,
+                                            c5.oligo_real_like_prob)
+        assert c.classes == c5.classes and c.resolution_range == c5.resolution_range
+    orbitrap = [c for _w, c in mix if c.instrument_kind == "orbitrap"]
+    assert orbitrap and all((c.oligo_single_state_prob, c.oligo_single_state_max_mass,
+                             c.oligo_real_like_prob) == (1.0, 5000.0, 0.75) for c in orbitrap)
 
 
-def test_check_model_reads_a_spectrum_of_recipe_v4(monkeypatch):
+def test_check_model_reads_a_spectrum_of_recipe_v5(monkeypatch):
     check_model = _load("check_model")
     import train_charge_net
 
     class Asked(Exception):
         pass
 
-    def v4():
+    def v5():
         raise Asked
 
-    monkeypatch.setattr(train_charge_net, "mixture_v4", v4)
+    monkeypatch.setattr(train_charge_net, "mixture_v5", v5)
     with pytest.raises(Asked):
         check_model.spectra()

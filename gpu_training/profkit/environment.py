@@ -244,11 +244,13 @@ def setup_record() -> dict:
     setup_done.json (when, with which PyTorch)."""
     machine = read_json(GPU_TRAINING / "machine.json") or {}
     keep = ("recipe", "workers", "ram_budget_gb", "physical_ram_gb", "gpu_memory_gb", "gpu_batch",
-            "head_chunk", "head_chunks", "worker_gb", "main_gb", "v4_spectra_per_second",
-            "v4_workers", "cores", "processor_workers", "gpu", "gpu_views", "gpu_speedups",
-            "speedup_timings", "speedup_checks", "expected_hours", "pace", "measured",
-            "unchunked_failed")
-    return {"machine_json": {k: machine[k] for k in keep if k in machine},
+            "head_chunk", "head_chunks", "worker_gb", "main_gb", "cores", "processor_workers",
+            "gpu", "gpu_views", "gpu_speedups", "speedup_timings", "speedup_checks",
+            "expected_hours", "pace", "measured", "unchunked_failed", "data_loader",
+            "data_loader_test")
+    # the data workers' measured speed under the recipe's name (v5_spectra_per_second, ...)
+    rates = tuple(k for k in machine if k.endswith(("_spectra_per_second", "_workers")))
+    return {"machine_json": {k: machine[k] for k in keep + rates if k in machine},
             "setup_done": read_json(GPU_TRAINING / "setup_done.json"),
             "machine_json_found": bool(machine)}
 
