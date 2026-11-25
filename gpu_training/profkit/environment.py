@@ -247,7 +247,8 @@ def setup_record() -> dict:
             "head_chunk", "head_chunks", "worker_gb", "main_gb", "cores", "processor_workers",
             "gpu", "gpu_views", "gpu_speedups", "speedup_timings", "speedup_checks",
             "expected_hours", "pace", "measured", "unchunked_failed", "data_loader",
-            "data_loader_test")
+            "data_loader_test", "speedup_chunks", "speedup_reserved_gb", "speedup_peak_gb",
+            "gpu_free_gb_at_setup", "gpu_total_gb")
     # the data workers' measured speed under the recipe's name (v5_spectra_per_second, ...)
     rates = tuple(k for k in machine if k.endswith(("_spectra_per_second", "_workers")))
     return {"machine_json": {k: machine[k] for k in keep + rates if k in machine},

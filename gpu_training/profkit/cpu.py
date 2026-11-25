@@ -1,48 +1,64 @@
-"""CPU experiments: synthesis of the runs' training spectra (items of train_all's recipe, v5
-today, exactly as FrameDataset makes them, with the GPU package's settings: singly charged ions
-kept, isotope-charge channels, the measured channel, 131 072-bin crops), by single-threaded
-workers as in training.
+"""Processor experiments: synthesis of the runs' training spectra (items of train_all's recipe,
+v5 today, exactly as training makes them: FrameDataset with the GPU package's settings, singly
+charged ions kept, isotope-charge channels, the measured channel as setup's probe measures the
+workers, 131 072-bin crops), by single-threaded workers as in training.
 
-- :func:`core_map`: one process pinned to each logical processor in turn, the same items on
-  each: items per second per processor, then by kind (performance, efficient);
+- :func:`loader`: training's own data loading (lcmsdeconv.synth.dataset.make_dataloaders, as
+  train() builds it) for this process: torch's DataLoader or the ordered loader of
+  lcmsdeconv.synth.pool, the workers placed as train() places them (lcmsdeconv.nn.cpus.plan:
+  not bound, sharing the cores the training process does not keep, or each on a core of its
+  own), opted out of Windows' power throttling or not, at their priority, and this process in
+  the training process's part. The spectra per second delivered, the wait for each batch, what
+  each worker and each kind of core made (training's own count, ItemStats), the start-up;
+- :func:`core_map`: one process pinned to each of a few logical processors in turn (two of
+  each kind in the profile: the rate of one worker on a performance and on an efficient core),
+  the same items on each;
 - :func:`throttle`: on one performance and one efficient core, Windows' power throttling
   (EcoQoS) left to Windows or opted out of, at normal and below-normal priority;
-- :func:`cprofile_items`: where the time of an item goes, on one core of each kind;
-- :func:`loader`: many workers at once delivering batches to a consumer, as training's
-  DataLoader does or as the order-preserving dispatcher (:mod:`.dispatch`) does, unpinned or
-  one worker pinned per core, with or without the power-throttling opt-out.
+- :func:`cprofile_items`: where the time of an item goes, on one core of each kind.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import statistics
 import time
-from functools import partial
 
 from . import cpusets
 from .common import ROOT, Unavailable, recipe, recipe_mixture, stats
 
 BATCH = 4
-#: batches each worker delivers before the timing starts (DataLoader) or items per worker
-#: (dispatcher: WARM_ROUNDS * BATCH), as probe.workers_run
+#: rounds before a loader measurement's timing starts (a round: a batch from every worker;
+#: torch's DataLoader hands batch k to worker k mod N, so that only whole rounds take the same
+#: time again); the ordered loader once every worker has made a spectrum and as many spectra
+#: as these rounds hold have arrived
 WARM_ROUNDS = 2
-#: the timed part of a loader measurement, and the width of its timeline's bins
-LOADER_SECONDS, TIMELINE_SECONDS = 45.0, 5.0
-#: far more items than are read: the measurement stops in full flow
-ENDLESS = 10_000_000
+#: the timed part of a loader measurement (torch's DataLoader: on to the end of a round), and
+#: the width of its timeline's bins
+LOADER_SECONDS, TIMELINE_SECONDS = 25.0, 5.0
+#: the spectra a loader measurement's training loader holds: far more than are read (about
+#: 2000 on the computer the package was made for), so that the measurement stops in full flow
+LOADER_ITEMS = 200_000
+#: their seed (probe.workers_run's spectra)
+LOADER_SEED = 4242
 
 
-def recipe_dataset(length: int, base_seed: int = 0, crop: int | None = None):
+def recipe_mix(crop: int | None = None) -> list:
     """The runs' training spectra (common.recipe_mixture: train_all's recipe as training
-    configures it) as a FrameDataset, cropped to ``crop`` bins where given (smoke runs and
-    tests)."""
-    from lcmsdeconv.synth.dataset import FrameDataset
-
+    configures it), cropped to ``crop`` bins where given (smoke runs and tests)."""
     mix = recipe_mixture()
     if crop:
         for _w, c in mix:
             c.crop_size = int(crop)
+    return mix
+
+
+def recipe_dataset(length: int, base_seed: int = 0, crop: int | None = None):
+    """The runs' training spectra (recipe_mix) as a FrameDataset, and the mixture."""
+    from lcmsdeconv.synth.dataset import FrameDataset
+
+    mix = recipe_mix(crop)
     return FrameDataset(mix, length, base_seed=base_seed), mix
 
 
@@ -82,14 +98,33 @@ def pick_cores(procs: list[dict]) -> dict:
     return {"first": order[min(1, len(order) - 1)]["cpu"], "last": order[-1]["cpu"]}
 
 
+def spread_cores(procs: list[dict], per_kind: int) -> list[int]:
+    """``per_kind`` logical processors of each kind this process may use, spread from the first
+    to the last of that kind (the very first left out where the kind has more: it often serves
+    the system's interrupts), in the order of the kinds."""
+    order = sorted(cpusets.usable(procs), key=lambda p: p["cpu"])
+    out: list[int] = []
+    for kind in dict.fromkeys(p.get("kind") for p in order):
+        mine = [p["cpu"] for p in order if p.get("kind") == kind]
+        if len(mine) > per_kind:
+            mine = mine[1:]
+        n = max(1, min(int(per_kind), len(mine)))
+        picks = [mine[round(i * (len(mine) - 1) / max(n - 1, 1))] for i in range(n)]
+        out += [c for c in dict.fromkeys(picks) if c not in out]
+    return out
+
+
 def core_map(ctx, items: int = 12, crop: int | None = None, priority: str = "below_normal",
-             cpus: list | None = None) -> dict:
-    """Items per second of one process pinned to each logical processor in turn, the same
-    ``items`` items on each (after two unpinned to warm up), at the workers' priority."""
+             cpus: list | None = None, per_kind: int | None = None) -> dict:
+    """Items per second of one process pinned to each logical processor of ``cpus`` in turn
+    (default: ``per_kind`` of each kind, spread_cores; without it every one this process may
+    use), the same ``items`` items on each (after two unpinned to warm up), at the workers'
+    priority."""
     procs = _processors()
     by_cpu = {p["cpu"]: p for p in procs if p.get("cpu") is not None}
     allowed = cpusets.current_affinity() or sorted(by_cpu)
-    todo = [c for c in (cpus or sorted(by_cpu)) if c in allowed]
+    chosen = cpus or (spread_cores(procs, per_kind) if per_kind else sorted(by_cpu))
+    todo = [c for c in chosen if c in allowed]
     ds, mix = recipe_dataset(items, base_seed=0, crop=crop)
     warm = warm_up(mix)
     _time_items(ds, min(2, items))
@@ -105,7 +140,7 @@ def core_map(ctx, items: int = 12, crop: int | None = None, priority: str = "bel
                          "efficiency_class": p.get("efficiency_class"),
                          "items_per_second": round(items / sum(ts), 3),
                          "item_seconds": stats(ts, 4)})
-            ctx.say(f"cpu {cpu} ({p.get('kind')}): {items / sum(ts):.2f} items/s")
+            ctx.say(f"cpu {cpu} ({p.get('kind')}): {items / sum(ts):.2f} spectra/s")
     finally:
         cpusets.set_affinity(allowed)
         cpusets.set_priority("normal")
@@ -115,6 +150,7 @@ def core_map(ctx, items: int = 12, crop: int | None = None, priority: str = "bel
     per_item = [statistics.median(r["item_seconds"]["median"] for r in rows)] if rows else []
     return {"config": {"items": items, "item_indices": f"0-{items - 1} of seed 0",
                        "recipe": recipe(), "crop": crop or 131072, "priority": prio,
+                       "per_kind": per_kind, "cpus": todo,
                        "warm_up_seconds": round(warm, 1),
                        "threads": {k: os.environ.get(k) for k in
                                    ("OMP_NUM_THREADS", "NUMBA_NUM_THREADS")}},
@@ -247,31 +283,95 @@ def cprofile_items(ctx, items: int = 6, crop: int | None = None, top: int = 30) 
                        "cores": cores}, "profiles": out}
 
 
-# ------------------------------------------------------------------ many workers at once
-class TimedItems:
-    """A dataset whose items carry, as a last tensor, ``[worker, start, end]`` of their making
-    (the worker from DataLoader's worker info, or the dispatcher's), on the clock every process
-    of this computer shares (time.perf_counter)."""
+# ------------------------------------------------------------------ training's data loading
+def training_placement(topo, allowed, loader: str, binding: str, qos: str, priority: str,
+                       workers: int):
+    """Where train() runs ``workers`` data workers of a GPU training run with these settings
+    (train_charge_net.py's --loader, --cpu-binding, --worker-qos, --worker-priority), as
+    lcmsdeconv.nn.train._placement decides it through lcmsdeconv.nn.cpus.plan: each worker on
+    a core of its own ("core") only with the ordered loader, torch's DataLoader, which hands
+    whole batches to its workers in turn, sharing the cores instead ("pool"); None where nothing
+    changes (not bound, below-normal priority, power throttling left to Windows), as train()
+    has it then."""
+    from lcmsdeconv.nn import cpus
 
-    def __init__(self, dataset):
-        self.dataset = dataset
+    mode = "pool" if binding == "core" and loader != "ordered" else binding
+    placement = cpus.plan(topo, workers=workers, allowed=allowed, mode=mode, priority=priority,
+                          qos=qos)
+    if (placement.mode, placement.priority, placement.qos) == ("none", "below_normal", "system"):
+        return None
+    return placement
 
-    def __len__(self) -> int:
-        return len(self.dataset)
 
-    def __getitem__(self, idx: int):
-        import torch
-        from torch.utils.data import get_worker_info
+class TrainingProcess:
+    """This process in the training process's part of a placement, as train() plays it
+    (lcmsdeconv.nn.train._MainPlacement): opted out of power throttling from the start where
+    the placement says so, before its workers start; bound to its own cores once they run (a
+    process takes its parent's affinity when it is created, so bound earlier the workers would
+    start on its cores); both given back at the end."""
 
-        from .dispatch import current_worker
+    def __init__(self, placement):
+        from lcmsdeconv.nn import cpus
 
-        info = get_worker_info()
-        wid = info.id if info is not None else current_worker()
-        t0 = time.perf_counter()
-        item = self.dataset[idx]
-        t1 = time.perf_counter()
-        stamp = torch.tensor([-1 if wid is None else wid, t0, t1], dtype=torch.float64)
-        return (*item, stamp)
+        self.placement = placement
+        self.allowed = cpus.allowed_cpus()
+        self.pinned = False
+        self._qos = None  # (opted out?, the power throttling before)
+
+    def start(self) -> dict:
+        from lcmsdeconv.nn import cpus
+
+        if self.placement is None or self.placement.qos != "high":
+            return {}
+        before = cpus.get_power_throttling()
+        self._qos = (cpus.set_power_throttling(False), before)
+        return {"opted_out": self._qos[0]}
+
+    def bind(self, pids: list) -> dict:
+        """Bind this process to its cores where the placement binds, and read where the workers
+        ``pids`` may run and at which priority."""
+        from lcmsdeconv.nn import cpus
+
+        p = self.placement
+        out: dict = {"workers": len(pids)}
+        if p is not None and p.mode != "none":
+            self.pinned = bool(cpus.apply_main(p, qos=False).get("pinned"))
+            masks = cpus.affinity_of(pids)
+            out["bound_as_planned"] = sum(1 for i, pid in enumerate(pids)
+                                          if masks.get(pid) == sorted(p.worker_cpus(i)))
+            out["worker_affinity"] = [masks.get(pid) for pid in pids]
+        out["main_bound"] = self.pinned
+        out["main_affinity"] = cpus.allowed_cpus()
+        out["worker_priority"] = priorities(pids)
+        return out
+
+    def restore(self) -> None:
+        from lcmsdeconv.nn import cpus
+
+        if self.pinned and self.allowed:
+            cpus.pin_process(self.allowed)
+            self.pinned = False
+        if self._qos is not None and self._qos[0]:
+            cpus.restore_power_throttling(self._qos[1])
+        self._qos = None
+
+
+def priorities(pids: list) -> dict:
+    """{priority: processes} of ``pids``: Windows' priority class by name, elsewhere the nice
+    value."""
+    try:
+        import psutil
+    except ImportError:
+        return {}
+    out: dict = {}
+    for pid in pids:
+        try:
+            v = int(psutil.Process(pid).nice())
+        except (psutil.Error, OSError):
+            continue
+        key = cpusets.PRIORITY_NAMES.get(v, hex(v)) if cpusets.WINDOWS else f"nice {v}"
+        out[key] = out.get(key, 0) + 1
+    return out
 
 
 def _workers_memory() -> dict:
@@ -292,156 +392,177 @@ def _workers_memory() -> dict:
         return {"error": str(exc)[:200]}
 
 
-def loader(ctx, kind: str = "dataloader", workers: int = 20, pinned: bool = False,
-           opt_out: bool = False, seconds: float = LOADER_SECONDS, warm_rounds: int = WARM_ROUNDS,
-           crop: int | None = None, reserve: int | None = None, window: int | None = None) -> dict:
-    """``workers`` workers delivering batches of 4 to this process for ``seconds`` after the
-    warm-up: ``kind`` "dataloader" (training's DataLoader: batch k from worker k mod N, in order,
-    two batches in hand per worker) or "dispatcher" (each free worker takes the next item;
-    batches assembled in order). ``pinned``: each worker on a core of its own and this process
-    on the performance cores cpusets.pin_plan reserves, from its first batch on: a process a
-    pinned one starts inherits its affinity, so pinned before the workers exist this process
-    would squeeze their start (each one importing PyTorch) onto its own one or two cores.
-    ``opt_out``: every worker opts out of power throttling (Windows). Records the items per
-    second delivered, the consumer's wait, each worker's items and busy share, a timeline, and
-    what each worker got."""
+def worker_rows(table, span: float, kind_of_cpu: dict) -> list[dict]:
+    """Each worker's spectra in the timed part, from training's count of them (an ItemStats
+    table: worker x logical processor x (spectra, seconds, processor seconds, moved)): how many,
+    the share of the time it was making them, its seconds a spectrum, the logical processors it
+    made them on, the one it made most on and that one's kind."""
+    from lcmsdeconv.nn.cpus import cpu_ranges
+
+    rows = []
+    n_cpus = table.shape[1] - 1  # the last column: a processor that could not be read
+    for w in range(table.shape[0]):
+        t = table[w]
+        items, secs = int(t[:, 0].sum()), float(t[:, 1].sum())
+        used = [c for c in range(n_cpus) if t[c, 0] > 0]
+        main = max(used, key=lambda c: t[c, 0]) if used else None
+        rows.append({"worker": w, "items": items, "busy_share": round(secs / span, 3),
+                     "seconds_per_item": round(secs / items, 4) if items else None,
+                     "on_processor": round(float(t[:, 2].sum()) / secs, 3) if secs > 0 else None,
+                     "cpus": cpu_ranges(used), "cpu": main,
+                     "kind": kind_of_cpu.get(main, "?") if main is not None else None,
+                     "moved": int(t[:, 3].sum())})
+    return rows
+
+
+def _stop(tl, batches) -> None:
+    """End the workers: the ordered loader's pool, or torch's DataLoader's (each finishes the
+    batch it is making)."""
+    with contextlib.suppress(Exception):  # the process ends next: nothing outlives it
+        if getattr(tl, "pool", None) is not None:
+            tl.close()
+        elif batches is not None and hasattr(batches, "_shutdown_workers"):
+            batches._shutdown_workers()
+
+
+def loader(ctx, loader: str = "dataloader", binding: str = "none", qos: str = "system",
+           priority: str = "below_normal", workers: int = 22, seconds: float = LOADER_SECONDS,
+           warm_rounds: int = WARM_ROUNDS, crop: int | None = None) -> dict:
+    """``workers`` data workers making training's batches of BATCH spectra for this process
+    exactly as train() has them made: lcmsdeconv.synth.dataset.make_dataloaders with ``loader``
+    ("dataloader": torch's, whole batches to the workers in turn, delivered in order, so that
+    the slowest worker sets the pace; "ordered": lcmsdeconv.synth.pool, single spectra to
+    whichever worker is free, the same batches) and the placement train() gives ``binding``,
+    ``qos`` and ``priority`` (training_placement), the batches into pinned memory where CUDA is
+    available, this process in the training process's part (TrainingProcess). After the
+    warm-up (WARM_ROUNDS), for ``seconds`` (torch's DataLoader: on to the end of a round): the
+    spectra per second delivered; the wait for each batch; what each worker and each kind of
+    core made and how busy the workers were (training's own count, ItemStats); the start-up
+    (the loaders made, which makes the validation spectra; the first batch; every worker's first
+    spectrum); the workers' memory; where the workers and this process ran."""
     import torch
-    from torch.utils.data import DataLoader
 
-    from lcmsdeconv.synth.dataset import mp_context
+    from lcmsdeconv.nn import cpus
+    from lcmsdeconv.synth.dataset import make_dataloaders
+    from lcmsdeconv.synth.pool import LOADERS
 
-    from .dispatch import OrderedDispatcher
-
-    if kind not in ("dataloader", "dispatcher"):
-        raise ValueError(f"loader kind {kind!r}: dataloader or dispatcher")
-    if opt_out and not cpusets.WINDOWS:
-        raise Unavailable("the power-throttling opt-out is Windows'")
-    procs = _processors()
-    kinds = {p["cpu"]: p.get("kind") for p in procs if p.get("cpu") is not None}
-    plan = cpusets.pin_plan(procs, workers, reserve) if pinned else None
-    allowed = cpusets.current_affinity()
-    log_dir = ctx.work / "workers" / ctx.id
-    init = partial(cpusets.worker_setup, cores=plan["workers"] if plan else None,
-                   opt_out=opt_out, log_dir=str(log_dir))
-    ds, mix = recipe_dataset(ENDLESS, base_seed=4242, crop=crop)  # probe.workers_run's spectra
-    warm = warm_up(mix)  # before the workers start, as training does
-    main_affinity = None  # this process's, once pinned (after its first batch)
+    for name, value, allowed_values in (("loader", loader, LOADERS),
+                                        ("binding", binding, cpus.MODES),
+                                        ("qos", qos, cpus.QOS_MODES),
+                                        ("priority", priority, cpus.PRIORITIES)):
+        if value not in allowed_values:
+            raise ValueError(f"{name} {value!r}: one of {', '.join(allowed_values)}")
+    if qos == "high" and not cpusets.WINDOWS:
+        raise Unavailable("the opt-out of power throttling (--worker-qos high) is Windows'")
+    workers = max(1, int(workers))
+    mix = recipe_mix(crop)
+    warm = warm_up(mix)  # before the workers start, as train() does
+    topo = cpus.detect()
+    kinds = topo.kind_of_cpu()
+    placement = training_placement(topo, cpus.allowed_cpus(), loader, binding, qos, priority,
+                                   workers)
+    main = TrainingProcess(placement)
     pin = torch.cuda.is_available()
-    timed = TimedItems(ds)
-    if kind == "dataloader":
-        source = DataLoader(timed, batch_size=BATCH, num_workers=workers, worker_init_fn=init,
-                            prefetch_factor=2, timeout=600, pin_memory=pin, drop_last=True,
-                            **mp_context(workers))
-    else:
-        source = OrderedDispatcher(timed, range(ENDLESS), BATCH, workers, window=window,
-                                   worker_init=init, pin_memory=pin)
-    batches = iter(source)
     started = time.perf_counter()
-    stamps, waits, arrivals = [], [], []
-    t_warm = first = memory = None
+    main_start = main.start()
+    tl = batches = placed = None
+    arrivals, waits = [], []
+    t_first = t_all = t_warm = None
     k = k_warm = -1
-    per_worker_warm: dict = {}
+    made0 = made = summary = memory = twice = None
+    twice0 = 0
     try:
+        tl, _vl = make_dataloaders(mix, LOADER_ITEMS, BATCH, batch_size=BATCH,
+                                   num_workers=workers, base_seed=LOADER_SEED, pin_memory=pin,
+                                   loader=loader, placement=placement)
+        t_made = time.perf_counter()
+        pool = getattr(tl, "pool", None)
+        stats_ = tl.item_stats
+        if pool is not None:  # its workers run already: train() binds this process now
+            placed = main.bind(pool.pids)
+        batches = iter(tl)
         while True:
             t = time.perf_counter()
             try:
                 batch = next(batches)
-            except StopIteration:
+            except StopIteration:  # every spectrum read: far more than a measurement takes
                 break
             now = time.perf_counter()
+            del batch
             k += 1
-            if first is None:
-                first = now
-                if plan:  # every worker exists by now, started with this process's affinity
-                    main_affinity = cpusets.set_affinity(plan["main"])
-            waits.append(now - t)  # the consumer blocked, waiting for this batch
+            waits.append(now - t)
             arrivals.append(now)
-            for row in batch[-1].tolist():
-                stamps.append((int(row[0]), row[1], row[2]))
-                if t_warm is None:
-                    per_worker_warm[int(row[0])] = per_worker_warm.get(int(row[0]), 0) + 1
+            if t_first is None:
+                t_first = now
+                if pool is None:  # torch's workers run once the first batch is in: train()
+                    placed = main.bind([w.pid for w in getattr(batches, "_workers", [])])
             if t_warm is None:
-                enough = (k + 1 >= warm_rounds * workers if kind == "dataloader" else
-                          (len(per_worker_warm) >= workers
-                           and (k + 1) * BATCH >= warm_rounds * BATCH * workers))
-                if enough:
+                if t_all is None and all(w["items"] > 0 for w in stats_.per_worker()):
+                    t_all = now
+                # torch's DataLoader: warm_rounds whole rounds in, every worker's included
+                if k + 1 >= warm_rounds * workers and (pool is None or t_all is not None):
                     t_warm, k_warm = now, k
-            elif now - t_warm >= seconds:
+                    made0 = stats_.snapshot()
+                    twice0 = pool.duplicates if pool is not None else 0
+            elif now - t_warm >= seconds and (pool is not None or (k - k_warm) % workers == 0):
                 memory = _workers_memory()  # in full flow, before the workers stop
+                made = stats_.snapshot() - made0
+                summary = stats_.summary(made0, kinds, now - t_warm)
+                twice = pool.duplicates - twice0 if pool is not None else None
                 break
     finally:
-        stop = getattr(batches, "_shutdown_workers", None)
-        if stop is not None:
-            stop()  # each DataLoader worker finishes the batch it is making, then ends
-        elif hasattr(batches, "close"):
-            batches.close()
-        if allowed:
-            cpusets.set_affinity(allowed)
-    if t_warm is None:
+        _stop(tl, batches)
+        main.restore()
+    if t_warm is None or k <= k_warm:
         raise RuntimeError(f"the warm-up did not finish: {k + 1} batches in "
                            f"{time.perf_counter() - started:.0f} s")
     t_end = arrivals[-1]
     span = max(t_end - t_warm, 1e-9)
+    if made is None:  # every spectrum read before the time was up
+        made = stats_.snapshot() - made0
+        summary = stats_.summary(made0, kinds, span)
+        twice = pool.duplicates - twice0 if pool is not None else None
     n_items = (k - k_warm) * BATCH
-    window_waits = waits[k_warm + 1:]
-    # each worker's items and busy time inside the timed part
-    per: dict = {}
-    for wid, t0, t1 in stamps:
-        w = per.setdefault(wid, {"items": 0, "busy_s": 0.0, "item_s": []})
-        overlap = min(t1, t_end) - max(t0, t_warm)
-        if overlap > 0:
-            w["busy_s"] += overlap
-        if t_warm < t1 <= t_end:
-            w["items"] += 1
-            w["item_s"].append(t1 - t0)
-    worker_cpu = {}
-    for r in cpusets.worker_records(log_dir):
-        worker_cpu[r.get("worker")] = r
-    rows = []
-    for wid in sorted(per):
-        w = per[wid]
-        rec = worker_cpu.get(wid, {})
-        cpu = rec.get("cpu")
-        rows.append({"worker": wid, "cpu": cpu, "kind": kinds.get(cpu) if cpu is not None else None,
-                     "items": w["items"], "busy_share": round(w["busy_s"] / span, 3),
-                     "item_seconds_median": round(statistics.median(w["item_s"]), 4)
-                     if w["item_s"] else None})
+    timed_waits = waits[k_warm + 1:]
     bins: dict = {}
     for t in arrivals[k_warm + 1:]:
         b = int((t - t_warm) // TIMELINE_SECONDS)
         bins[b] = bins.get(b, 0) + BATCH
-    kinds_summary: dict = {}
-    for r in rows:
-        if r["kind"]:
-            kinds_summary.setdefault(r["kind"], []).append(r["items"] / span)
-    out = {"config": {"kind": kind, "workers": workers, "pinned": pinned, "opt_out": opt_out,
-                      "seconds": seconds, "warm_rounds": warm_rounds, "recipe": recipe(),
-                      "crop": crop or 131072, "pin_memory": pin, "plan": plan,
-                      "main_affinity": main_affinity,
-                      "main_pinned": "after the first batch" if plan else None,
-                      "window": getattr(source, "window", None),
-                      "prefetch_factor": 2 if kind == "dataloader" else None,
+    p = placement
+    out = {"config": {"loader": loader, "binding": binding, "qos": qos, "priority": priority,
+                      "workers": workers, "seconds": seconds, "warm_rounds": warm_rounds,
+                      "recipe": recipe(), "crop": crop or 131072, "pin_memory": pin,
+                      "items": f"from item 0 of seed {LOADER_SEED}", "topology": topo.describe(),
+                      "placement": p.describe() if p is not None else
+                      "as before: workers not bound, below-normal priority, power throttling "
+                      "left to Windows",
+                      "placement_mode": p.mode if p is not None else "none",
+                      "main_cpus": list(p.main) if p is not None else [],
+                      "worker_kinds": list(p.kinds) if p is not None else [],
+                      "window": getattr(tl, "window", None),
+                      "prefetch_factor": 2 if loader == "dataloader" else None,
                       "start_method": (os.environ.get("LCMSDECONV_MP_CONTEXT")
                                        or ("spawn" if cpusets.WINDOWS else "platform default"))},
-           "startup_seconds": round(first - started, 2) if first is not None else None,
-           "warm_up_seconds": round(t_warm - started, 2), "numba_warm_up_seconds": round(warm, 1),
+           "startup_seconds": {"loaders": round(t_made - started, 2),
+                               "first_batch": round(t_first - started, 2),
+                               "every_worker": (round(t_all - started, 2)
+                                                if t_all is not None else None),
+                               "warm": round(t_warm - started, 2)},
+           "numba_warm_up_seconds": round(warm, 1),
            "timed_seconds": round(span, 2), "items": n_items,
            "items_per_second": round(n_items / span, 3),
-           "consumer_wait_share": round(sum(window_waits) / span, 4),
-           "consumer_wait_ms": stats([1000.0 * w for w in window_waits], 1),
-           "per_worker": rows,
-           "per_kind_items_per_second_each": {k2: stats(v, 3) for k2, v in kinds_summary.items()},
+           "consumer_wait_share": round(sum(timed_waits) / span, 4),
+           "consumer_wait_ms": stats([1000.0 * w for w in timed_waits], 1),
+           "made": summary, "per_worker": worker_rows(made, span, kinds),
+           "made_twice": twice,
            "timeline_items_per_second": [round(bins.get(b, 0) / TIMELINE_SECONDS, 2)
                                          for b in range(max(bins) + 1)] if bins else [],
-           "worker_setup": [{k2: v for k2, v in r.items() if k2 != "pid"}
-                            for r in cpusets.worker_records(log_dir)][:64]}
-    out["memory"] = memory
-    if kind == "dispatcher":
-        out["dispatcher"] = {"assembly_ms_per_batch": round(
-            1000.0 * source.assembly_seconds / max(k + 1, 1), 2)}
+           "placed": placed, "main_start": main_start, "memory": memory,
+           "shared_gb": round(float(getattr(tl, "shared_gb", 0.0)), 3)}
     w = out["consumer_wait_ms"]
-    ctx.say(f"{kind}{' pinned' if pinned else ''}{' opt-out' if opt_out else ''}, {workers} "
-            f"workers: {out['items_per_second']:.1f} items/s; a batch waited for "
-            f"{w.get('median', 0):.0f} ms (p90 {w.get('p90', 0):.0f})")
+    busy = (summary or {}).get("workers_busy")
+    ctx.say(f"{loader}, {binding}, {qos}, {workers} worker{'s' if workers != 1 else ''}: "
+            f"{out['items_per_second']:.1f} "
+            f"spectra/s" + (f", workers busy {100 * busy:.0f} %" if busy is not None else "")
+            + f"; a batch waited for {w.get('median', 0):.0f} ms (p90 {w.get('p90', 0):.0f})")
     return out
-

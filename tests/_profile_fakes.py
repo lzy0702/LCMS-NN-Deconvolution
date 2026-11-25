@@ -41,3 +41,20 @@ def write_csv(ctx) -> dict:
     ctx.path("csv", "samples.csv").write_text("t,value\n0,1\n")
     ctx.path("work", "big.pt").write_bytes(b"\0" * 1024)
     return {"rows": 1}
+
+
+def stepper(ctx, steps: int = 8, step_s: float = 0.02, slow_at: int | None = None,
+            slow_s: float = 0.0, phases=("warm",), per_phase: int = 2) -> dict:
+    """Steps under the experiment's watchdog (the limits its plan entry's "stall" holds), as a
+    GPU experiment takes them: step ``slow_at`` (counted from 1) takes ``slow_s``, the others
+    ``step_s``; ``per_phase`` steps in each of ``phases`` but the last, which has the rest."""
+    wd = ctx.watchdog(snapshot=lambda: {"reserved_gb": 1.5})
+    for i in range(1, steps + 1):
+        k = min((i - 1) // per_phase, len(phases) - 1)
+        if i == 1 or ((i - 1) % per_phase == 0 and (i - 1) // per_phase < len(phases)):
+            wd.set_phase(phases[k])
+        wd.begin()
+        time.sleep(slow_s if i == slow_at else step_s)
+        wd.end()
+    wd.end_phase()
+    return {"steps": steps, "memory": wd.memory}

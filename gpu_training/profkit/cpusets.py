@@ -26,7 +26,6 @@ The Windows constants used here, from the Windows SDK (processthreadsapi.h, winn
 
 from __future__ import annotations
 
-import json
 import os
 import struct
 import sys
@@ -275,27 +274,6 @@ def usable(procs: list[dict]) -> list[dict]:
     return sorted(out, key=lambda p: (-(p.get("efficiency_class") or 0), p["cpu"]))
 
 
-def pin_plan(procs: list[dict], workers: int, reserve: int | None = None) -> dict:
-    """Where each process goes when pinned: ``reserve`` performance cores for the main
-    (training) process, by default 2, or 1 where the workers need every other core; one core
-    for each worker, the remaining performance cores first, then the efficient ones (two
-    workers share a core only where there are more workers than cores). ``idle``: the cores
-    left over."""
-    order = usable(procs)
-    total = len(order)
-    if reserve is None:
-        reserve = 2 if workers <= total - 2 else (1 if workers <= total - 1 else 0)
-    reserve = max(0, min(reserve, total - 1)) if total > 1 else 0
-    main = [p["cpu"] for p in order[:reserve]] or [p["cpu"] for p in order]
-    rest = [p["cpu"] for p in order[reserve:]] or main
-    cores = [rest[i % len(rest)] for i in range(workers)]
-    kinds = {p["cpu"]: p.get("kind", "uniform") for p in order}
-    return {"main": main, "workers": cores, "idle": [c for c in rest[workers:]],
-            "reserve": reserve, "shared": workers > len(rest),
-            "worker_kinds": {k: sum(1 for c in cores if kinds.get(c) == k)
-                             for k in sorted(set(kinds.values()))}}
-
-
 def current_affinity() -> list[int] | None:
     try:
         import psutil
@@ -416,43 +394,3 @@ def priority_now() -> dict:
         except Exception as exc:  # the record only
             return {"error": str(exc)}
     return {"nice": os.getpriority(os.PRIO_PROCESS, 0) if hasattr(os, "getpriority") else None}
-
-
-def worker_setup(worker_id: int, cores: list | None = None, opt_out: bool = False,
-                 log_dir: str | None = None) -> None:
-    """A data worker's start (DataLoader's worker_init_fn, or the dispatcher's): lowered priority
-    as in training (lcmsdeconv.synth.dataset.worker_init), then pinned to ``cores[worker_id]``
-    and opted out of power throttling where asked. What it got is written to ``log_dir``
-    (one JSON file per worker) for the record, with the affinity it started with."""
-    from lcmsdeconv.synth.dataset import worker_init
-
-    worker_init(worker_id)
-    got: dict = {"worker": worker_id, "pid": os.getpid(),
-                 "affinity_at_start": current_affinity()}
-    try:
-        if cores:
-            got["cpu"] = int(cores[worker_id % len(cores)])
-            got["affinity"] = set_affinity([got["cpu"]])
-        if opt_out:
-            got["throttling"] = set_power_throttling("opt_out")
-    except Exception as exc:  # the worker runs all the same; the record says what failed
-        got["error"] = f"{type(exc).__name__}: {exc}"
-    got["priority"] = priority_now()
-    if log_dir:
-        try:
-            Path(log_dir).mkdir(parents=True, exist_ok=True)
-            (Path(log_dir) / f"worker_{worker_id}_{os.getpid()}.json").write_text(
-                json.dumps(got), encoding="utf-8")
-        except OSError:
-            pass
-
-
-def worker_records(log_dir: str | Path) -> list[dict]:
-    """What each worker started with :func:`worker_setup` got, by worker."""
-    out = []
-    for f in sorted(Path(log_dir).glob("worker_*.json")):
-        try:
-            out.append(json.loads(f.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            continue
-    return sorted(out, key=lambda r: (r.get("worker", 0), r.get("pid", 0)))

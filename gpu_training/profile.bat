@@ -1,8 +1,8 @@
 @echo off
 rem Measures this computer for the developers and packs runs\profile_upload_*.zip to send
 rem back: GPU training steps and the synthesis of training spectra, each experiment in a
-rem process of its own (about 45-50 minutes after the setup; keep the computer otherwise
-rem idle meanwhile).
+rem process of its own (about 35 minutes after the setup, at most an hour; keep the computer
+rem otherwise idle meanwhile).
 rem The setup runs first where it no longer holds (gpu_training\setup.py --if-needed): the
 rem environment .venv is kept and PyTorch is not installed again.
 rem Options are passed on, for example:  gpu_training\profile.bat --only gpu --minutes 20

@@ -1,8 +1,10 @@
-"""The end-to-end check: a short real training run (scripts/train_charge_net.py with
-train_all's arguments for its window run: the recipe, the full LadderNet of the window view with
-isotope-charge channels, the learning rate and the seed), with the GPU speedups the GPU
-experiments found best and the number of data workers the CPU experiments found best, written
-to a throwaway output in the run's folder.
+"""The end-to-end check: a short real training run exactly as train_all trains its window run on
+this computer, from setup's machine.json (train_all_choice: scripts/train_charge_net.py with
+train_all's arguments for the run, the recipe, the full LadderNet of the window view with
+isotope-charge channels, the learning rate and the seed; the GPU speedups and head chunk
+train_all.speedups_for and train_all.head_chunk_for choose; the data workers, their data
+loading and its options, train_all.data_loading_for and train_all.data_flags; the RAM budget
+and the GPU memory cap), written to a throwaway output in the run's folder.
 
 Two epochs of 1600 spectra, 400 steps of 4 each. At the start of every epoch training's
 persistent DataLoader workers all start a batch at once (the loader primes prefetch_factor
@@ -10,8 +12,8 @@ batches per worker), so the GPU first waits about one batch time: about 5 % of a
 steps, where it was a fifth of one of 80. The first epoch also holds the workers' start; the
 second is the one to read. Records each epoch's pace from the run's log (its share of time
 waiting for data, the GPU's share busy and its milliseconds a step, the allocator's retries,
-spectra per second), and its steady pace without its first PRIMED x workers steps, from the
-times the run's step lines reached the console."""
+spectra per second, what the workers made and how busy they were), and its steady pace without
+its first PRIMED x workers steps, from the times the run's step lines reached the console."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ import subprocess
 import sys
 import time
 
-from .common import ROOT, read_json
+from .common import ROOT, THREADS_ADDED_ENV, read_json
 from .gpu import BATCH, GPU_MEMORY_GB, require_cuda
 
 #: a pace line's speed: "epoch took 1.2 min; 41 spectra/s; ..."
@@ -52,6 +54,50 @@ def run_args(view: str = "window", size: str = "full", epochs: int = 2, train_le
     return args
 
 
+def train_all_choice(machine: dict, view: str = "window") -> dict:
+    """How train_all, started without options, trains its run of ``view`` on this computer, by
+    setup's machine.json (``machine``) and train_all's own functions: the RAM budget and the GPU
+    memory cap (machine.json's, else train_all's defaults); the data loading
+    (train_all.data_loading_for: setup's choice, None for train_charge_net.py's defaults, which
+    are train_all.DATA_DEFAULTS) and its options (train_all.data_flags); the data workers
+    (machine.json's, refitted to the RAM budget where train_all.main refits them, else
+    lcmsdeconv.nn.machine.auto_workers); the GPU speedups (train_all.speedups_for) and the head
+    chunk (train_all.head_chunk_for at the data workers' rate, train_all.data_rate)."""
+    import train_all
+
+    from lcmsdeconv.nn.machine import (
+        MAIN_GB,
+        ORDERED_GB_PER_WORKER,
+        auto_workers,
+        cpu_workers,
+        default_ram_budget_gb,
+        ram_workers,
+    )
+
+    ram = float(machine.get("ram_budget_gb") or default_ram_budget_gb())
+    gpu = float(machine.get("gpu_memory_gb") or GPU_MEMORY_GB)
+    data = train_all.data_loading_for(machine)
+    loader = (data or train_all.DATA_DEFAULTS)["loader"]
+    slots_gb = ORDERED_GB_PER_WORKER if loader == "ordered" else 0.0
+    rec = machine.get("data_loader")
+    setup_loader = rec.get("loader") if isinstance(rec, dict) else None
+    workers = machine.get("workers")
+    if machine.get("worker_gb") and (ram != machine.get("ram_budget_gb")
+                                     or (slots_gb and setup_loader != "ordered")):
+        fit = ram_workers(ram, float(machine["worker_gb"]) + slots_gb,
+                          machine.get("main_gb", MAIN_GB))
+        workers = max(1, min(cpu_workers(), fit))
+    if workers is None:
+        workers = auto_workers(ram, loader=loader)
+    workers = int(workers)
+    rate = train_all.data_rate(machine, workers, data)
+    return {"view": view, "speedups": list(train_all.speedups_for(machine, view)),
+            "chunk": train_all.head_chunk_for(machine, view, gpu, train_all.BATCH, rate),
+            "workers": workers, "data": data, "data_flags": train_all.data_flags(data),
+            "data_words": train_all.data_words(data), "data_rate": rate, "ram_gb": ram,
+            "gpu_memory_gb": gpu}
+
+
 def steady_pace(step_times: list, skip: int, batch: int = BATCH) -> dict:
     """Each epoch's pace from the arrival of its step lines (``(epoch, step, seconds)``) without
     its first ``skip`` steps: spectra per second from its first step line at or after ``skip``
@@ -69,27 +115,34 @@ def steady_pace(step_times: list, skip: int, batch: int = BATCH) -> dict:
     return out
 
 
-def train_check(ctx, view: str = "window", speedups=(), chunk: int | None = None,
-                workers: int = 20, epochs: int = 2, train_len: int = 1600, val_len: int = 8,
-                minutes: float = 12.0, ram_gb: float | None = None, size: str = "full",
-                label: str = "best") -> dict:
+def train_check(ctx, view: str = "window", workers: int | None = None, epochs: int = 2,
+                train_len: int = 1600, val_len: int = 8, minutes: float = 12.0,
+                ram_gb: float | None = None, size: str = "full",
+                label: str = "train_all's choice") -> dict:
+    """The short training run of ``view`` as train_all trains it on this computer
+    (train_all_choice), with the check's network size, epochs and spectra; ``workers`` and
+    ``ram_gb`` in place of train_all's (smoke runs and tests)."""
     require_cuda()
-    from lcmsdeconv.nn.machine import default_ram_budget_gb
-
     machine = read_json(ROOT / "gpu_training" / "machine.json") or {}
-    ram = float(ram_gb or machine.get("ram_budget_gb") or default_ram_budget_gb())
+    choice = train_all_choice(machine, view)
+    workers = int(workers or choice["workers"])
+    ram = float(ram_gb or choice["ram_gb"])
+    speedups, chunk, flags = choice["speedups"], choice["chunk"], choice["data_flags"]
     out_dir = ctx.run_dir / "e2e"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "ladder_e2e.pt"
     args = run_args(view, size, epochs, train_len, val_len)
+    # train_all.run_stage's command, its options in its order, and the check's own at the end
     cmd = [sys.executable, str(ROOT / "scripts" / "train_charge_net.py"), "--device", "cuda",
-           *args, "--batch-size", str(BATCH), "--workers", str(workers), "--gpu-speedups",
-           ",".join(speedups) or "none", *(["--head-chunk", str(chunk)] if chunk else []),
-           "--max-gpu-memory-gb", f"{GPU_MEMORY_GB:g}", "--max-ram-gb", f"{ram:g}",
-           "--out", str(out), "--restart", "--keep-pause-files", "--save-every", "1000",
-           "--minutes", f"{minutes:g}"]
+           *args, *(["--head-chunk", str(chunk)] if chunk else []), "--gpu-speedups",
+           ",".join(speedups) or "none", "--workers", str(workers), *flags,
+           "--max-ram-gb", f"{ram:g}", "--max-gpu-memory-gb", f"{choice['gpu_memory_gb']:g}",
+           "--batch-size", str(BATCH), "--out", str(out), "--keep-pause-files", "--restart",
+           "--save-every", "1000", "--minutes", f"{minutes:g}"]
     print("> " + " ".join(cmd[1:]), flush=True)
-    env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1")  # as train_all.run_stage's
+    for var in [*os.environ.get(THREADS_ADDED_ENV, "").split(","), THREADS_ADDED_ENV]:
+        env.pop(var, None)  # the runner's one thread per experiment: training sets its own
     lines, step_times = [], []
     started = time.perf_counter()
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -137,7 +190,11 @@ def train_check(ctx, view: str = "window", speedups=(), chunk: int | None = None
             f.unlink(missing_ok=True)
     errors = [ln for ln in lines if "Error" in ln or "error" in ln][-5:]
     return {"config": {"view": view, "speedups": list(speedups), "head_chunk": chunk,
-                       "workers": workers, "epochs": epochs, "train_len": train_len,
+                       "workers": workers, "data_loading": choice["data"],
+                       "data_words": choice["data_words"], "data_flags": flags,
+                       "gpu_memory_gb": choice["gpu_memory_gb"],
+                       "train_all": {k: choice[k] for k in ("workers", "ram_gb", "data_rate")},
+                       "epochs": epochs, "train_len": train_len,
                        "steps": epochs * train_len // BATCH, "val_len": val_len, "size": size,
                        "recipe": args[args.index("--recipe") + 1] if "--recipe" in args else None,
                        "ram_gb": ram, "label": label, "steady_skips_steps": skip,

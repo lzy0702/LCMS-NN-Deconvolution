@@ -6,10 +6,10 @@ record.
   power scheme, the memory, the GPU, its driver and PyTorch;
 - :mod:`.gpu`: training steps of both views of the full LadderNet on the runs' real batches
   (step times, phases, kernels, memory, nvidia-smi during a steady loop);
-- :mod:`.cpu`: synthesis of training spectra on each core, with and without power throttling,
-  and by many workers at once (PyTorch's DataLoader as training uses it, and the
-  order-preserving dynamic dispatcher of :mod:`.dispatch`);
-- :mod:`.e2e`: a short real training run;
+- :mod:`.cpu`: training's own data loading (torch's DataLoader and the ordered loader of
+  lcmsdeconv.synth.pool, the workers placed as training places them), synthesis of training
+  spectra by one worker on a core of each kind, with and without power throttling;
+- :mod:`.e2e`: a short real training run, exactly as train_all trains;
 - :mod:`.cpusets`, :mod:`.smi`, :mod:`.common`: what they share.
 """
 

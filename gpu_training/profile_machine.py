@@ -6,29 +6,40 @@ file to send back.
     bash gpu_training/profile.sh             (Linux)
     python gpu_training/profile_machine.py [--only gpu|cpu|e2e] [--minutes N] [--smoke]
 
-About 45-50 minutes on a computer like the one the package was made for (24 logical
-processors, an RTX 4080 SUPER); --minutes caps it (default DEFAULT_MINUTES): an experiment that
-would not fit is skipped and recorded as such, except the environment, the GPU's batches and the
-short training run, which always run. Keep the computer otherwise idle while it runs. It
-changes no setting of the computer: priorities, affinities and power throttling are set for
-its own processes only, which end with each experiment.
+About 35 minutes on a computer like the one the package was made for (24 logical processors, an
+RTX 4080 SUPER), at most --minutes (default DEFAULT_MINUTES). Keep the computer otherwise idle
+while it runs. It changes no setting of the computer: priorities, affinities and power
+throttling are set for its own processes only, which end with each experiment.
+
+The plan, in order. An experiment that would not fit the time left is skipped and recorded as
+such, except the environment, the GPU's batches and the training run, which always run; the
+time of the reserved experiments still to come (about 20 minutes in all) is kept from the
+others, which are skipped, or given less time, first.
 
 1. The environment: the processor and each logical processor's kind (performance or
    efficient), Windows and its power scheme and power mode, the memory, the GPU and its driver,
    PyTorch, nvidia-smi, and setup's record of this computer (gpu_training/machine.json).
 2. The GPU (both views of the full LadderNet as train_all trains them, on train_all's recipe,
-   4 spectra a step, under the 14 GB cap, on the runs' first training batches): the step time
-   of each GPU speedup alone, all four, setup's choice and other head chunkings; the step split
-   into its phases; the CUDA kernels and operators that take the time; memory peaks and
-   allocator retries over 40 batches with several allocator settings; nvidia-smi during a
-   steady minute; and for information bf16 autocast and 8 spectra a step.
-3. The processor: the speed of each logical processor alone; power throttling and priority on
-   one core of each kind; 20, 22 and 23 workers at once through PyTorch's DataLoader as training
-   uses it, pinned or not, opted out of power throttling or not, and through an
-   order-preserving dynamic dispatcher (profkit/dispatch.py); where an item's time goes.
-4. A short real training run with what was found best (two epochs of 400 steps).
-5. Last, what is for information or least likely to matter: bf16 autocast, 8 spectra a step,
-   nvidia-smi on the comb view, three more allocator settings.
+   4 spectra a step, under the 14 GB cap, on the runs' first training batches; every step
+   experiment measures the at-cap batch first). Reserved: each view's step without speedups
+   (the baseline every later GPU experiment's timeout and step limit derive from), then setup's
+   choice of each view, what training runs. Then each GPU speedup alone, all four, and setup's
+   speedups at other head chunkings (16 and 32 charges at a time, all at once). A step far
+   slower than its baseline ends the experiment as "pathological", with the steps and memory
+   measured before it, and a configuration with a part that failed so at the same chunking is
+   not measured.
+3. The processor, reserved (about 15 minutes): training's own data loading (torch's DataLoader
+   and the ordered loader; the workers not bound, sharing the cores the training process does
+   not keep, or each on a core of its own; power throttling left to Windows or opted out of) at
+   training's number of data workers (22 of 24 logical processors) and two fewer; one worker
+   alone on two performance and two efficient cores; power throttling and priority on one core
+   of each kind.
+4. A short real training run exactly as train_all trains its window run here (two epochs of
+   400 steps): setup's GPU speedups and head chunk, its data workers and their data loading.
+5. Then what is detail or information, the first skipped should time run out: the phases,
+   kernels and memory of each view's best configuration, nvidia-smi during a steady minute,
+   where a spectrum's time goes; bf16 autocast, 8 spectra a step, nvidia-smi on the comb view,
+   more allocator settings.
 
 Everything goes to runs/profile_<date-time>/ (results.json with one record per experiment,
 summary.txt, each experiment's log, CSV) and is packed into runs/profile_upload_<date-time>.zip:
@@ -53,12 +64,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "gpu_training"))
 
 from profkit import common  # noqa: E402
-from profkit.common import THREAD_VARS, Unavailable, read_json, write_json  # noqa: E402
+from profkit.common import (  # noqa: E402
+    THREAD_VARS,
+    Pathological,
+    Unavailable,
+    read_json,
+    write_json,
+)
 
 RUNS = ROOT / "runs"
 WINDOWS = sys.platform == "win32"
-#: the time budget: the plan's estimate is about 42 minutes on the computer the package was made
-#: for, and this leaves room for a slower one (an experiment that would not fit is skipped)
+#: the time budget: the plan's estimate is about 34 minutes on the computer the package was made
+#: for, and this leaves room for a slower one and for experiments ended as pathological or at
+#: their timeout (an experiment that would not fit is skipped, the reserved ones last)
 DEFAULT_MINUTES = 60.0
 GROUPS = ("gpu", "cpu", "e2e")
 #: what the upload holds: files of these kinds, each at most MAX_FILE_MB
@@ -67,12 +85,60 @@ MAX_FILE_MB = 25.0
 #: the end of setup.log packed with the results
 SETUP_LOG_TAIL = 300_000
 #: an experiment's estimated seconds on the computer the package was made for, and its timeout
-#: (the end-to-end check: the workers' start, two epochs of 1600 spectra at 25-40 a second,
-#: their validation)
-COSTS = {"env": (15, 300), "prepare": (45, 1200), "steps": (22, 900), "phases": (20, 900),
-         "profile": (35, 1200), "memory": (22, 900), "smi": (75, 900), "autocast": (35, 1200),
-         "batch8": (30, 1200), "cores": (110, 2400), "throttle": (50, 1800),
-         "cprofile": (30, 1200), "loader": (65, 900), "e2e": (270, 1800)}
+#: until its view's baseline has run (then Runner.derived_timeout; the end-to-end check: the
+#: workers' start, two epochs of 1600 spectra at 30-40 a second, their validation; a loader
+#: experiment: its workers' start, twice for torch's DataLoader, which starts its own for the
+#: validation spectra, the warm-up and profkit.cpu.LOADER_SECONDS). A step experiment took 11 s
+#: on that computer, the end-to-end check 112 s
+COSTS = {"env": (15, 300), "prepare": (45, 1200), "steps": (15, 300), "phases": (20, 300),
+         "profile": (35, 600), "memory": (22, 300), "smi": (75, 600), "autocast": (35, 600),
+         "batch8": (30, 600), "cores": (35, 300), "throttle": (50, 600),
+         "cprofile": (30, 600), "loader": (60, 240), "e2e": (180, 1200)}
+#: once a view's step without speedups (its baseline, gpu.steps.<view>.none; the other view's
+#: until it has run) has run, a GPU experiment is given TIMEOUT_FACTOR times the baseline's
+#: wall time, in proportion to its kind's estimate against a step experiment's, within
+#: [TIMEOUT_FLOOR, TIMEOUT_CEILING] seconds; the floor leaves the process its start (PyTorch,
+#: the batches) and its first steps, which may compile and autotune
+TIMEOUT_FACTOR, TIMEOUT_FLOOR, TIMEOUT_CEILING = 8.0, 90.0, 600.0
+#: each GPU experiment's step limit (its plan entry's "stall", read by
+#: profkit.common.StallWatchdog): a step after the first STALL_EXEMPT of a start (which may
+#: compile and autotune) that takes more than STALL_FACTOR times the baseline's median (at least
+#: STALL_FLOOR_S; STALL_NO_BASELINE_S before any baseline) ends the experiment as
+#: "pathological"; a step that never returns is ended, with its process, at the experiment's
+#: timeout. Kinds whose steps hold more than a training step of 4 spectra have their limit
+#: scaled (STALL_WEIGHTS). On the computer the package was made for a step took 0.1-0.16 s and
+#: the faulty ones 15-32 s
+STALL_FACTOR, STALL_FLOOR_S, STALL_NO_BASELINE_S, STALL_EXEMPT = 20.0, 5.0, 15.0, 2
+STALL_WEIGHTS = {"batch8": 2.0, "profile": 3.0}
+#: how a step experiment ended that makes every configuration of its view and head chunking
+#: with all of its speedups (and more) not worth measuring: it would only repeat the fault
+FAULTS = ("timeout", "pathological")
+#: the time kept for the reserved experiments still to run (the GPU's baselines and setup's
+#: choices, the processor block, the training run) while the others run: their
+#: estimates at this computer's pace times RESERVE_MARGIN, at most RESERVE_SHARE of the budget.
+#: The others are skipped, and their timeouts shortened, rather than eat into it
+RESERVE_SHARE, RESERVE_MARGIN = 0.6, 1.2
+#: best_config leaves out a configuration whose steps were unsteady (the 90th percentile of its
+#: steps on the real batches above UNSTEADY_P90 times their median) or whose reserved memory
+#: came near the cap (its peak at least NEAR_CAP_SHARE of the cap less CONTEXT_GB, the CUDA
+#: context's share: lcmsdeconv.nn.train._cap_gpu_memory). On the computer the package was made
+#: for such configurations took seconds a step, with no out-of-memory error, at 13.2 GB reserved
+#: under a cap of 13.25 for tensors, where the healthy ones stayed at 11.5 GB or less
+UNSTEADY_P90, NEAR_CAP_SHARE, CONTEXT_GB = 2.0, 0.95, 0.75
+#: the ways of loading the data the processor block measures (train_charge_net.py's --loader,
+#: --cpu-binding and --worker-qos; the workers at below-normal priority, as training runs them):
+#: at training's number of data workers all of them, at two fewer the first LESS_WORKER_WAYS.
+#: First torch's DataLoader as train_all runs it unless setup chose otherwise, then opted out
+#: of power throttling (the first remedy should Windows throttle the workers), the ordered
+#: loader with each worker on a core of its own, with and without, then the other bindings.
+#: Each worker on a core of its own is the ordered loader's alone: train() makes torch's
+#: DataLoader share the cores instead. The opt-out is Windows': elsewhere those ways are left out
+LOADER_WAYS = (("dataloader", "none", "system"), ("dataloader", "none", "high"),
+               ("ordered", "core", "system"), ("ordered", "core", "high"),
+               ("dataloader", "pool", "system"), ("ordered", "none", "system"),
+               ("ordered", "none", "high"), ("ordered", "pool", "system"),
+               ("ordered", "pool", "high"))
+LESS_WORKER_WAYS = 4
 #: seconds a stopped experiment's process is given to end before the runner goes on without it
 STOP_WAIT = 30.0
 #: PYTORCH_CUDA_ALLOC_CONF of each memory variant (None: the default allocator)
@@ -104,6 +170,10 @@ class Console:
 # ------------------------------------------------------------------ the plan
 def entry(eid: str, group: str, title: str, fn: str, kind: str, params: dict | None = None,
           smoke: bool = False, **more) -> dict:
+    """A plan entry. ``more``: ``needs`` (ids that must have run ok first), ``essential`` (runs
+    whatever the budget), ``reserved`` (its time is kept from the experiments before it that
+    are neither: RESERVE_SHARE), ``resolve``, ``view``, ``env``, ``workers``, ``variant``,
+    ``setup_choice``."""
     est, timeout = COSTS[kind]
     return {"id": eid, "group": group, "title": title, "fn": fn, "kind": kind,
             "params": params or {}, "estimate": max(3, est // 4) if smoke else est,
@@ -111,75 +181,92 @@ def entry(eid: str, group: str, title: str, fn: str, kind: str, params: dict | N
 
 
 def setup_choices(views=("window", "comb")) -> dict:
-    """What training uses on this computer, from setup's machine.json as train_all reads it:
-    each view's GPU speedups and head chunk, the data workers, the RAM budget."""
-    from train_all import BATCH, data_rate, head_chunk_for, speedups_for
+    """What training uses on this computer, from setup's machine.json as train_all reads it
+    (profkit.e2e.train_all_choice): each view's GPU speedups and head chunk, the data workers
+    and their data loading."""
+    from profkit.e2e import train_all_choice
 
     machine = read_json(ROOT / "gpu_training" / "machine.json") or {}
-    gpu_gb = float(machine.get("gpu_memory_gb") or 14.0)
-    workers = machine.get("workers")
-    rate = data_rate(machine, int(workers)) if workers else None
-    return {"machine": machine, "workers": workers,
-            "views": {v: {"speedups": speedups_for(machine, v),
-                          "chunk": head_chunk_for(machine, v, gpu_gb, BATCH, rate)}
-                      for v in views}}
+    chosen = {v: train_all_choice(machine, v) for v in views}
+    first = chosen[views[0]]
+    return {"machine": machine, "workers": first["workers"], "data": first["data"],
+            "views": {v: {"speedups": c["speedups"], "chunk": c["chunk"]}
+                      for v, c in chosen.items()}}
 
 
-def gpu_plan(smoke: bool, choices: dict) -> tuple[list, list]:
-    """The GPU experiments: those that always run, and those run last, most useful first: bf16
-    autocast and 8 spectra a step (for information), nvidia-smi on the comb view, then the
-    allocator settings least likely to matter."""
+def gpu_plan(smoke: bool, choices: dict) -> dict:
+    """The GPU experiments by their part of the plan (build_plan orders them): "prepare"; "core",
+    reserved: each view's step without speedups (the baseline the later GPU experiments'
+    timeouts and step limits derive from), then setup's choice of each view, what training runs;
+    "matrix": each speedup alone, all four, setup's speedups at other head chunkings (16 and 32
+    charges at a time, all at once where setup chunks); "detail": the phases, kernels and memory
+    of each view's best, nvidia-smi on the window view's; "info", run last, most useful first:
+    bf16 autocast and 8 spectra a step (for information), nvidia-smi on the comb view, the
+    allocator settings least likely to matter. Every step experiment measures its at-cap batch
+    first (its time and memory whatever the real batches then do)."""
     from lcmsdeconv.nn.train import GPU_SPEEDUPS
 
     sz = ({"size": "small", "crop": 16384} if smoke else {})
     few = ({"synced": 4, "free": 2, "warm": 1, "cap_warm": 1, "cap_timed": 1} if smoke else {})
-    main = [entry("gpu.prepare", "gpu", "the runs' first 40 training batches, the at-cap batch "
-                  "and the weights", "profkit.gpu:prepare", "prepare",
-                  {"batches": 4 if smoke else 40, **({"workers": 2} if smoke else {}), **sz},
-                  smoke, essential=True)]
-    later = []
+    prepare = entry("gpu.prepare", "gpu", "the runs' first 40 training batches, the at-cap "
+                    "batch and the weights", "profkit.gpu:prepare", "prepare",
+                    {"batches": 4 if smoke else 40, **({"workers": 2} if smoke else {}), **sz},
+                    smoke, essential=True)
+    core: list = []
+    matrix: list = []
     needs = ["gpu.prepare"]
+
+    def step_entry(view, name, sp, chunk, title_how, **more):
+        return entry(f"gpu.steps.{view}.{name}", "gpu",
+                     f"steps, {view} view, {'+'.join(sp) or 'no speedups'}, {title_how}",
+                     "profkit.gpu:steps", "steps",
+                     {"view": view, "speedups": list(sp), "chunk": chunk, "label": name,
+                      "cap_first": True, **few, **sz}, smoke, needs=needs, view=view, **more)
+
+    setup_entries = []
     for view in ("window", "comb"):
         choice = choices["views"][view]
         chunk, greedy = choice["chunk"], list(choice["speedups"])
+        how = "all charges at once" if chunk is None else f"{chunk} charges at a time"
         configs = [("none", []), *((s, [s]) for s in GPU_SPEEDUPS), ("all", list(GPU_SPEEDUPS))]
         if greedy and greedy not in [c for _n, c in configs]:
             configs.append(("greedy", greedy))
-        how = "all charges at once" if chunk is None else f"{chunk} charges at a time"
-        for name, sp in configs:
-            main.append(entry(f"gpu.steps.{view}.{name}", "gpu",
-                              f"steps, {view} view, {'+'.join(sp) or 'no speedups'}, {how}",
-                              "profkit.gpu:steps", "steps",
-                              {"view": view, "speedups": sp, "chunk": chunk, "label": name,
-                               **few, **sz}, smoke, needs=needs, view=view))
         greedy_name = next((n for n, c in configs if c == greedy), "greedy")
-        for c in ([None, 16] + ([8, 32] if view == "window" else [])):
+        for name, sp in configs:
+            if name == "none":
+                core.append(step_entry(view, name, sp, chunk, how, reserved=True))
+            elif name == greedy_name:  # setup's choice: what training runs
+                setup_entries.append(step_entry(view, name, sp, chunk, how + " (setup's choice)",
+                                                reserved=True, setup_choice=True))
+            else:
+                matrix.append(step_entry(view, name, sp, chunk, how))
+        for c in (None, 16, 32):
             if c == chunk:
-                continue  # measured above with setup's choice
+                continue  # setup's choice, measured above
             tag = "unchunked" if c is None else f"chunk{c}"
-            main.append(entry(f"gpu.steps.{view}.{greedy_name}.{tag}", "gpu",
-                              f"steps, {view} view, {'+'.join(greedy) or 'no speedups'}, "
-                              f"{'all charges at once' if c is None else f'{c} at a time'}",
-                              "profkit.gpu:steps", "steps",
-                              {"view": view, "speedups": greedy, "chunk": c,
-                               "label": f"{greedy_name}.{tag}", **few, **sz},
-                              smoke, needs=needs, view=view))
+            matrix.append(step_entry(view, f"{greedy_name}.{tag}", greedy, c,
+                                     "all charges at once" if c is None else f"{c} at a time"))
+    core += setup_entries  # both baselines first: every later limit derives from them
     best = {"label": "best"}
+    detail: list = []
+    info: list = []
     for view in ("window", "comb"):
-        main.append(entry(f"gpu.phases.{view}", "gpu", f"phases of the best step, {view} view",
-                          "profkit.gpu:phases", "phases",
-                          {"view": view, **best, **({"steps_n": 4, "warm": 1} if smoke else {}),
-                           **sz}, smoke, needs=needs, resolve={"best": view}))
-        chunk = choices["views"][view]["chunk"]
-        main.append(entry(f"gpu.profile.{view}.baseline", "gpu",
-                          f"profile, {view} view, no speedups", "profkit.gpu:profile", "profile",
-                          {"view": view, "speedups": [], "chunk": chunk, "label": "none",
-                           **({"steps_n": 1, "warm": 1} if smoke else {}), **sz}, smoke,
-                          needs=needs))
-        main.append(entry(f"gpu.profile.{view}.best", "gpu", f"profile, {view} view, the best",
-                          "profkit.gpu:profile", "profile",
-                          {"view": view, **best, **({"steps_n": 1, "warm": 1} if smoke else {}),
-                           **sz}, smoke, needs=needs, resolve={"best": view}))
+        detail.append(entry(f"gpu.phases.{view}", "gpu", f"phases of the best step, {view} view",
+                            "profkit.gpu:phases", "phases",
+                            {"view": view, **best,
+                             **({"steps_n": 4, "warm": 1} if smoke else {}), **sz},
+                            smoke, needs=needs, resolve={"best": view}))
+        detail.append(entry(f"gpu.profile.{view}.best", "gpu", f"profile, {view} view, the best",
+                            "profkit.gpu:profile", "profile",
+                            {"view": view, **best,
+                             **({"steps_n": 1, "warm": 1} if smoke else {}), **sz},
+                            smoke, needs=needs, resolve={"best": view}))
+    chunk = choices["views"]["window"]["chunk"]
+    detail.append(entry("gpu.profile.window.baseline", "gpu", "profile, window view, no speedups",
+                        "profkit.gpu:profile", "profile",
+                        {"view": "window", "speedups": [], "chunk": chunk, "label": "none",
+                         **({"steps_n": 1, "warm": 1} if smoke else {}), **sz}, smoke,
+                        needs=needs))
     last_memory = []  # combined settings, expandable segments (which Windows may lack), async
     for view, variants in (("window", ("default", "gc08", "split512")),
                            ("comb", ("default", "gc08", "split512")),
@@ -193,93 +280,119 @@ def gpu_plan(smoke: bool, choices: dict) -> tuple[list, list]:
                        "batches": 4 if smoke else 40, **sz}, smoke, needs=needs,
                       resolve={"best": view},
                       env={"PYTORCH_CUDA_ALLOC_CONF": conf} if conf else {"PYTORCH_CUDA_ALLOC_CONF": None})
-            (last_memory if variant in ("gc08_split512", "expandable", "async")
-             else main).append(e)
-    main.append(entry("gpu.smi.window", "gpu", "a steady minute with nvidia-smi, window view",
-                      "profkit.gpu:smi_loop", "smi",
-                      {"view": "window", **best, "seconds": 5.0 if smoke else 60.0, **sz},
-                      smoke, needs=needs, resolve={"best": "window"}))
+            (detail if variant == "default" else last_memory).append(e)
+    detail.append(entry("gpu.smi.window", "gpu", "a steady minute with nvidia-smi, window view",
+                        "profkit.gpu:smi_loop", "smi",
+                        {"view": "window", **best, "seconds": 5.0 if smoke else 60.0, **sz},
+                        smoke, needs=needs, resolve={"best": "window"}))
     for view in ("window", "comb"):
-        later.append(entry(f"gpu.autocast.{view}", "gpu",
-                           f"bf16 autocast (information), {view} view", "profkit.gpu:autocast",
-                           "autocast", {"view": view, **best,
-                                        **({"steps_n": 2, "warm": 1} if smoke else {}), **sz},
-                           smoke, needs=needs, resolve={"best": view}))
-        later.append(entry(f"gpu.batch8.{view}", "gpu", f"8 spectra a step (information), {view} "
-                           f"view", "profkit.gpu:batch8", "batch8",
-                           {"view": view, **best, **({"steps_n": 2, "warm": 1} if smoke else {}),
-                            **sz}, smoke, needs=needs, resolve={"best": view}))
+        info.append(entry(f"gpu.autocast.{view}", "gpu",
+                          f"bf16 autocast (information), {view} view", "profkit.gpu:autocast",
+                          "autocast", {"view": view, **best,
+                                       **({"steps_n": 2, "warm": 1} if smoke else {}), **sz},
+                          smoke, needs=needs, resolve={"best": view}))
+        info.append(entry(f"gpu.batch8.{view}", "gpu", f"8 spectra a step (information), {view} "
+                          f"view", "profkit.gpu:batch8", "batch8",
+                          {"view": view, **best, **({"steps_n": 2, "warm": 1} if smoke else {}),
+                           **sz}, smoke, needs=needs, resolve={"best": view}))
     e = entry("gpu.smi.comb", "gpu", "half a steady minute with nvidia-smi, comb view",
               "profkit.gpu:smi_loop", "smi",
               {"view": "comb", **best, "seconds": 5.0 if smoke else 30.0, **sz}, smoke,
               needs=needs, resolve={"best": "comb"})
     e["estimate"] = e["estimate"] // 2
-    later.append(e)
-    return main, later + last_memory
+    info.append(e)
+    return {"prepare": [prepare], "core": core, "matrix": matrix, "detail": detail,
+            "info": info + last_memory}
 
 
 def worker_counts(logical: int, smoke: bool) -> list[int]:
-    """The numbers of data workers measured: all logical processors but four, two and one (20,
-    22 and 23 of 24); in a smoke run all but two and one."""
-    counts = [logical - 2, logical - 1] if smoke else [logical - 4, logical - 2, logical - 1]
+    """The numbers of data workers the loader experiments run: training's
+    (lcmsdeconv.nn.machine.cpu_workers: one per logical processor of every core but the two the
+    training process keeps, 22 of 24) and two fewer; in a smoke run two and one."""
+    from lcmsdeconv.nn.machine import cpu_workers
+
+    full = cpu_workers(int(logical))
+    counts = [2, 1] if smoke else [full, full - 2]
     return list(dict.fromkeys(max(1, n) for n in counts))
 
 
-def cpu_plan(smoke: bool, logical: int, windows: bool) -> list:
+def loader_ways(windows: bool) -> list[tuple]:
+    """LOADER_WAYS this computer can run (the opt-out of power throttling is Windows')."""
+    return [w for w in LOADER_WAYS if windows or w[2] != "high"]
+
+
+def cpu_plan(smoke: bool, logical: int, windows: bool) -> dict:
+    """The processor's experiments: "block", reserved: training's data loading
+    (profkit.cpu.loader) in each of LOADER_WAYS at training's number of workers, one worker
+    alone on two cores of each kind, power throttling and priority on one core of each kind,
+    then the first LESS_WORKER_WAYS ways at two fewer workers; and "detail", after the training
+    run: where a spectrum's time goes."""
+    from train_all import data_words
+
     crop = {"crop": 16384} if smoke else {}
-    plan = [entry("cpu.cores", "cpu", "items per second of each logical processor alone",
-                  "profkit.cpu:core_map", "cores", {"items": 2 if smoke else 12, **crop}, smoke),
-            entry("cpu.throttle", "cpu", "power throttling and priority, one core of each kind",
-                  "profkit.cpu:throttle", "throttle",
-                  {"items": 2 if smoke else 6, "reps": 1 if smoke else 2, **crop}, smoke)]
-    variants = [("dataloader", False, False), ("dispatcher", False, False),
-                ("dataloader", True, False), ("dispatcher", True, False)]
-    if windows:
-        variants.append(("dataloader", True, True))
-    for n in worker_counts(logical, smoke):
-        for kind, pinned, opt_out in variants:
-            name = kind + ("_pinned" if pinned else "") + ("_optout" if opt_out else "")
-            words = (f"{kind}{', pinned' if pinned else ''}"
-                     f"{', power throttling opted out' if opt_out else ''}")
-            plan.append(entry(f"cpu.loader.n{n}.{name}", "cpu", f"{n} workers, {words}",
-                              "profkit.cpu:loader", "loader",
-                              {"kind": kind, "workers": n, "pinned": pinned, "opt_out": opt_out,
-                               **({"seconds": 4.0, "warm_rounds": 1} if smoke else {}), **crop},
-                              smoke, workers=n, variant=name))
-    plan.append(entry("cpu.cprofile", "cpu", "where an item's time goes (cProfile), one core of "
-                      "each kind", "profkit.cpu:cprofile_items", "cprofile",
-                      {"items": 2 if smoke else 6, **crop}, smoke))
-    return plan
+    short = {"seconds": 4.0, "warm_rounds": 1} if smoke else {}
+    counts = worker_counts(logical, smoke)
+    ways = loader_ways(windows)
+
+    def loaders(n: int, chosen: list) -> list:
+        out = []
+        for loader, binding, qos in chosen:
+            words = data_words({"loader": loader, "cpu_binding": binding, "worker_qos": qos})
+            out.append(entry(f"cpu.loader.n{n}.{loader}.{binding}.{qos}", "cpu",
+                             f"{n} worker{'s' if n != 1 else ''}: {words}",
+                             "profkit.cpu:loader", "loader",
+                             {"loader": loader, "binding": binding, "qos": qos, "workers": n,
+                              **short, **crop}, smoke, workers=n,
+                             variant=f"{loader}.{binding}.{qos}", reserved=True))
+        return out
+
+    block = loaders(counts[0], ways)
+    block.append(entry("cpu.cores", "cpu", "spectra per second of one worker alone, two "
+                       "logical processors of each kind", "profkit.cpu:core_map", "cores",
+                       {"items": 2 if smoke else 12, "per_kind": 2, **crop}, smoke,
+                       reserved=True))
+    block.append(entry("cpu.throttle", "cpu", "power throttling and priority, one core of each "
+                       "kind", "profkit.cpu:throttle", "throttle",
+                       {"items": 2 if smoke else 6, "reps": 1 if smoke else 2, **crop}, smoke,
+                       reserved=True))
+    for n in counts[1:]:
+        block += loaders(n, [w for w in ways if w in LOADER_WAYS[:LESS_WORKER_WAYS]])
+    detail = [entry("cpu.cprofile", "cpu", "where an item's time goes (cProfile), one core of "
+                    "each kind", "profkit.cpu:cprofile_items", "cprofile",
+                    {"items": 2 if smoke else 6, **crop}, smoke)]
+    return {"block": block, "detail": detail}
 
 
-def e2e_plan(smoke: bool, logical: int, choices: dict) -> list:
-    """The short real training run, essential: it runs whatever the budget, as the check that
-    shows whether the data or the GPU sets training's pace."""
-    allowed = [n for n in worker_counts(logical, smoke)][:2]
-    fallback = int(choices.get("workers") or allowed[-1])
-    params = {"view": "window", "label": "best", "workers": fallback}
+def e2e_plan(smoke: bool) -> list:
+    """The short real training run, essential and reserved: it runs whatever the budget,
+    exactly as train_all trains its window run on this computer (profkit.e2e.train_all_choice:
+    setup's GPU speedups and head chunk, its data workers and their data loading; in a smoke
+    run two workers), the check that shows whether the data or the GPU sets training's pace."""
+    params = {"view": "window"}
     if smoke:
-        params.update(size="small", epochs=1, train_len=16, val_len=2, minutes=5.0)
-    return [entry("e2e.train", "e2e", "a short real training run with what was found best",
+        params.update(size="small", epochs=1, train_len=16, val_len=2, minutes=5.0, workers=2)
+    return [entry("e2e.train", "e2e", "a short real training run as train_all trains here",
                   "profkit.e2e:train_check", "e2e", params, smoke, essential=True,
-                  resolve={"best": "window", "workers": allowed})]
+                  reserved=True)]
 
 
 def build_plan(groups, env: dict, smoke: bool, only_ids=None) -> list:
-    """Every experiment to run after ``env``, in order: the GPU's, the processor's, the
-    end-to-end check, then the GPU's for information and the allocator settings least likely to
-    matter (the first skipped should time run out)."""
+    """Every experiment to run after ``env``, in order: the GPU's batches; reserved, each view's
+    baseline and setup's choice; the GPU's speedups and chunkings; reserved, the processor's
+    block (training's data loading, one worker per core, power throttling); the end-to-end
+    check (essential); then what is detail or information, the first skipped should time run
+    out: the best steps' phases, kernels and memory, where a spectrum's time goes, the GPU's
+    information and the allocator settings least likely to matter. A reserved experiment's time
+    is kept from those before it (Runner.reserve_after)."""
     common.add_paths()
     choices = setup_choices()
     logical = int((env.get("cpu") or {}).get("logical") or os.cpu_count() or 2)
     windows = (env.get("os") or {}).get("build") is not None or WINDOWS
-    gpu_main, gpu_later = gpu_plan(smoke, choices) if "gpu" in groups else ([], [])
-    plan = gpu_main
-    if "cpu" in groups:
-        plan += cpu_plan(smoke, logical, windows)
-    if "e2e" in groups:
-        plan += e2e_plan(smoke, logical, choices)
-    plan += gpu_later
+    g = gpu_plan(smoke, choices) if "gpu" in groups else {}
+    c = cpu_plan(smoke, logical, windows) if "cpu" in groups else {}
+    plan = [*g.get("prepare", []), *g.get("core", []), *g.get("matrix", []),
+            *c.get("block", []), *(e2e_plan(smoke) if "e2e" in groups else []),
+            *g.get("detail", []), *c.get("detail", []), *g.get("info", [])]
     for e in plan:
         e["fallback"] = choices["views"].get(e.get("view") or (e.get("resolve") or {}).get("best"))
     if only_ids:
@@ -292,11 +405,36 @@ def build_plan(groups, env: dict, smoke: bool, only_ids=None) -> list:
 
 
 # ------------------------------------------------------------------ what was found best
+def unsafe(rec: dict) -> str | None:
+    """Why a step experiment that ran to its end is no configuration to train with, None where
+    it is one: its steps on the real batches were unsteady (their 90th percentile above
+    UNSTEADY_P90 times their median), its reserved memory came near the cap (its peak, at the
+    at-cap batch or over the whole experiment, at least NEAR_CAP_SHARE of the cap less
+    CONTEXT_GB), or both."""
+    res = rec.get("result") or {}
+    why = []
+    wall = (res.get("real") or {}).get("wall_ms") or {}
+    med, p90 = wall.get("median") or res.get("median_ms"), wall.get("p90")
+    if med and p90 and p90 > UNSTEADY_P90 * med:
+        why.append(f"unsteady: p90 {p90:.0f} ms over {UNSTEADY_P90:g} x the median {med:.0f} ms")
+    peaks = [m.get("peak_reserved_gb") for m in (res.get("memory") or {},
+                                                  (res.get("cap") or {}).get("memory") or {})]
+    peak = max((float(x) for x in peaks if x is not None), default=None)
+    cap = float((rec.get("config") or {}).get("gpu_memory_gb")
+                or (res.get("config") or {}).get("gpu_memory_gb") or 14.0)
+    if peak is not None and peak >= NEAR_CAP_SHARE * (cap - CONTEXT_GB):
+        why.append(f"near the cap: {peak:.2f} GB reserved, at least {NEAR_CAP_SHARE:g} x "
+                   f"({cap:g} - {CONTEXT_GB:g}) GB")
+    return "; ".join(why) or None
+
+
 def best_config(records: list, view: str, fallback: dict | None = None) -> dict:
     """The fastest configuration measured for ``view`` (median wall time of a step on the
-    real batches) among those whose losses and gradients agree with the step without speedups
-    and whose at-cap step fitted the GPU; setup's choice (``fallback``) if none was measured."""
+    real batches) among those whose losses and gradients agree with the step without speedups,
+    whose at-cap step fitted the GPU, and which were steady and kept off the cap (unsafe: the
+    others are listed in ``excluded``); setup's choice (``fallback``) if none was measured."""
     best = None
+    excluded = []
     for r in records:
         if not r["id"].startswith(f"gpu.steps.{view}.") or r.get("outcome") != "ok":
             continue
@@ -304,29 +442,22 @@ def best_config(records: list, view: str, fallback: dict | None = None) -> dict:
         ms = res.get("median_ms")
         agrees = (res.get("agreement") or {}).get("same") is not False
         fits = "error" not in (res.get("cap") or {})
+        why = unsafe(r)
+        if why:
+            excluded.append({"id": r["id"], "why": why})
+            continue
         if ms and agrees and fits and (best is None or ms < best[0]):
             best = (ms, r)
     if best is None:
         fb = fallback or {}
         return {"speedups": list(fb.get("speedups") or []), "chunk": fb.get("chunk"),
-                "label": "setup's choice (nothing measured)", "median_ms": None}
+                "label": "setup's choice (nothing measured" + (
+                    " steady and off the cap)" if excluded else ")"),
+                "median_ms": None, "excluded": excluded}
     cfg = best[1]["config"]
     return {"speedups": list(cfg.get("speedups") or []), "chunk": cfg.get("chunk"),
-            "label": f"best: {best[1]['id'].split('.', 3)[-1]}", "median_ms": best[0]}
-
-
-def best_workers(records: list, allowed: list, fallback: int) -> int:
-    """The number of workers among ``allowed`` whose DataLoader (as training uses it) delivered
-    the most; the fewer where two are within 2 %."""
-    rates = {}
-    for r in records:
-        if (r.get("outcome") == "ok" and r["id"].startswith("cpu.loader.")
-                and r.get("variant") == "dataloader" and r.get("workers") in allowed):
-            rates[r["workers"]] = (r.get("result") or {}).get("items_per_second") or 0.0
-    if not rates:
-        return fallback
-    top = max(rates.values())
-    return min(n for n, v in rates.items() if v >= 0.98 * top)
+            "label": f"best: {best[1]['id'].split('.', 3)[-1]}", "median_ms": best[0],
+            "excluded": excluded}
 
 
 # ------------------------------------------------------------------ running the experiments
@@ -342,18 +473,105 @@ class Runner:
         self.budget_s = budget_s
         self.header = header
         self.records: list = []
+        self.plan: list = []
         self.started = time.time()
         self.interrupted = False
-        self.est_done = self.real_done = 0.0
         self.save_error: str | None = None  # why results.json could not be written last time
         for sub in ("raw", "logs", "work/plan"):
             (run_dir / sub).mkdir(parents=True, exist_ok=True)
 
-    # the scale of the estimates on this computer, from the experiments done so far
-    def scale(self) -> float:
-        if self.est_done < 60:
-            return 1.0
-        return min(3.0, max(0.5, self.real_done / self.est_done))
+    def scale(self, group: str | None = None) -> float:
+        """The scale of the estimates on this computer: the seconds the experiments that ran to
+        their end ("ok") took against their estimates, those of ``group`` where they add up to a
+        minute of estimates, else all of them but never under 1; 1 until then; within [0.5, 3].
+        An experiment stopped at its timeout or ended as pathological measures its fault, not
+        this computer's pace."""
+        def ratio(rows):
+            est = sum(float(r.get("estimate_s") or 0) for r in rows)
+            if est < 60:
+                return None
+            real = sum(float(r.get("seconds") or 0) for r in rows)
+            return min(3.0, max(0.5, real / est))
+
+        done = [r for r in self.records if r.get("outcome") == "ok" and r.get("seconds")]
+        if group is None:
+            return ratio(done) or 1.0
+        mine = ratio([r for r in done if r.get("group") == group])
+        # a group not measured yet is never made faster by another's pace (the GPU's
+        # experiments ran in half their estimates, the processor's need not)
+        return mine or max(1.0, ratio(done) or 1.0)
+
+    # ------------------------------------------------ limits derived from what has run
+    def baseline(self, view: str | None) -> dict | None:
+        """The step without speedups of ``view`` (the other view's until that one has run ok),
+        the reference of every later GPU experiment's timeout and step limits: its id, wall
+        seconds and median ms a step; None before either has run ok."""
+        views = [view] if view else []
+        views += [v for v in ("window", "comb") if v not in views]
+        for v in views:
+            r = self.outcome_of(f"gpu.steps.{v}.none")
+            res = (r or {}).get("result") or {}
+            if r and r.get("outcome") == "ok" and res.get("median_ms") and r.get("seconds"):
+                return {"id": r["id"], "seconds": float(r["seconds"]),
+                        "median_ms": float(res["median_ms"])}
+        return None
+
+    @staticmethod
+    def _view(e: dict) -> str | None:
+        return (e.get("params") or {}).get("view") or e.get("view")
+
+    def derived_timeout(self, e: dict) -> tuple[float, str]:
+        """A GPU experiment's timeout and where it comes from: TIMEOUT_FACTOR times its
+        baseline's wall time, in proportion to its kind's estimate against a step experiment's,
+        within [TIMEOUT_FLOOR, TIMEOUT_CEILING]; the static one (COSTS) before any baseline, for
+        the batches' preparation and for the other groups."""
+        base = self.baseline(self._view(e))
+        if e.get("group") != "gpu" or e.get("kind") == "prepare" or base is None:
+            return e["timeout"], "static"
+        ratio = COSTS[e["kind"]][0] / COSTS["steps"][0]
+        t = TIMEOUT_FACTOR * base["seconds"] * ratio
+        return round(min(TIMEOUT_CEILING, max(TIMEOUT_FLOOR, t)), 1), f"baseline {base['id']}"
+
+    def stall_limits(self, e: dict) -> dict | None:
+        """The step limit of a GPU experiment's watchdog (its entry's "stall"; see the STALL_
+        constants): from its baseline's median step, absolute before any baseline."""
+        if e.get("group") != "gpu" or e.get("kind") == "prepare":
+            return None
+        base = self.baseline(self._view(e))
+        out = {"limit_s": STALL_NO_BASELINE_S, "exempt": STALL_EXEMPT, "base_ms": None,
+               "baseline": None}
+        if base is not None:
+            weight = STALL_WEIGHTS.get(e.get("kind"), 1.0)
+            out.update(base_ms=base["median_ms"], baseline=base["id"],
+                       limit_s=round(max(STALL_FLOOR_S,
+                                         STALL_FACTOR * weight * base["median_ms"] / 1000.0), 2))
+        return out
+
+    def faulty_part(self, e: dict) -> dict | None:
+        """For a step experiment of the GPU's matrix: an earlier step experiment of its view and
+        head chunking whose speedups are all among its own and which ended in a fault (FAULTS):
+        this configuration would only repeat it. None for the reserved ones (the baselines and
+        setup's choices, which run whatever)."""
+        if not e["id"].startswith("gpu.steps.") or e.get("reserved"):
+            return None
+        p = e.get("params") or {}
+        mine = set(p.get("speedups") or [])
+        for r in self.records:
+            c = r.get("config") or {}
+            if (r["id"].startswith("gpu.steps.") and r["id"] != e["id"]
+                    and r.get("outcome") in FAULTS
+                    and c.get("view") == p.get("view") and c.get("chunk") == p.get("chunk")
+                    and set(c.get("speedups") or []) <= mine):
+                return r
+        return None
+
+    def reserve_after(self, k: int) -> float:
+        """Seconds kept for the reserved and essential experiments after plan entry ``k``
+        (1-based) that have not run: their estimates at this computer's pace times
+        RESERVE_MARGIN, at most RESERVE_SHARE of the budget."""
+        keep = sum(x["estimate"] * self.scale(x.get("group")) for x in self.plan[k:]
+                   if (x.get("reserved") or x.get("essential")) and self.outcome_of(x["id"]) is None)
+        return min(RESERVE_MARGIN * keep, RESERVE_SHARE * self.budget_s)
 
     def save(self, extra: dict | None = None, final: bool = False) -> Path | None:
         """results.json with every record so far, written after each experiment. Never stops
@@ -388,7 +606,8 @@ class Runner:
         rec = {"id": e["id"], "group": e["group"], "title": e["title"], "fn": e["fn"],
                "config": e["params"], "outcome": outcome, "error": error,
                "estimate_s": e["estimate"], "timeout_s": e["timeout"], **more}
-        for key in ("workers", "variant", "view"):
+        for key in ("workers", "variant", "view", "timeout_from", "stall", "reserved",
+                    "setup_choice"):
             if key in e:
                 rec[key] = e[key]
         if e.get("env"):
@@ -401,15 +620,16 @@ class Runner:
         return next((r for r in self.records if r["id"] == eid), None)
 
     def resolve(self, e: dict) -> None:
-        """Fill in what depends on earlier results: the best configuration of a view, the best
-        number of workers."""
+        """Fill in what depends on earlier results: a GPU experiment's timeout and step limit
+        (from its baseline), the best configuration of a view."""
+        e["timeout"], e["timeout_from"] = self.derived_timeout(e)
+        stall = self.stall_limits(e)
+        if stall is not None:
+            e["stall"] = stall
         how = e.get("resolve") or {}
         if "best" in how:
             b = best_config(self.records, how["best"], e.get("fallback"))
             e["params"].update(speedups=b["speedups"], chunk=b["chunk"], label=b["label"])
-        if "workers" in how:
-            e["params"]["workers"] = best_workers(self.records, how["workers"],
-                                                  e["params"].get("workers"))
 
     def run(self, e: dict, k: int, n: int) -> dict:
         rec = self.start(e, k, n)
@@ -428,25 +648,40 @@ class Runner:
                 return self.record(e, outcome, f"needs {need}, and {why}")
         if self.interrupted:
             return self.record(e, "skipped", "the profile was interrupted")
+        part = self.faulty_part(e)
+        if part is not None:
+            err = str(part.get("error") or "").strip().splitlines()
+            return self.record(e, "skipped", f"{part['id']}, whose speedups it has, ended "
+                                             f"{part['outcome']} at this head chunking"
+                                             + (f" ({err[-1][:160]})" if err else ""))
         elapsed = time.time() - self.started
-        if not e.get("essential") and elapsed + e["estimate"] * self.scale() > self.budget_s:
-            return self.record(e, "skipped", f"the time budget ({self.budget_s / 60:.0f} min) "
-                                             f"would be exceeded")
         self.resolve(e)
+        need = e["estimate"] * self.scale(e.get("group"))
+        if not e.get("essential"):
+            # a reserved experiment may take what is left of the budget; any other only what
+            # is not kept for the reserved ones after it, and never more (its timeout shortened)
+            reserved = bool(e.get("reserved"))
+            keep = 0.0 if reserved else self.reserve_after(k)
+            room = self.budget_s - elapsed - keep
+            if need > room:
+                return self.record(e, "skipped", f"the time budget ({self.budget_s / 60:.0f} min) "
+                                                 f"would be exceeded" + (
+                    f" ({keep / 60:.1f} min of it kept for the reserved experiments still to "
+                    f"run)" if keep > 0 else ""))
+            if not reserved and room < e["timeout"]:
+                e["timeout"], e["timeout_from"] = round(room, 1), "the time budget left"
         left = self.remaining_estimate(k)
-        self.console.say(f"[{k}/{n}] {e['title']} ({e['id']}; about {e['estimate'] * self.scale():.0f}"
-                         f" s; {elapsed / 60:.1f} min done, about {left / 60:.0f} min to go)")
+        self.console.say(f"[{k}/{n}] {e['title']} ({e['id']}; about {need:.0f} s, at most "
+                         f"{e['timeout']:.0f}; {elapsed / 60:.1f} min done, about "
+                         f"{left / 60:.0f} min to go)")
         rec = self.launch(e)
-        self.est_done += e["estimate"]
-        self.real_done += rec.get("seconds") or 0.0
         self.console.say(f"    {rec['outcome']} in {rec.get('seconds', 0):.0f} s"
                          + (f": {brief(rec)}" if brief(rec) else ""))
         return rec
 
     def remaining_estimate(self, k: int) -> float:
-        rest = self.plan[k - 1:] if hasattr(self, "plan") else []
-        return self.scale() * sum(x["estimate"] for x in rest
-                                  if self.outcome_of(x["id"]) is None)
+        return sum(x["estimate"] * self.scale(x.get("group")) for x in self.plan[k - 1:]
+                   if self.outcome_of(x["id"]) is None)
 
     def launch(self, e: dict) -> dict:
         """Start the experiment's process, echo its [say] lines, stop it at its timeout (with
@@ -458,8 +693,10 @@ class Runner:
         cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve()), "--child", eid,
                "--run-dir", str(self.run_dir)]
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
-        for var in THREAD_VARS:
-            env.setdefault(var, "1")  # one thread per process, as training's workers
+        added = [var for var in THREAD_VARS if var not in env]
+        for var in added:
+            env[var] = "1"  # one thread per process, as training's workers
+        env[common.THREADS_ADDED_ENV] = ",".join(added)  # the training run drops them again
         if self.smoke:
             env[common.SMOKE_ENV] = "1"
         for k, v in (e.get("env") or {}).items():
@@ -486,7 +723,7 @@ class Runner:
                         break
                     if time.time() - t0 > e["timeout"]:
                         common.kill_tree(proc.pid)
-                        outcome, error = "timeout", f"no result within {e['timeout']} s"
+                        outcome, error = "timeout", f"no result within {e['timeout']:g} s"
                         try:
                             proc.wait(timeout=STOP_WAIT)
                         except subprocess.TimeoutExpired:  # stuck in a driver call, for one
@@ -509,6 +746,9 @@ class Runner:
                 error = f"exit code {code} without a result; the end of its log:\n{tail}"
         more = {"seconds": round(seconds, 1), "exit_code": code, "log": f"logs/{eid}.log",
                 "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0))}
+        progress = read_json(common.progress_file(self.run_dir, eid))
+        if progress and outcome not in ("ok", "pathological", "unavailable"):
+            more["progress"] = progress  # how far it got: where a step never returned
         warns = self.warnings(log)
         if warns:
             more["log_warnings"] = warns
@@ -592,6 +832,9 @@ def child_main(eid: str, run_dir: Path) -> int:
         rec = {"outcome": "ok", "result": fn(ctx, **(e.get("params") or {}))}
     except Unavailable as exc:
         rec = {"outcome": "unavailable", "error": str(exc)}
+    except Pathological as exc:  # a step far slower than its limit: what came before is kept
+        print(str(exc), flush=True)
+        rec = {"outcome": "pathological", "error": str(exc), "result": exc.partial}
     except BaseException:  # an error of any kind is the record (KeyboardInterrupt too)
         rec = {"outcome": "error", "error": traceback.format_exc()[-6000:]}
         traceback.print_exc()
@@ -620,13 +863,22 @@ def _ms(v) -> str:
     return "-" if v is None else f"{v:.1f}"
 
 
+def progress_words(rec: dict) -> str:
+    """Where an experiment that did not end by itself had got to (its progress file): the phase
+    it had begun and the steps it had taken; "" without one."""
+    p = rec.get("progress") or {}
+    if not p.get("phase"):
+        return ""
+    return f" (it had begun its phase {p['phase']} after {p.get('steps_before_stall', 0)} steps)"
+
+
 def brief(rec: dict) -> str:
     """One line of an experiment's result for the console."""
     res = rec.get("result") or {}
     fn = rec.get("fn", "")
     if rec.get("outcome") != "ok":
         err = str(rec.get("error") or "").strip().splitlines()
-        return err[-1][:200] if err else ""
+        return (err[-1][:200] if err else "") + progress_words(rec)
     try:
         if fn.endswith(":steps"):
             r = res["real"]["wall_ms"]
@@ -668,7 +920,8 @@ def brief(rec: dict) -> str:
             return "; ".join(f"{b}: {v.get('spectra_per_second', v.get('error'))} spectra/s"
                              for b, v in res["batches"].items())
         if fn.endswith(":core_map"):
-            return "; ".join(f"{k}: {v['median']:.2f} items/s" for k, v in res["by_kind"].items())
+            return "; ".join(f"{k}: {v['median']:.2f} spectra/s ({v['n']} processors)"
+                             for k, v in res["by_kind"].items())
         if fn.endswith(":throttle"):
             words = {"opt_out_gain_normal": "opt-out at normal priority",
                      "opt_out_gain_below_normal": "opt-out at below normal",
@@ -680,8 +933,12 @@ def brief(rec: dict) -> str:
                 for k, v in res["cores"].items())
         if fn.endswith(":loader"):
             w = res.get("consumer_wait_ms") or {}
-            return (f"{res['items_per_second']:.1f} items/s; a batch waited for "
-                    f"{_ms(w.get('median'))} ms (p90 {_ms(w.get('p90'))})")
+            busy = (res.get("made") or {}).get("workers_busy")
+            return (f"{res['items_per_second']:.1f} spectra/s"
+                    + (f", workers busy {100 * busy:.0f} %" if busy is not None else "")
+                    + f"; a batch waited for {_ms(w.get('median'))} ms (p90 "
+                    f"{_ms(w.get('p90'))}); the first after "
+                    f"{(res.get('startup_seconds') or {}).get('first_batch')} s")
         if fn.endswith(":cprofile_items"):
             return "; ".join(f"{k} {v['wall_s']:.1f} s" for k, v in res["profiles"].items())
         if fn.endswith(":train_check"):
@@ -741,22 +998,28 @@ def summary_lines(records: list, env: dict, header: dict) -> list[str]:
         base = next((r for r in steps if r["id"] == f"gpu.steps.{view}.none"
                      and r["outcome"] == "ok"), None)
         base_ms = base and base["result"].get("median_ms")
+        b = best_config(records, view)
+        left_out = {x["id"]: x["why"] for x in b["excluded"]}
         for r in steps:
             res = r.get("result") or {}
-            name = r["id"].split(".", 3)[-1]
+            name = r["id"].split(".", 3)[-1] + (" (setup's)" if r.get("setup_choice") else "")
             if r["outcome"] != "ok":
-                lines.append(f"  {name:28s} {r['outcome']}: {brief(r)[:80]}")
+                cap = (((res.get("measured") or {}).get("cap") or {}).get("wall_ms") or {})
+                lines.append(f"  {name:28s} {r['outcome']}: {brief(r)[:150]}"
+                             + (f"; at the cap {cap['median']:.1f} ms before it"
+                                if cap.get("median") else ""))
                 continue
             w = res["real"]["wall_ms"]
             cap = res.get("cap") or {}
             gain = (f" {100 * (1 - w['median'] / base_ms):+5.1f} %" if base_ms else "")
             agree = res.get("agreement") or {}
             flag = "" if agree.get("same") is not False else "  (NOT the same results)"
+            if r["id"] in left_out:
+                flag += f"  (left out: {left_out[r['id']]})"
             lines.append(f"  {name:28s} {w['median']:7.1f} [{w['p10']:.1f}-{w['p90']:.1f}]{gain}"
                          f"; {res['free_running']['ms_per_step']:.1f}; "
                          f"{_ms((cap.get('wall_ms') or {}).get('median'))}"
                          f"; {res.get('memory', {}).get('peak_reserved_gb', '-')} GB{flag}")
-        b = best_config(records, view)
         lines.append(f"  best: {b['label']} ({'+'.join(b['speedups']) or 'no speedups'}, "
                      f"{'all charges at once' if b['chunk'] is None else b['chunk']})")
         ph = by_id.get(f"gpu.phases.{view}")
@@ -802,28 +1065,34 @@ def summary_lines(records: list, env: dict, header: dict) -> list[str]:
                 lines.append(f"  {name} (information): {brief(r)}")
     cores = by_id.get("cpu.cores")
     if cores:
-        lines.append(f"Processor, one worker per core: {brief(cores)}")
+        lines.append(f"Processor, one worker alone: {brief(cores)}")
     thr = by_id.get("cpu.throttle")
     if thr:
         lines.append(f"  power throttling and priority: {brief(thr)}")
     loaders = [r for r in records if r["id"].startswith("cpu.loader.")]
     if loaders:
-        variants = list(dict.fromkeys(r.get("variant") for r in loaders))
-        lines.append("  items/s delivered (90th percentile of the wait for a batch, ms): "
-                     + " | ".join(variants))
-        for n in dict.fromkeys(r.get("workers") for r in loaders):
+        counts = list(dict.fromkeys(r.get("workers") for r in loaders))
+        lines.append("  training's data loading, spectra/s delivered (workers busy; the wait "
+                     "for a batch, 90th percentile; the first batch after), by workers: "
+                     + ", ".join(str(n) for n in counts))
+        for v in dict.fromkeys(r.get("variant") for r in loaders):
             cells = []
-            for v in variants:
+            for n in counts:
                 r = next((x for x in loaders if x.get("workers") == n and x.get("variant") == v),
                          None)
                 if r is None:
-                    cells.append("-")
+                    cells.append(f"{n}: -")
                 elif r["outcome"] != "ok":
-                    cells.append(r["outcome"])
+                    cells.append(f"{n}: {r['outcome']}")
                 else:
-                    w = r["result"].get("consumer_wait_ms") or {}
-                    cells.append(f"{r['result']['items_per_second']:.1f} ({_ms(w.get('p90'))})")
-            lines.append(f"    {n:3d} workers: " + " | ".join(cells))
+                    res = r["result"]
+                    w = res.get("consumer_wait_ms") or {}
+                    busy = (res.get("made") or {}).get("workers_busy")
+                    cells.append(f"{n}: {res['items_per_second']:.1f} ("
+                                 + (f"{100 * busy:.0f} %; " if busy is not None else "")
+                                 + f"{_ms(w.get('p90'))} ms; "
+                                 f"{(res.get('startup_seconds') or {}).get('first_batch')} s)")
+            lines.append(f"    {str(v).replace('.', ' '):26s} " + " | ".join(cells))
     cp = by_id.get("cpu.cprofile")
     if cp and cp["outcome"] == "ok":
         for kind, prof in cp["result"]["profiles"].items():
@@ -835,22 +1104,29 @@ def summary_lines(records: list, env: dict, header: dict) -> list[str]:
         res = e2e.get("result") or {}
         cfg = res.get("config") or e2e.get("config") or {}
         sp = "+".join(cfg.get("speedups") or []) or "no speedups"
-        lines.append(f"End-to-end ({cfg.get('view')} view, {sp}, {cfg.get('workers')} workers): "
-                     f"{e2e['outcome']}" + (f": {brief(e2e)}" if e2e["outcome"] != "ok" else ""))
+        chunk = cfg.get("head_chunk")
+        how = "all charges at once" if chunk is None else f"{chunk} charges at a time"
+        data = f"; {cfg['data_words']}" if cfg.get("data_words") else ""
+        lines.append(f"End-to-end, as train_all trains ({cfg.get('view')} view, {sp}, {how}, "
+                     f"{cfg.get('workers')} workers{data}): {e2e['outcome']}"
+                     + (f": {brief(e2e)}" if e2e["outcome"] != "ok" else ""))
         for ep in res.get("epochs") or []:
             p = ep.get("pace") or {}
             st = ep.get("steady") or {}
             steady = (f"; {st['spectra_per_second']} spectra/s from step {st['from_step']} on"
                       if st.get("spectra_per_second") else "")
+            busy = (p.get("workers") or {}).get("workers_busy")
             lines.append(f"  epoch {ep.get('epoch')}: {ep.get('spectra_per_second_epoch')} "
                          f"spectra/s, {100 * float(p.get('data_wait_share', 0)):.0f} % waiting "
                          f"for data, {100 * float(p.get('gpu_busy_share', 0)):.0f} % GPU busy "
                          f"({p.get('gpu_step_ms')} ms a step), {p.get('alloc_retries')} retries"
-                         f"{steady}")
-    bad = [r for r in records if r["outcome"] in ("error", "timeout", "crashed")]
+                         + (f", workers busy {100 * float(busy):.0f} %" if busy is not None
+                            else "") + steady)
+    bad = [r for r in records if r["outcome"] in ("error", "timeout", "crashed", "pathological")]
     for r in bad:
         err = str(r.get("error") or "").strip().splitlines()
-        lines.append(f"FAILED {r['id']} ({r['outcome']}): {err[-1][:160] if err else ''}")
+        lines.append(f"FAILED {r['id']} ({r['outcome']}): {err[-1][:160] if err else ''}"
+                     f"{progress_words(r)}")
     return lines
 
 

@@ -9,8 +9,9 @@ own (cuDNN keeps the convolution algorithms a process first chooses):
 
 - :func:`steps`: the step-time distribution of one configuration (GPU speedups, head chunking)
   over the first 8 batches cycled, the free-running pace (as training runs, without waiting
-  for the GPU between steps), the at-cap batch, and its loss and gradients against the step
-  without speedups from the same weights on the same batch (probe.disagreement);
+  for the GPU between steps), the at-cap batch (in the profile before the real batches), its
+  loss and gradients against the step without speedups from the same weights on the same batch
+  (probe.disagreement), and the memory at each phase's end (the allocator's and the device's);
 - :func:`phases`: one configuration's step split into copy, forward, loss, backward, clipping,
   optimiser and moving average by CUDA events, the host's time for each, and the host's wait
   at the active-bin nonzero (the step's one synchronisation);
@@ -22,8 +23,11 @@ own (cuDNN keeps the convolution algorithms a process first chooses):
   the head or the whole forward pass, against float32 from the same weights; 8 spectra a step;
 - :func:`smi_loop`: a steady loop of one configuration with nvidia-smi read twice a second.
 
-Every function takes ``device`` (``"cpu"`` runs the same code on the processor, for tests),
-``size`` and ``crop`` (smaller networks and spectra for smoke runs and tests)."""
+Every step runs under the experiment's watchdog (common.StallWatchdog, with the limit the
+runner derives from the step without speedups): one far slower ends the experiment as
+"pathological", with what was measured before it. Every function takes ``device`` (``"cpu"``
+runs the same code on the processor, for tests), ``size`` and ``crop`` (smaller networks and
+spectra for smoke runs and tests)."""
 
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .common import Unavailable, recipe, recipe_mixture, stats
+from .common import Pathological, StallWatchdog, Unavailable, recipe, recipe_mixture, stats
 
 #: spectra per step (train_all.BATCH) and the GPU memory cap (setup's default)
 BATCH = 4
@@ -236,11 +240,13 @@ class Trainer:
     AdamW, the learning-rate schedule, the moving average and the running loss; with the GPU
     speedups ``speedups`` (index_select and fused_adamw here; set_gpu_flags sets the others),
     the head chunking ``chunk``, and bf16 autocast over the head (``"head"``) or the whole
-    forward pass (``"forward"``) where asked."""
+    forward pass (``"forward"``) where asked. Every step runs inside ``watchdog``
+    (common.StallWatchdog: the experiment's limits; none: it only counts)."""
 
     def __init__(self, view: str, weights: dict, speedups=(), chunk: int | None = None,
                  device: str = "cuda", size: str = "full", window: int | None = None,
-                 autocast: str | None = None, total_steps: int = 100_000):
+                 autocast: str | None = None, total_steps: int = 100_000,
+                 watchdog: StallWatchdog | None = None):
         import torch
         from torch.optim import AdamW
         from torch.optim.lr_scheduler import OneCycleLR
@@ -270,6 +276,7 @@ class Trainer:
         self.model = model
         self.params = list(model.parameters())
         self.autocast = autocast
+        self.watchdog = watchdog if watchdog is not None else StallWatchdog()
         if autocast == "head":  # after the moving average's copy: the copy is never run
             inner = model._head_rows
 
@@ -281,10 +288,25 @@ class Trainer:
         elif autocast not in (None, "forward"):
             raise ValueError(f"autocast {autocast!r}: head, forward or None")
 
-    def step(self, sample, keep: bool = False, mark=None):
+    def step(self, sample, keep: bool = False, mark=None, then=None):
         """One training step on ``sample`` (x, topk_z, topk_w, heat on the host); ``mark(name)``
         is called after each phase; with ``keep`` returns the loss and the gradients before
-        clipping (a flat float64 vector), which waits for the GPU."""
+        clipping (a flat float64 vector), which waits for the GPU. ``then()`` runs once the
+        step is queued, still inside the watchdog's watch (a timing's end mark and its wait for
+        the GPU: a step's queued work that stalls is caught as the step's). Raises
+        common.Pathological where the step took longer than the watchdog's limit."""
+        self.watchdog.begin()
+        try:
+            kept = self._step(sample, keep, mark)
+            if then is not None:
+                then()
+        except BaseException:  # out of memory, say: a failed step, not a stalled one
+            self.watchdog.abandon()
+            raise
+        self.watchdog.end()
+        return kept
+
+    def _step(self, sample, keep: bool, mark):
         from lcmsdeconv.nn.train import _batch_dict
 
         torch = self.torch
@@ -382,6 +404,23 @@ def memory_record() -> dict:
             "sync_all_streams": s.get("num_sync_all_streams")}
 
 
+def memory_now() -> dict:
+    """The memory now, for the watchdog's records (before the first phase, at each phase's end,
+    at a stall): this process's caching allocator (reserved, allocated) and the device's free and
+    total memory as the driver reports them (every process's use counted, the display's
+    included: what the memory cap does not cover)."""
+    import torch
+
+    out = {"reserved_gb": round(torch.cuda.memory_reserved() / 2**30, 3),
+           "allocated_gb": round(torch.cuda.memory_allocated() / 2**30, 3)}
+    try:
+        free, total = torch.cuda.mem_get_info()
+        out.update(device_free_gb=round(free / 2**30, 3), device_total_gb=round(total / 2**30, 3))
+    except Exception:  # a diagnostic only
+        pass
+    return out
+
+
 class _Setup:
     """What every step experiment starts with: the speedups' process-wide switches (before the
     first convolution), the GPU memory cap, the first batches (pinned) and the view's weights."""
@@ -409,6 +448,8 @@ class _Setup:
         self.flags = {"cudnn_benchmark": torch.backends.cudnn.benchmark,
                       "tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
                       "cudnn_tf32": torch.backends.cudnn.allow_tf32}
+        #: the experiment's steps against the runner's limits (its plan entry's "stall")
+        self.watchdog = ctx.watchdog(snapshot=memory_now if self.cuda else None)
 
     def done(self) -> None:
         from lcmsdeconv.nn.train import restore_gpu_flags
@@ -423,17 +464,22 @@ def _config(view, speedups, chunk, label, device, size, crop, **more) -> dict:
 
 
 def _timed(tr: Trainer, clock: Clock, samples, n: int) -> list[tuple]:
-    """``n`` steps on ``samples`` cycled, each waited for: (batch, wall ms, GPU ms)."""
+    """``n`` steps on ``samples`` cycled, each waited for (inside the step's watch): (batch, wall
+    ms, GPU ms)."""
     rows = []
     for i in range(n):
         k = i % len(samples)
         clock.sync()
         t0 = time.perf_counter()
         a = clock.mark()
-        tr.step(samples[k])
-        b = clock.mark()
-        clock.sync()
-        rows.append((k, 1000.0 * (time.perf_counter() - t0), clock.ms(a, b)))
+        end: list = []
+
+        def done(end=end):
+            end.append(clock.mark())
+            clock.sync()
+
+        tr.step(samples[k], then=done)
+        rows.append((k, 1000.0 * (time.perf_counter() - t0), clock.ms(a, end[0])))
     return rows
 
 
@@ -475,44 +521,75 @@ def _oom_types():
 
 def steps(ctx, view: str, speedups=(), chunk: int | None = None, label: str = "none",
           reference: str = "none", synced: int = 32, free: int = 16, warm: int = 5,
-          cap_warm: int = 2, cap_timed: int = 4, check: bool = True, device: str = "cuda",
-          size: str = "full", crop: int | None = None) -> dict:
-    """The step-time distribution of one configuration (see the module's description)."""
+          cap_warm: int = 2, cap_timed: int = 4, check: bool = True, cap_first: bool = False,
+          device: str = "cuda", size: str = "full", crop: int | None = None) -> dict:
+    """The step-time distribution of one configuration (see the module's description). With
+    ``cap_first`` the at-cap batch comes right after the warm-up, before the real batches: its
+    time and memory are measured whatever the real batches then do. Each step runs inside the
+    experiment's watchdog: one far slower than the runner's limit ends the experiment
+    (common.Pathological, with what was measured before it)."""
     s = _Setup(ctx, view, speedups, device, crop)
     torch = s.torch
+    wd = s.watchdog
+    rec: dict = {}
     try:
-        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop)
+        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop, watchdog=wd)
         clock = Clock(device)
-        rec = {"config": _config(view, speedups, chunk, label, device, size, crop,
-                                 batches=f"the runs' training batches 0-{len(s.host) - 1} cycled",
-                                 synced_steps=synced, free_steps=free, warm_steps=warm,
-                                 flags=s.flags)}
+        rec["config"] = _config(view, speedups, chunk, label, device, size, crop,
+                                batches=f"the runs' training batches 0-{len(s.host) - 1} cycled",
+                                synced_steps=synced, free_steps=free, warm_steps=warm,
+                                cap_first=cap_first, flags=s.flags)
         if check:
+            wd.set_phase("check")
             checks = [tr.step(s.host[0], keep=True) for _ in range(2)]
             _save_checks(ctx, view, label, checks)
             ref = checks if label == reference else _load_checks(ctx, view, reference)
             rec["agreement"] = (agreement(ref, checks) if ref is not None else
                                 {"same": None, "why": f"no reference ({reference}) measured"})
             rec["agreement"]["reference"] = reference
+        wd.set_phase("warm")
         for i in range(warm):
             tr.step(s.host[i % len(s.host)])
+
+        def at_cap() -> None:
+            try:
+                wd.set_phase("cap")
+                if s.cuda and cap_first:
+                    torch.cuda.reset_peak_memory_stats()
+                for _ in range(cap_warm):
+                    tr.step(s.cap)
+                cap_rows = _timed(tr, clock, [s.cap], cap_timed)
+                rec["cap"] = {"wall_ms": stats([r[1] for r in cap_rows], 2),
+                              "gpu_ms": stats([r[2] for r in cap_rows], 2),
+                              "active_rows": sum(active_rows(s.cap[0], s.window))}
+                if s.cuda and cap_first:
+                    rec["cap"]["memory"] = memory_record()
+            except _oom_types() as exc:
+                rec["cap"] = {"error": f"out of GPU memory: {str(exc)[:300]}"}
+                tr.opt.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+
+        if cap_first:
+            at_cap()
+        wd.set_phase("synced")
         rec["real"] = _rows_record(_timed(tr, clock, s.host, synced), s.active)
+        wd.set_phase("free")
         rec["free_running"] = _free_running(tr, clock, s.host, free)
-        try:
-            for _ in range(cap_warm):
-                tr.step(s.cap)
-            cap_rows = _timed(tr, clock, [s.cap], cap_timed)
-            rec["cap"] = {"wall_ms": stats([r[1] for r in cap_rows], 2),
-                          "gpu_ms": stats([r[2] for r in cap_rows], 2),
-                          "active_rows": sum(active_rows(s.cap[0], s.window))}
-        except _oom_types() as exc:
-            rec["cap"] = {"error": f"out of GPU memory: {str(exc)[:300]}"}
-            tr.opt.zero_grad(set_to_none=True)
-            torch.cuda.empty_cache()
+        if not cap_first:
+            at_cap()
+        wd.end_phase()
+        if wd.memory:  # where the reserve grew, and the device's free memory (the driver's)
+            rec["memory_by_phase"] = dict(wd.memory)
         if s.cuda:
             rec["memory"] = memory_record()
         rec["median_ms"] = rec["real"]["wall_ms"].get("median")
         return rec
+    except Pathological as exc:  # what was measured before the stall is kept
+        exc.partial["measured"] = {k: v for k, v in rec.items() if k != "config"}
+        exc.partial["config"] = rec.get("config")
+        if s.cuda:
+            exc.partial["memory_record"] = memory_record()
+        raise
     finally:
         s.done()
 
@@ -541,11 +618,13 @@ def phases(ctx, view: str, speedups=(), chunk: int | None = None, label: str = "
             stall["calls"] += 1
 
     try:
-        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop)
+        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop, watchdog=s.watchdog)
         clock = Clock(device)
+        s.watchdog.set_phase("warm")
         for i in range(warm):
             tr.step(s.host[i % len(s.host)])
         clock.sync()
+        s.watchdog.set_phase("phases")
         torch.Tensor.nonzero = timed_nonzero
         per_step = []
         for i in range(steps_n):
@@ -610,11 +689,13 @@ def profile(ctx, view: str, speedups=(), chunk: int | None = None, label: str = 
 
     s = _Setup(ctx, view, speedups, device, crop, cap=False)
     try:
-        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop)
+        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop, watchdog=s.watchdog)
         clock = Clock(device)
+        s.watchdog.set_phase("warm")
         for i in range(warm):
             tr.step(s.host[i % len(s.host)])
         clock.sync()
+        s.watchdog.set_phase("profiled")
         acts = [ProfilerActivity.CPU] + ([ProfilerActivity.CUDA] if s.cuda else [])
         with torch_profile(activities=acts, record_shapes=True) as prof:
             t0 = time.perf_counter()
@@ -631,6 +712,8 @@ def profile(ctx, view: str, speedups=(), chunk: int | None = None, label: str = 
                     clock.sync()
                 trace_file = export_trace(one, ctx.path("traces", f"{ctx.id}.json.gz"),
                                           ctx.path("work", f"{ctx.id}_trace.json"))
+            except Pathological:
+                raise
             except Exception as exc:  # the trace is a convenience: the tables are the result
                 trace_error = f"{type(exc).__name__}: {exc}"[:500]
                 ctx.say(f"the trace was not written ({trace_error[:150]}); the tables are kept")
@@ -732,8 +815,10 @@ def memory(ctx, view: str, speedups=(), chunk: int | None = None, label: str = "
         s = _Setup(ctx, view, speedups, device, crop, n_batches=batches, cap=False, pin=False)
         torch = s.torch
         try:
-            tr = Trainer(view, s.weights, speedups, chunk, device, size, crop)
+            tr = Trainer(view, s.weights, speedups, chunk, device, size, crop,
+                         watchdog=s.watchdog)
             clock = Clock(device)
+            s.watchdog.set_phase("batches")
             if s.cuda:
                 torch.cuda.reset_peak_memory_stats()
             reserved, allocated, walls, oom_steps = [], [], [], []
@@ -741,8 +826,7 @@ def memory(ctx, view: str, speedups=(), chunk: int | None = None, label: str = "
                 try:
                     clock.sync()
                     t0 = time.perf_counter()
-                    tr.step(sample)
-                    clock.sync()
+                    tr.step(sample, then=clock.sync)
                     walls.append(1000.0 * (time.perf_counter() - t0))
                 except _oom_types():
                     oom_steps.append(k)
@@ -795,7 +879,8 @@ def autocast(ctx, view: str, speedups=(), chunk: int | None = None, label: str =
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
                 tr = Trainer(view, s.weights, speedups, chunk, device, size, crop,
-                             autocast=mode)
+                             autocast=mode, watchdog=s.watchdog)
+                s.watchdog.set_phase(name, fresh=True)  # bf16 kernels: autotuned anew
                 checks, rows = _checks_and_times(tr, s, clock, warm, steps_n)
                 rec = {"wall_ms": stats([r[1] for r in rows], 2),
                        "gpu_ms": stats([r[2] for r in rows], 2)}
@@ -807,6 +892,8 @@ def autocast(ctx, view: str, speedups=(), chunk: int | None = None, label: str =
                     rec["agreement"] = agreement(ref, checks)
                 out["modes"][name] = rec
                 del tr
+            except Pathological:
+                raise
             except Exception as exc:  # a mode that fails is recorded; the next one runs
                 out["modes"][name] = {"error": f"{type(exc).__name__}: {exc}"[:500]}
                 if s.cuda:
@@ -838,7 +925,9 @@ def batch8(ctx, view: str, speedups=(), chunk: int | None = None, label: str = "
         if s.cuda:
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
-        tr = Trainer(view, s.weights, speedups, use_chunk, device, size, crop)
+        tr = Trainer(view, s.weights, speedups, use_chunk, device, size, crop,
+                     watchdog=s.watchdog)
+        s.watchdog.set_phase(f"batch{bs}", fresh=True)  # new shapes: autotuned anew
         for i in range(warm):
             tr.step(samples[i % len(samples)])
         rows = _timed(tr, clock, samples, steps_n)
@@ -875,11 +964,13 @@ def smi_loop(ctx, view: str, speedups=(), chunk: int | None = None, label: str =
 
     s = _Setup(ctx, view, speedups, device, crop, cap=False)
     try:
-        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop)
+        tr = Trainer(view, s.weights, speedups, chunk, device, size, crop, watchdog=s.watchdog)
         clock = Clock(device)
+        s.watchdog.set_phase("warm")
         for i in range(warm):
             tr.step(s.host[i % len(s.host)])
         clock.sync()
+        s.watchdog.set_phase("loop")
         sampler = Sampler(interval=interval)
         if sampler.smi is None:
             ctx.say("nvidia-smi was not found: the loop runs without its readings")
