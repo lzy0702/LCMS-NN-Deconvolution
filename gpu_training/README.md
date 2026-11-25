@@ -76,12 +76,15 @@ Python environment `.venv`, installs PyTorch for CUDA and this package, checks t
 computes on the GPU, and measures your machine: training steps of both networks on the GPU
 under the 14 GB cap, how much memory each data worker takes, and which GPU speedups make
 training faster on your GPU (below). It chooses as many data workers as the processor is given
-(all cores but four) where the RAM budget holds them, and measures how many spectra per second
-that many deliver together (`gpu_training\machine.json`; a minute or two). Then it checks
-everything end to end in a few minutes: a few training steps of both networks (with the
-speedups chosen), their export to ONNX, and whole spectra read with them. It prints which side
-will set the pace, the data workers or the GPU, and the expected training time; its output is
-also in `gpu_training\setup.log`.
+(one for every core but the two the training process keeps: 22 on a processor of 8
+performance and 16 efficient cores) where the RAM budget holds them, measures how many spectra
+per second that many deliver together (a minute or two), and then which way of running them
+delivers the most while a training step runs on the GPU (a few minutes, below; all in
+`gpu_training\machine.json`). Then it checks everything end to end in a few minutes: a few
+training steps of both networks (with the speedups and the way of running the workers chosen),
+their export to ONNX, and whole spectra read with them. It prints which side will set the pace,
+the data workers or the GPU, and the expected training time; its output is also in
+`gpu_training\setup.log`.
 
 **2. Train:** `gpu_training\train_all.bat` trains the runs, exports each finished one to ONNX
 (checking that the ONNX model computes what the checkpoint does) and reads whole spectra with
@@ -115,27 +118,77 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   workers, counted as Task Manager counts memory. The default is half the RAM, at least 16 GB
   and at most 48 GB, and at most the RAM less 4 GB (12 GB on a computer of 16 GB): 16 GB on a
   computer of 32 GB, as before, 32 GB on one of 64 GB, 48 GB on one of 96 GB or more. Setup
-  gives the data workers all cores but four (two of eight or fewer) where the budget holds
-  them, and measures their speed at that number. Why: the spectra come from the workers, and
-  on a processor with performance and efficiency cores each further worker adds less, while
-  batches are delivered in order, so a worker that is ahead waits for the slower ones. On a
-  computer of 96 GB with 24 cores (8 performance, 16 efficient), the earlier fixed budget of
-  16 GB held 13 workers, which trained at 19 spectra/s (5.4 minutes an epoch) where setup had
-  expected 30 from 10 workers measured alone and scaled up; with `--ram-gb 48` the 20 workers
-  the processor is given trained at 26-27 spectra/s (3.8 minutes an epoch). Whether the
-  workers or the GPU set the pace is in every epoch's line (the share of the time waiting for
-  data, below). If the budget is reached anyway, the run pauses safely and resumes at once
-  with two workers fewer (remembered in `machine.json`). Another budget: `--ram-gb 24`
-  (setup_and_train, setup or train_all); another number of workers: `--workers 16`
-  (setup_and_train or train_all). Exporting the window network to ONNX (after its run, and in
-  setup's check) takes about 9 GB of RAM for a minute or two; no training runs at that time.
+  gives the data workers one logical processor each of every core but the one or two the
+  training process keeps for itself (its main thread and the thread that receives the
+  batches), where the budget holds them, and measures their speed at that number. Why: the
+  spectra come from the workers, and on a processor with performance and efficiency cores each
+  further worker adds less, while torch's DataLoader delivers batches in order, so a worker
+  that is ahead waits for the slower ones. On a computer of 96 GB with 24 cores (8
+  performance, 16 efficient), the earlier fixed budget of 16 GB held 13 workers, which trained
+  at 19 spectra/s (5.4 minutes an epoch) where setup had expected 30 from 10 workers measured
+  alone and scaled up; with `--ram-gb 48` the 20 workers the processor was given then trained
+  at 26-27 spectra/s (3.8 minutes an epoch); it is given 22 now. Whether the workers or the
+  GPU set the pace is in every epoch's line (the share of the time waiting for data, below).
+  If the budget is reached anyway, the run pauses safely and resumes at once with two workers
+  fewer (remembered in `machine.json`). Another budget: `--ram-gb 24` (setup_and_train, setup
+  or train_all); another number of workers: `--workers 16` (setup_and_train or train_all).
+  Exporting the window network to ONNX (after its run, and in setup's check) takes about 9 GB
+  of RAM for a minute or two; no training runs at that time.
 - **Speed:** the data workers and the GPU work at the same time and the slower one sets the
   pace. Setup compares the workers' speed with a training step of the GPU on the runs' first
   training batch (with the GPU speedups chosen), and gives the step with every spectrum at the
   active-bin cap, the slowest a step can be, as the bound; it prints which side sets the pace
   and the expected time (`pace` in `machine.json`), and every epoch measures it again (see
   "What the output means"). More workers help only if the workers are the slower one. The
-  workers run at below-normal priority, so the computer stays usable.
+  workers run at below-normal priority, so the computer stays usable (unless setup measured
+  normal priority clearly faster, below).
+- **How the data workers run:** setup measures, in a few minutes, which way of running them
+  delivers the most spectra on your computer, and training uses that one:
+  - *as before*: torch's DataLoader, which hands whole batches to the workers in turn and
+    delivers them in order, so that the slowest worker sets the pace of all; the workers free
+    to run on any core, Windows' power throttling left to Windows, below-normal priority;
+  - *the ordered loader*: single spectra to whichever worker is free, the same batches in the
+    same order (training is bit for bit the same either way);
+  - with the workers bound to the cores the training process does not keep (*pool*) or each
+    to a core of its own (*core*), or free as before;
+  - with the workers and the training process opted out of Windows' power throttling or not
+    (a process that does not opt out is classified by Windows itself, from its priority and
+    whether its window is visible among others, and a throttled process may be held to the
+    efficient cores at a low clock);
+  - at below-normal or normal priority (Windows only).
+
+  All of them run on one set of workers that switch from way to way while they run (they start
+  once; the DataLoader is started for its own turns), each way twice in mirrored order (A B C
+  ... C B A, so that the computer warming up or slowing down weighs on every way alike), each
+  time on the same spectra and while the training process does what it does in training (a
+  real training step of the window network on the GPU for every batch). Setup keeps the way as
+  before unless another delivers at least 3 % more, beyond what chance can explain (how far
+  apart each way's two measurements are tells how much they vary by chance); each further
+  change (the ordered loader, the opt-out, binding, each worker on its own core, normal
+  priority) must again deliver 3 % more than every way without it. If the computer was busy
+  with something else during the measurement (the way as before measured more than 10 % apart
+  at the start and at the end), it keeps the way as before; a way whose own two measurements
+  are that far apart, or that not every worker could take, is left out. `data_loader` in
+  `machine.json` records the choice and why, `data_loader_test` every way's spectra per second
+  (both measurements), what a busy worker delivered on each kind of core and how long the
+  training process waited for data; setup prints a table (also in `setup.log`), and the time
+  estimate uses the spectra per second measured for the way chosen. A `machine.json` from an
+  earlier setup has no such record: the workers then run as before, and training says that
+  running setup again measures it. Each run prints the way it uses (`data loading: ...`) and
+  how the workers draw the spectra's noise (`spectrum draws: compiled ...`, or numpy's and
+  why; also `spectrum_draws` in each run's `.status.json`). Should a run stop with an error of
+  the new way (`DataWorkerError`), it continues at once from its last saved state as before,
+  and later runs do too (remembered in `machine.json`).
+
+  To choose yourself, pass any of `--loader dataloader` or `ordered`, `--cpu-binding none`,
+  `pool` or `core`, `--worker-qos system` or `high` and `--worker-priority below_normal` or
+  `normal` to `gpu_training\train_all.bat`; the others stay setup's choice. Exactly as before:
+  `gpu_training\train_all.bat --loader dataloader --cpu-binding none --worker-qos system
+  --worker-priority below_normal`. Setting the environment variable `LCMSDECONV_LOADER` to
+  `dataloader` (`set LCMSDECONV_LOADER=dataloader` in the window before starting) forces
+  torch's DataLoader whatever was chosen or passed. `.venv\Scripts\python gpu_training\probe.py
+  --no-data-test` measures the computer without this test, and training then runs the workers
+  as before.
 - **GPU speedups:** four switches change how the GPU rounds its arithmetic, not what it
   computes: `cudnn_benchmark` (cuDNN times its convolution methods once and keeps the fastest),
   `tf32` (matrix products in TensorFloat-32, as cuDNN's convolutions already are),
@@ -170,7 +223,7 @@ epoch 8: charge_acc_given_ion ema 0.903 live 0.907 (comb 0.668) -> keeping live;
   charge of z >= 2 ion bins read right (log-SNR / intensity weighted):
     time-of-flight  network 0.895 / 0.931   comb 0.689 / 0.844
     Orbitrap        network 0.850 / 0.917   comb 0.237 / 0.290
-  epoch took 21.0 min; 48 spectra/s; of the training time 2 % waiting for data, 95 % GPU busy (79 ms a step); RAM 11.8 GB of 16; GPU 3.9 GB reserved, 3.4 GB allocated at most, 0 allocator retries; about 4.1 h to go
+  epoch took 21.0 min; 48 spectra/s; of the training time 2 % waiting for data, 95 % GPU busy (79 ms a step); spectra made: performance cores 2410 (2.31/s a busy worker, on processors 0,3-7), efficient cores 3590 (1.42/s a busy worker, on processors 8-23), workers busy 97 %; RAM 11.8 GB of 16; GPU 3.9 GB reserved, 3.4 GB allocated at most, 0 allocator retries; about 4.1 h to go
 ```
 
 (illustrative numbers). The number in brackets is the comb estimator, scored the same way on
@@ -185,6 +238,13 @@ all four. The last line gives speed, what set the pace, memory and the time left
 - **GPU busy** and **ms a step**: the GPU time of every 25th step, timed on the GPU itself
   (its median), and that time times the number of steps as a share of the training time. Near
   100 % the GPU sets the pace, and more workers would not help.
+- **spectra made**: the epoch's spectra by the kind of core they were made on (performance,
+  efficient; one count where the cores are alike), how many a worker made per second while it
+  was busy, on which processors, and how busy the workers were. A busy worker making far fewer
+  spectra a second in training than setup measured, or the efficient cores making nearly all
+  of them, says the workers are slowed in training (by Windows' power throttling, for
+  example); "made twice" counts spectra the ordered loader handed to a second worker because
+  the first held them too long.
 - **allocated at most** and **allocator retries**: the most GPU memory the tensors took (below
   "reserved", which adds what PyTorch keeps for reuse), and how often in this epoch an
   allocation succeeded only after PyTorch released its reserve. Retries above 0 mean the memory
@@ -285,7 +345,8 @@ a tiny size, to check in a few minutes that it runs. For example
 - **`[WinError 1455] The paging file is too small`** while workers start: let Windows manage
   the paging file size, or use fewer workers (`--workers 6`).
 - **Re-measure the machine** after changing the limits, the hardware or the NVIDIA driver (the
-  GPU speedups are measured again too): `.venv\Scripts\python gpu_training\probe.py` with the
+  GPU speedups and the way the data workers run are measured again too; keep the computer
+  otherwise idle meanwhile): `.venv\Scripts\python gpu_training\probe.py` with the
   default limits, or with your own, for example `--ram-gb 24 --gpu-memory-gb 12`;
   `.venv\Scripts\python gpu_training\check_gpu.py` runs a few steps of both networks on random
   input.
@@ -296,3 +357,10 @@ a tiny size, to check in a few minutes that it runs. For example
 - **A run stops with an error from cuDNN, from `index_select` or from the optimiser** after
   setup chose GPU speedups: set each network's list under `gpu_speedups` in
   `gpu_training\machine.json` to `[]` and start the training again; it resumes without them.
+- **A run stops with an error from the data workers** (`DataWorkerError`) after setup chose
+  another way of running them: train_all continues by itself as before (torch's DataLoader)
+  and remembers it. To run them as before from the start, use the options of "How the data
+  workers run" above, or `set LCMSDECONV_LOADER=dataloader` before starting the training.
+- **The computer is sluggish while training**, and setup chose normal priority for the
+  workers: `gpu_training\train_all.bat --worker-priority below_normal` gives other programs
+  precedence again.

@@ -6,11 +6,13 @@ step can need) on the GPU under the GPU memory cap, scoring the charges in chunk
 once (train_all.py chooses between the two from these measurements), then starts data workers
 the way training does on the recipe's spectra and measures how much memory each one takes and
 how many spectra per second they deliver together. It chooses as many workers as the processor
-is given (all cores but four, or two of eight or fewer) where the RAM budget holds them with the
-training process, fewer where it does not, and measures their speed at the number it chooses:
-on a processor with performance and efficiency cores each further worker adds less, and batches
-are delivered in order, so that a worker that is ahead waits for the slower ones. The RAM budget
-is by default half the computer's memory, at least 16 GB and at most 48 (lcmsdeconv.nn.machine).
+is given (one per logical processor of every core but the one or two the training process
+keeps, lcmsdeconv.nn.machine.cpu_workers) where the RAM budget holds them with the training
+process, fewer where it does not, and measures their speed at the number it chooses: on a
+processor with performance and efficiency cores each further worker adds less, and torch's
+DataLoader delivers batches in order, so that a worker that is ahead waits for the slower ones.
+The RAM budget is by default half the computer's memory, at least 16 GB and at most 48
+(lcmsdeconv.nn.machine).
 
 Then it measures the GPU speedups (lcmsdeconv.nn.train.GPU_SPEEDUPS: cuDNN's benchmark, TF32
 matrix products, LadderNet's index_select head, fused AdamW), which change only the rounding of
@@ -24,7 +26,21 @@ Everything goes to gpu_training/machine.json, which train_all.py reads. The pace
 compares the workers' speed with the GPU's on the runs' first training batch (the speedup
 measurement), and gives the GPU's step with every spectrum at the active-bin cap as the bound.
 
+Last it measures how that many workers deliver the most spectra (data_loading_test, a few
+minutes): torch's DataLoader as before against the ordered loader (lcmsdeconv.synth.pool),
+with the workers bound to cores or not, opted out of Windows' power throttling or not, at
+below-normal or normal priority, while this process does with every batch what training does (a
+real training step of the window view on the GPU). The ordered loader's workers start once and
+switch from way to way while they run; every way is timed twice in mirrored order on the same
+spectra. Training keeps the way as before unless another delivers at least DATA_MARGIN more
+beyond the standard error of the comparison (from how far apart each way's two windows are),
+each further change again DATA_MARGIN more than the ways that change less (choose_data_loading),
+and keeps it too where the computer was busy meanwhile; machine.json's "data_loader" records the
+choice, "data_loader_test" the measurements, and the workers' rate there is the one the chosen
+way delivered.
+
     python gpu_training/probe.py [--ram-gb N] [--gpu-memory-gb 14] [--workers N]
+                                 [--no-data-test]
 
 setup.py runs it; run it again on its own to re-measure (for example after changing the limits).
 """
@@ -32,6 +48,8 @@ setup.py runs it; run it again on its own to re-measure (for example after chang
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
 import json
 import math
 import os
@@ -39,6 +57,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -735,6 +754,965 @@ def pace_lines(estimate: dict) -> list[str]:
     return lines
 
 
+# ------------------------------------------------------------------ how the data workers run
+#: the ways of running the data workers that setup compares (data_loading_test), each as the
+#: settings train_charge_net.py takes (DATA_KEYS: --loader, --cpu-binding, --worker-qos,
+#: --worker-priority). "today" is how they ran before, and the fallback: torch's DataLoader
+#: (whole batches to the workers in turn, delivered in order, so that the slowest worker sets
+#: the pace), the workers not bound to cores, Windows' power throttling left to Windows,
+#: below-normal priority. The others use the ordered loader (lcmsdeconv.synth.pool: single
+#: spectra to whichever worker is free, the same batches), with the workers bound to the cores
+#: the training process does not keep ("pool") or each to a core of its own ("core";
+#: lcmsdeconv.nn.cpus.plan), opted out of power throttling ("high": EcoQoS off, Windows only) or
+#: not, at below-normal or normal priority (Windows only: elsewhere a priority once lowered
+#: cannot be raised again)
+DATA_KEYS = ("loader", "cpu_binding", "worker_qos", "worker_priority")
+DATA_CONFIGS = {
+    "today": ("dataloader", "none", "system", "below_normal"),
+    "ordered": ("ordered", "none", "system", "below_normal"),
+    "ordered_high": ("ordered", "none", "high", "below_normal"),
+    "pool": ("ordered", "pool", "system", "below_normal"),
+    "pool_high": ("ordered", "pool", "high", "below_normal"),
+    "core": ("ordered", "core", "system", "below_normal"),
+    "core_high": ("ordered", "core", "high", "below_normal"),
+    "core_normal": ("ordered", "core", "system", "normal"),
+    "core_high_normal": ("ordered", "core", "high", "normal"),
+}
+#: the choice (choose_data_loading): the ways in the order of how much they change
+#: (data_cost), each taken over the one chosen so far only if its gain over that one, less
+#: DATA_SE standard errors of the gain (data_noise: from how far apart each way's two windows
+#: are, a steady drift over the test taken out), is at least DATA_MARGIN, and it delivers at
+#: least DATA_MARGIN more spectra per second than every way that changes less. Simulated with
+#: every way as fast as today's and each window's rate off by 2 % at random, the margin alone
+#: took another way in 27 % of the tests, this rule in 1-2 %; it takes a way 8 % faster in 85 %.
+#: Today's two windows, the first and the last of the test, further apart than DATA_BUSY mean
+#: that the computer was busy with something else: today's way is kept. A way whose own two
+#: windows are further apart is left out
+DATA_MARGIN, DATA_SE, DATA_BUSY = 0.03, 1.0, 0.10
+#: the training process waiting for less than this share of a window: the GPU set its pace
+DATA_GPU_BOUND = 0.05
+#: each window's timed part: whole rounds of torch's DataLoader (a batch from every worker: it
+#: hands them out in turn, so that only whole rounds take the same time again), as many as
+#: today's way delivers in about DATA_WINDOW_SECONDS, at least DATA_MIN_ROUNDS; the same
+#: spectra in every window
+DATA_WINDOW_SECONDS, DATA_MIN_ROUNDS = 8.0, 3
+#: a window taking more than DATA_WINDOW_LIMIT times its expected time (at least
+#: DATA_WINDOW_MIN_LIMIT seconds; torch's DataLoader, and the ordered loader's warm-up before
+#: its first window, WORKER_TIMEOUT more for their start) stops the test, and today's way is
+#: kept. The ordered loader waits for a batch without a timeout of its own: a watchdog stops its
+#: workers at the limit (_watchdog), and the batch it waits for fails
+DATA_WINDOW_LIMIT, DATA_WINDOW_MIN_LIMIT = 10.0, 120.0
+#: seconds the watchdog gives the ordered loader's workers to finish the spectrum they are on
+DATA_STOP_SECONDS = 2.0
+#: warm-up before each window's timed part: torch's DataLoader, whose workers start afresh for
+#: each of its windows (spawned ones import PyTorch first, and every new process makes its first
+#: spectra more slowly), DATA_DL_WARM_ROUNDS rounds; the ordered loader, whose workers have run
+#: since its first window, two spectra a worker
+DATA_DL_WARM_ROUNDS = 3
+#: the code the data workers read before every spectrum: generation * DATA_CODES + the index of
+#: the way they are to take
+DATA_CODES = 64
+#: the spectra of the test: base seed, and the first index of the windows' warm-up and lead-out
+#: spectra (those timed are 0, 1, ... in every window)
+DATA_SEED, DATA_WARM_BASE, DATA_LEAD_BASE = 4242, 10_000_000, 20_000_000
+
+
+def data_settings(name: str) -> dict:
+    """The settings of the way ``name`` of DATA_CONFIGS, by DATA_KEYS."""
+    return dict(zip(DATA_KEYS, DATA_CONFIGS[name]))
+
+
+def data_cost(settings: dict) -> int:
+    """How much a way of running the data workers changes from today's: the ordered loader 1,
+    the opt-out of power throttling 1, the workers bound to their cores 1 or each to its own
+    core 2, normal priority 2 (the computer's other programs no longer come first)."""
+    return (int(settings["loader"] == "ordered") + int(settings["worker_qos"] == "high")
+            + {"none": 0, "pool": 1, "core": 2}[settings["cpu_binding"]]
+            + 2 * int(settings["worker_priority"] == "normal"))
+
+
+def data_checks(topo, allowed, workers: int) -> dict:
+    """What data_loading_test can switch while the workers run, checked on this process first:
+    ``binding`` (lcmsdeconv.nn.cpus.plan binds on this processor, the logical processors read
+    are all those reported, and this process can be bound to its cores and given back its
+    processors), ``qos`` (Windows: the opt-out of power throttling set, read back and set back)
+    and ``priority`` (Windows, where a worker's priority can be raised again), each with why
+    not; and the processor as read."""
+    from lcmsdeconv.nn import cpus
+
+    why: dict = {}
+    out = {"topology": topo.describe(), "source": topo.source, "hybrid": topo.hybrid,
+           "counts": topo.counts(), "allowed": cpus.cpu_ranges(allowed or []), "why_not": why}
+    if topo.notes:
+        out["notes"] = list(topo.notes)
+    plan = cpus.plan(topo, workers=workers, allowed=allowed, mode="core")
+    try:
+        import psutil
+
+        logical = psutil.cpu_count(logical=True)
+    except Exception:
+        logical = None
+    if plan.mode != "core":
+        why["binding"] = plan.notes[0] if plan.notes else "too few cores"
+    elif logical and topo.logical_processors + topo.other_groups != logical:
+        why["binding"] = (f"{topo.logical_processors} logical processors read, {logical} "
+                          f"reported")
+    elif not (cpus.pin_process(plan.main) and cpus.allowed_cpus() == sorted(plan.main)):
+        why["binding"] = "this process could not be bound to the training process's cores"
+    if allowed and not cpus.pin_process(allowed) and "binding" not in why:
+        why["binding"] = "this process could not be given back its processors"
+    if sys.platform != "win32":
+        why["qos"] = "Windows' power throttling: Windows only"
+        why["priority"] = "a worker's priority, once lowered, cannot be raised again here"
+    else:
+        before = cpus.get_power_throttling()
+        done = cpus.set_power_throttling(False)
+        back = cpus.get_power_throttling()
+        cpus.restore_power_throttling(before)
+        if not done:
+            why["qos"] = "SetProcessInformation refused the opt-out of power throttling"
+        elif back is not None and (not back[0] & 1 or back[1] & 1):
+            why["qos"] = f"the opt-out read back as (ControlMask, StateMask) {tuple(back)}"
+    for key in ("binding", "qos", "priority"):
+        out[key] = key not in why
+    return out
+
+
+def data_configs(checks: dict) -> list[str]:
+    """The ways of DATA_CONFIGS this computer lets data_loading_test switch to (data_checks)."""
+    names = []
+    for name in DATA_CONFIGS:
+        s = data_settings(name)
+        if ((s["cpu_binding"] != "none" and not checks.get("binding"))
+                or (s["worker_qos"] == "high" and not checks.get("qos"))
+                or (s["worker_priority"] == "normal" and not checks.get("priority"))):
+            continue
+        names.append(name)
+    return names
+
+
+#: in a data worker of data_loading_test: the way it has taken (the process's state, shared by
+#: every copy of SwitchedFrames it holds)
+_SWITCHED: dict = {}
+
+
+def _worker_id() -> int:
+    """This data worker's id: the ordered loader's, torch's DataLoader's, or worker_init's."""
+    try:
+        from lcmsdeconv.synth.pool import current_worker
+
+        wid = current_worker().get("id")
+        if wid is not None:
+            return int(wid)
+    except Exception:
+        pass
+    try:
+        from torch.utils.data import get_worker_info
+
+        info = get_worker_info()
+        if info is not None:
+            return int(info.id)
+    except Exception:
+        pass
+    from lcmsdeconv.nn.cpus import WORKER_STATE
+
+    return int(WORKER_STATE.get("id", 0))
+
+
+class SwitchedFrames:
+    """``frames``' spectra, unchanged, each made once its data worker has taken the way of
+    running the probe asks for: ``control[0]`` (a tensor in shared memory) holds the generation
+    times DATA_CODES plus the index of the way in ``configs`` (DATA_KEYS' settings). A worker
+    that finds a new generation before a spectrum binds itself (``placements``: the
+    lcmsdeconv.nn.cpus.Placement of each binding; not bound: back to the processors it started
+    with), sets its power throttling and its priority, and writes what it reached to its row of
+    ``status``: 1 or 0 for the binding, the power throttling and the priority (as asked or
+    not), then the generation. On Windows a process may change all three of its own whenever it
+    likes, so one start of the workers serves every way."""
+
+    def __init__(self, frames, control, status, configs, placements: dict):
+        self.frames = frames
+        self.control = control
+        self.status = status
+        self.configs = tuple(configs)
+        self.placements = placements
+
+    def __len__(self) -> int:
+        return len(self.frames)
+
+    def __getitem__(self, idx):
+        code = int(self.control[0])
+        if _SWITCHED.get("code") != code:
+            self._switch(code)
+        return self.frames[idx]
+
+    def _switch(self, code: int) -> None:
+        from lcmsdeconv.nn import cpus
+
+        gen, k = divmod(code, DATA_CODES)
+        want = self.configs[k]
+        st = _SWITCHED
+        if "binding" not in st:  # as the worker started: not bound, as the system decides
+            st.update(binding="none", qos="system", priority="below_normal",
+                      everything=tuple(cpus.allowed_cpus() or ()))
+        binding = want["cpu_binding"]
+        if binding != st["binding"]:
+            target = st["everything"] if binding == "none" else \
+                self.placements[binding].worker_cpus(_worker_id())
+            if target and cpus.pin_process(target):
+                st["binding"] = binding
+        if want["worker_qos"] != st["qos"]:
+            if cpus.set_power_throttling(False if want["worker_qos"] == "high" else None):
+                st["qos"] = want["worker_qos"]
+        if want["worker_priority"] != st["priority"]:
+            if cpus.set_priority(want["worker_priority"]):
+                st["priority"] = want["worker_priority"]
+        st["code"] = code
+        row = self.status[_worker_id() % self.status.shape[0]]
+        row[1] = int(st["binding"] == binding)
+        row[2] = int(st["qos"] == want["worker_qos"])
+        row[3] = int(st["priority"] == want["worker_priority"])
+        row[0] = gen  # last: the row is whole once its generation shows
+
+
+def _importable():
+    """This module as the data workers import it to unpickle SwitchedFrames: "probe", from
+    gpu_training (on the path this module put it on), whatever name it was loaded under here."""
+    import importlib
+
+    return importlib.import_module("probe")
+
+
+#: torch.cuda._sleep cycles a second, once measured
+_GPU_CYCLES: dict = {}
+
+
+def busy_for(seconds: float, cuda: bool = False) -> None:
+    """Keep this thread busy for ``seconds`` without holding the interpreter lock, as training's
+    main thread is while it waits on the GPU: on CUDA a kernel that spins that long on the GPU
+    and the wait for it (the driver spins); otherwise hashing, which lets go of the lock."""
+    if seconds <= 0:
+        return
+    if cuda:
+        try:
+            import torch
+
+            if "per_second" not in _GPU_CYCLES:
+                torch.cuda.synchronize()
+                t = time.perf_counter()
+                torch.cuda._sleep(10_000_000)
+                torch.cuda.synchronize()
+                _GPU_CYCLES["per_second"] = 1e7 / max(time.perf_counter() - t, 1e-6)
+            torch.cuda._sleep(int(seconds * _GPU_CYCLES["per_second"]))
+            torch.cuda.synchronize()
+            return
+        except Exception:  # a PyTorch without it: the processor instead
+            pass
+    import hashlib
+
+    block = b"\0" * 65536
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        hashlib.sha256(block)
+
+
+class TrainingLoad:
+    """What the training process does with every batch while its data workers make the next
+    ones, so that the ways of running them are measured as training runs them: ``step(batch)``
+    (a real training step on the GPU: the batch copied there without waiting from pinned
+    memory, the forward and backward pass, the optimiser, the moving average); without one,
+    the batch copied to the GPU where ``cuda`` and this thread kept busy for ``busy_seconds``
+    (busy_for). ``what`` says which; ``close()`` waits for the GPU and undoes what the step
+    set up."""
+
+    def __init__(self, step=None, busy_seconds: float = 0.0, cuda: bool = False, what: str = "",
+                 restore=None):
+        self.step = step
+        self.busy_seconds = float(busy_seconds or 0.0)
+        self.cuda = bool(cuda)
+        self.what = what or (f"the main thread kept busy for {1000 * self.busy_seconds:.0f} ms a "
+                             f"batch" if self.busy_seconds else "nothing done with the batches")
+        self._restore = restore
+
+    def __call__(self, batch) -> None:
+        if self.step is not None:
+            self.step(batch)
+            return
+        if self.cuda:
+            for t in batch:
+                t.to("cuda", non_blocking=True)
+        busy_for(self.busy_seconds, self.cuda)
+
+    def close(self) -> None:
+        try:
+            if self.cuda:
+                import torch
+
+                torch.cuda.synchronize()
+        finally:
+            if self._restore is not None:
+                self._restore()
+                self._restore = None
+
+
+def gpu_training_load(view: str, chunk: int | None, speedups, lr: float, sample) -> TrainingLoad:
+    """A real training step of the full network of ``view`` on the GPU for every batch, as the
+    runs take it (head chunking ``chunk``, GPU speedups ``speedups``; the window view leaves the
+    measured channel out), after three steps on ``sample`` (a batch as the loaders deliver it):
+    cuDNN's benchmark, where on, chooses its algorithms in the first."""
+    import torch
+    from train_charge_net import V3_WINDOW
+
+    from lcmsdeconv.nn.losses import ChargeLoss
+    from lcmsdeconv.nn.model import build_model
+    from lcmsdeconv.nn.train import (
+        EMA,
+        TrainConfig,
+        _batch_dict,
+        restore_gpu_flags,
+        set_gpu_flags,
+    )
+
+    cfg = TrainConfig()
+    before = set_gpu_flags(speedups)
+    try:
+        in_ch = sample[0].shape[1] - (0 if view == "comb" else 1)
+        torch.manual_seed(0)
+        model = build_model("full", z_max=cfg.z_max, in_ch=in_ch, arch="ladder",
+                            window=V3_WINDOW, iso=True, view=view, head_chunk=chunk)
+        model = model.cuda().train()
+        if "index_select" in speedups:
+            model.head_gather = "index_select"
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=cfg.weight_decay,
+                                fused=True if "fused_adamw" in speedups else None)
+        ema = EMA(model, cfg.ema_decay)
+        loss_fn = ChargeLoss(heat_weight=cfg.heat_weight)
+        params = list(model.parameters())
+
+        def step(batch) -> None:
+            b = _batch_dict(batch, "cuda")
+            if view != "comb":
+                b["features"] = b["features"][:, :-1].contiguous()
+            losses = loss_fn(model(b["features"]), b)
+            opt.zero_grad()
+            losses["loss"].backward()
+            torch.nn.utils.clip_grad_norm_(params, cfg.grad_clip)
+            opt.step()
+            ema.update(model)
+
+        for _ in range(3):
+            step(sample)
+        torch.cuda.synchronize()
+    except BaseException:
+        restore_gpu_flags(before)
+        raise
+    how = f"{chunk} charges at a time" if chunk else "all charges at once"
+    return TrainingLoad(step=step, cuda=True, restore=lambda: restore_gpu_flags(before),
+                        what=f"a training step of the {view} view on the GPU for every batch "
+                             f"({how}; GPU speedups {', '.join(speedups) or 'none'})")
+
+
+def training_load(batch_size: int, chunk: int | None, speedups, lr: float,
+                  step_seconds: float | None) -> TrainingLoad:
+    """The training-like load of data_loading_test: a real training step of the window view on
+    the GPU for every batch (gpu_training_load); where that cannot run, every batch copied to
+    the GPU and the main thread kept busy for ``step_seconds`` (the step setup measured);
+    without CUDA (tests), only the latter."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return TrainingLoad(busy_seconds=step_seconds or 0.0)
+    try:
+        b = first_batch(batch_size)
+        sample = [b[k].pin_memory() for k in ("features", "topk_z", "topk_w", "heat")]
+        return gpu_training_load("window", chunk, tuple(speedups), lr, sample)
+    except Exception as exc:  # e.g. out of GPU memory: the load without the network
+        torch.cuda.empty_cache()
+        print(f"  a training step could not run in this process ({type(exc).__name__}: "
+              f"{str(exc)[:200]}); each batch is copied to the GPU instead and the main thread "
+              f"kept busy for {1000 * (step_seconds or 0.0):.0f} ms", flush=True)
+        return TrainingLoad(busy_seconds=step_seconds or 0.0, cuda=True,
+                            what=f"every batch copied to the GPU and the main thread kept busy "
+                                 f"for {1000 * (step_seconds or 0.0):.0f} ms")
+
+
+def _cpu_split(me) -> tuple[float, float]:
+    """Processor seconds this computer has spent busy, and those of this process (``me``) and
+    its children (psutil); (0, 0) where they cannot be read."""
+    import psutil
+
+    try:
+        t = psutil.cpu_times()
+        busy = sum(t) - sum(getattr(t, f, 0.0) for f in (
+            "idle", "iowait", "guest", "guest_nice", "interrupt", "dpc"))
+        ours = 0.0
+        for p in [me, *me.children(recursive=True)]:
+            try:
+                c = p.cpu_times()
+                ours += c.user + c.system
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return busy, ours
+    except Exception:
+        return 0.0, 0.0
+
+
+def _timed_window(batches, warm: int, timed: int, batch_size: int, load, stats, kinds: dict,
+                  limit: float) -> dict:
+    """``timed`` batches of ``batches`` after ``warm`` (at least one), ``load`` doing with each
+    what training does: spectra a second (timed * batch_size over the time from the arrival of
+    the last warm-up batch to that of the last timed one), the share of that time this process
+    waited for them, its processor time a batch, what the workers made on each class of core
+    (``stats``, an ItemStats; ``kinds``: the class of each logical processor) and how many
+    logical processors other programs kept busy meanwhile. Raises TimeoutError past ``limit``
+    seconds."""
+    import psutil
+
+    me = psutil.Process()
+    start = time.perf_counter()
+    waited = 0.0
+    t0 = t1 = since = made = cpu0 = cpu1 = split0 = split1 = None
+    for k in range(warm + timed):
+        t = time.perf_counter()
+        try:
+            batch = next(batches)
+        except StopIteration:
+            raise RuntimeError(f"the spectra ended after {k} batches") from None
+        now = time.perf_counter()
+        if k >= warm:
+            waited += now - t
+        if k == warm - 1:
+            t0, since, split0 = now, stats.snapshot(), _cpu_split(me)
+            cpu0 = sum(me.cpu_times()[:2])
+        elif k == warm + timed - 1:
+            t1, split1 = now, _cpu_split(me)
+            cpu1 = sum(me.cpu_times()[:2])
+            made = stats.summary(since, kinds, now - t0)
+        load(batch)
+        batch = None
+        if time.perf_counter() - start > limit:
+            raise TimeoutError(f"a window took more than {limit:.0f} s")
+    seconds = max(t1 - t0, 1e-9)
+    others = max(0.0, (split1[0] - split0[0]) - (split1[1] - split0[1])) / seconds
+    return {"spectra_per_second": timed * batch_size / seconds, "seconds": seconds,
+            "spectra": timed * batch_size, "waiting_share": waited / seconds,
+            "main_cpu_ms_per_batch": 1000.0 * (cpu1 - cpu0) / timed, "others": others,
+            "by_kind": made["by_kind"], "workers_busy": made.get("workers_busy")}
+
+
+def _epoch(warm: int, timed: int, lead: int, batch_size: int) -> list[int]:
+    """The spectra of a window: ``warm`` batches to warm up, the ``timed`` ones (the same in
+    every window), ``lead`` more that keep the workers busy until the last timed one is in."""
+    B = batch_size
+    return ([DATA_WARM_BASE + i for i in range(warm * B)] + list(range(timed * B))
+            + [DATA_LEAD_BASE + i for i in range(lead * B)])
+
+
+def _dataloader_window(frames, workers: int, batch_size: int, epoch: list, warm: int,
+                       timed: int, load, kinds: dict, limit: float) -> dict:
+    """One window of today's way: torch's DataLoader as training starts it (``workers``
+    workers at below-normal priority, two batches in work each, into pinned memory where CUDA
+    is available), stopped after the timed batches."""
+    import torch
+    from torch.utils.data import DataLoader
+
+    from lcmsdeconv.synth.dataset import CountedItems, mp_context, worker_init_for
+    from lcmsdeconv.synth.pool import ItemStats
+
+    stats = ItemStats(workers, shared=True)
+    loader = DataLoader(CountedItems(frames, stats), batch_size=batch_size, sampler=epoch,
+                        num_workers=workers, worker_init_fn=worker_init_for(None, workers),
+                        prefetch_factor=2, timeout=WORKER_TIMEOUT, drop_last=True,
+                        pin_memory=torch.cuda.is_available(), **mp_context(workers))
+    batches = iter(loader)
+    try:
+        return _timed_window(batches, warm, timed, batch_size, load, stats, kinds, limit)
+    finally:
+        stop = getattr(batches, "_shutdown_workers", None)
+        if stop is not None:
+            stop()  # each worker finishes the batch it is making, then ends
+        del batches
+
+
+@contextlib.contextmanager
+def _watchdog(seconds: float, stop, what: str):
+    """Run ``stop()`` in a thread of its own once ``seconds`` have passed, unless the block has
+    ended first, and wait for it: the ordered loader waits for a batch without a timeout of its
+    own, and its pool stopped (WorkerPool.close) makes that wait fail at once. A block the
+    watchdog stopped raises TimeoutError ("``what`` took more than ... s") in place of what it
+    raised, or of its end."""
+    lock = threading.Lock()
+    state = {"over": False, "fired": False}
+
+    def fire() -> None:
+        with lock:
+            if state["over"]:
+                return
+            state["fired"] = True
+        stop()
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+
+    def over() -> bool:  # whether the watchdog stopped the block (once its stop has finished)
+        with lock:
+            state["over"] = True
+        timer.cancel()
+        if state["fired"]:
+            timer.join(60.0)  # stop() takes seconds: the workers terminated after a short wait
+        return state["fired"]
+
+    late = f"{what} took more than {seconds:.0f} s"
+    try:
+        yield
+    except Exception as exc:
+        if over():
+            raise TimeoutError(late) from exc
+        raise
+    except BaseException:  # Ctrl+C: as it is
+        over()
+        raise
+    if over():
+        raise TimeoutError(late)
+
+
+def _merge_windows(windows: list[dict]) -> dict:
+    """A way's windows taken together: its spectra over its time, each window's rate and how far
+    apart they are (``drift``), and the rest as means or sums."""
+    from lcmsdeconv.nn.cpus import cpu_ranges, parse_cpu_list
+
+    seconds = sum(w["seconds"] for w in windows)
+    spectra = sum(w["spectra"] for w in windows)
+    rates = [w["spectra_per_second"] for w in windows]
+
+    def mean(key, digits):
+        vals = [w[key] for w in windows if w.get(key) is not None]
+        return round(statistics.fmean(vals), digits) if vals else None
+
+    kinds: dict = {}
+    for w in windows:
+        for kind, d in (w.get("by_kind") or {}).items():
+            a = kinds.setdefault(kind, {"items": 0, "weighted": 0.0, "rated": 0, "moved": 0,
+                                        "processors": set()})
+            a["items"] += int(d.get("items") or 0)
+            a["moved"] += int(d.get("moved") or 0)
+            if d.get("per_worker_per_second"):
+                a["weighted"] += float(d["per_worker_per_second"]) * int(d.get("items") or 0)
+                a["rated"] += int(d.get("items") or 0)
+            if d.get("processors"):
+                a["processors"].update(parse_cpu_list(d["processors"]))
+    out = {"spectra_per_second": round(spectra / max(seconds, 1e-9), 2),
+           "windows": [round(r, 2) for r in rates],
+           "drift": (round((max(rates) - min(rates)) / statistics.fmean(rates), 3)
+                     if len(rates) > 1 and statistics.fmean(rates) > 0 else None),
+           "seconds": round(seconds, 1), "spectra": spectra,
+           "waiting_share": mean("waiting_share", 3),
+           "main_cpu_ms_per_batch": mean("main_cpu_ms_per_batch", 1),
+           "others": mean("others", 2), "workers_busy": mean("workers_busy", 3),
+           "by_kind": {kind: {"items": a["items"],
+                              "per_second": round(a["items"] / max(seconds, 1e-9), 2),
+                              "per_worker_per_second": (round(a["weighted"] / a["rated"], 3)
+                                                        if a["rated"] else None),
+                              "moved": a["moved"], "processors": cpu_ranges(a["processors"])}
+                       for kind, a in sorted(kinds.items())}}
+    if any("made_twice" in w for w in windows):
+        out["made_twice"] = sum(int(w.get("made_twice") or 0) for w in windows)
+    if any("applied" in w for w in windows):
+        out["applied"] = min(int(w.get("applied") or 0) for w in windows)
+    return out
+
+
+def data_loading_test(workers: int, rate: float | None, load: TrainingLoad | None = None,
+                      frames=None, batch_size: int = 4, names=None,
+                      window_seconds: float = DATA_WINDOW_SECONDS) -> dict:
+    """Which way of running ``workers`` data workers (DATA_CONFIGS) delivers the most spectra
+    to a training process, measured in a few minutes on the recipe's spectra (``frames`` stands
+    in for them in tests) with ``load`` doing with every batch what training does
+    (TrainingLoad). Today's way, torch's DataLoader, is timed first and last, each time with
+    workers of its own; between them ONE ordered loader whose workers start once and switch
+    from way to way while they run (SwitchedFrames: the training process takes its part as
+    training does), each way timed twice in mirrored order (A B C ... C B A), so that a load
+    that drifts over the test weighs on every way alike. Every window times the same spectra
+    (``rate``, today's spectra a second, sizes them: about ``window_seconds``), after a warm-up
+    and with more to come, so that the workers are in full flow. Returns the record of
+    machine.json's "data_loader_test": each way's spectra a second over both its windows,
+    the windows' rates and how far apart they are, what the workers made on each class of
+    core, how long the training process waited and how many logical processors other programs
+    kept busy; with "error" where the test stopped (choose_data_loading then keeps today's)."""
+    import torch
+    from train_all import RECIPE
+
+    from lcmsdeconv.nn import cpus
+    from lcmsdeconv.nn.train import _warm_up
+    from lcmsdeconv.synth.dataset import FrameDataset
+    from lcmsdeconv.synth.pool import (
+        OrderedBatches,
+        SlotRing,
+        WorkerPool,
+        default_window,
+        ring_slots,
+    )
+
+    load = load or TrainingLoad()
+    B = int(batch_size)
+    topo = cpus.detect()
+    allowed = cpus.allowed_cpus() or sorted(c for core in topo.cores for c in core.cpus)
+    checks = data_checks(topo, allowed, workers)
+    names = [n for n in (names or DATA_CONFIGS) if n in data_configs(checks)]
+    if "today" not in names:
+        names.insert(0, "today")
+    ordered = [n for n in names if n != "today"]
+    kinds = topo.kind_of_cpu()
+    if frames is None:
+        mix = recipe_mixture()
+        _warm_up(mix)  # numba's kernels compiled once, before the workers start
+        frames = FrameDataset(mix, DATA_LEAD_BASE + 1_000_000, base_seed=DATA_SEED)
+    placements = ({b: cpus.plan(topo, workers=workers, allowed=allowed, mode=b)
+                   for b in ("pool", "core")} if checks["binding"] else {})
+    window = default_window(workers, B)
+    rounds = max(DATA_MIN_ROUNDS, math.ceil((rate or 0.0) * window_seconds / (B * workers)))
+    timed = rounds * workers  # batches
+    warm = {"dataloader": DATA_DL_WARM_ROUNDS * workers, "ordered": math.ceil(2 * workers / B)}
+    lead = {"dataloader": 2 * workers, "ordered": math.ceil(window / B) + 1}
+    epochs = {k: _epoch(warm[k], timed, lead[k], B) for k in warm}
+    pace = max(rate or 0.0, 0.1)
+
+    def limit(kind: str) -> float:
+        expected = (warm[kind] + timed) * B / pace
+        extra = WORKER_TIMEOUT if kind == "dataloader" else 0.0
+        return extra + max(DATA_WINDOW_MIN_LIMIT, DATA_WINDOW_LIMIT * expected)
+
+    record = {"recipe": RECIPE, "workers": workers, "batch": B, "timed_spectra": timed * B,
+              "ordered_window": window, "load": load.what, "checks": checks,
+              "placements": {b: p.describe() for b, p in placements.items()},
+              "order": [], "configs": {}}
+    windows: dict = {n: [] for n in names}
+    configs = [data_settings(n) for n in ordered]
+    qos_before = cpus.get_power_throttling()
+    me_memory = {"worker": 0.0, "total": 0.0}
+    started = time.perf_counter()
+    pool = None
+
+    def run(name: str, fn) -> None:
+        w = fn()
+        windows[name].append(w)
+        record["order"].append(name)
+        print(f"  {name}: {w['spectra_per_second']:.1f} spectra/s over {w['seconds']:.0f} s",
+              flush=True)
+
+    try:
+        run("today", lambda: _dataloader_window(frames, workers, B, epochs["dataloader"],
+                                                warm["dataloader"], timed, load, kinds,
+                                                limit("dataloader")))
+        if ordered:
+            spec = frames.item_spec() if hasattr(frames, "item_spec") else None
+            ring = SlotRing(ring_slots(window, B, workers), spec) if spec else None
+            base = cpus.Placement("none", (), tuple(() for _ in range(workers)),
+                                  tuple("?" for _ in range(workers)))
+            pool = WorkerPool(workers, init=functools.partial(cpus.worker_init, placement=base),
+                              ring=ring)
+            stop = functools.partial(pool.close, timeout=DATA_STOP_SECONDS)  # for _watchdog
+            control = torch.zeros(1, dtype=torch.int64).share_memory_()
+            status = torch.full((workers, 4), -1, dtype=torch.int64).share_memory_()
+            frames_switched = _importable().SwitchedFrames(frames, control, status, configs,
+                                                           placements)
+            gen = 1
+            control[0] = gen * DATA_CODES
+            ob = OrderedBatches(frames_switched, B, _epoch(warm["ordered"], 0, 0, B), pool,
+                                window, pin_memory=torch.cuda.is_available(), name="probe")
+            with _watchdog(WORKER_TIMEOUT + limit("ordered"), stop,
+                           "the ordered loader's start"):
+                for _batch in ob:  # every worker up and warm (each spawned one imports PyTorch)
+                    pass
+            ob.sampler = epochs["ordered"]
+            sequence = ordered + ordered[::-1]
+            for turn, name in enumerate(sequence):
+                gen += 1
+                s = configs[ordered.index(name)]
+                cpus.pin_process(placements[s["cpu_binding"]].main
+                                 if s["cpu_binding"] != "none" else allowed)
+                cpus.set_power_throttling(False if s["worker_qos"] == "high" else None)
+                control[0] = gen * DATA_CODES + ordered.index(name)
+                twice = pool.duplicates
+
+                def window_of(gen=gen, twice=twice, turn=turn):
+                    batches = iter(ob)
+                    try:
+                        with _watchdog(limit("ordered"), stop, "a window"):
+                            w = _timed_window(batches, warm["ordered"], timed, B, load,
+                                              pool.stats, kinds, limit("ordered"))
+                    finally:
+                        batches.close()
+                    rows = status.clone()
+                    w["applied"] = int(((rows[:, 0] == gen) & (rows[:, 1:] == 1).all(1)).sum())
+                    w["made_twice"] = pool.duplicates - twice
+                    if turn in (len(ordered) - 1, len(sequence) - 1):  # their memory, twice
+                        sizes = _children_gb()
+                        if sizes:
+                            me_memory["worker"] = max(me_memory["worker"], max(sizes))
+                            me_memory["total"] = max(me_memory["total"], sum(sizes))
+                    return w
+
+                run(name, window_of)
+            pool.close()
+            pool = None
+            cpus.pin_process(allowed)
+            cpus.restore_power_throttling(qos_before)
+            record["ordered_worker_gb"] = round(me_memory["worker"], 2)
+            record["ordered_workers_total_gb"] = round(me_memory["total"], 2)
+            record["ordered_slots_gb"] = round(ring.nbytes / 2**30, 2) if ring else 0.0
+        run("today", lambda: _dataloader_window(frames, workers, B, epochs["dataloader"],
+                                                warm["dataloader"], timed, load, kinds,
+                                                limit("dataloader")))
+    except Exception as exc:  # the test stops; today's way is kept
+        record["error"] = _error_text(exc)
+        print(f"  the test stopped: {record['error']}", flush=True)
+    finally:
+        if pool is not None:
+            pool.close()
+        cpus.pin_process(allowed)
+        cpus.restore_power_throttling(qos_before)
+    record["seconds"] = round(time.perf_counter() - started, 1)
+    record["configs"] = {n: {**data_settings(n), **_merge_windows(ws)}
+                         for n, ws in windows.items() if ws}
+    return record
+
+
+def _error_text(exc: BaseException, limit: int = 500) -> str:
+    """An exception in a line: its first line and, where its message carries a traceback (a
+    data worker's error, as torch's DataLoader and lcmsdeconv.synth.pool raise it), its last."""
+    lines = [line.strip() for line in str(exc).strip().splitlines() if line.strip()]
+    text = f"{type(exc).__name__}: {lines[0] if lines else ''}"
+    if len(lines) > 1:
+        text += f" ... {lines[-1]}"
+    return text[:limit]
+
+
+def _children_gb() -> list[float]:
+    """RAM of each child process of this one (the data workers), as the task manager shows
+    it."""
+    import psutil
+
+    sizes = []
+    for p in psutil.Process().children(recursive=True):
+        try:
+            sizes.append(process_gb(p))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return sizes
+
+
+def data_noise(configs: dict, order=None) -> dict:
+    """How much data_loading_test's rates vary by chance, read from how far apart each way's
+    two windows are (``configs``: {name: {"windows": [...], ...}}; ``order``: the ways in the
+    order the test timed their windows, its "order"; by default today's first and last and the
+    others as ``configs`` lists them, there and back). The mirrored order keeps a steady drift
+    over the test (a processor warming up, a program ending) out of the ways' rates, but moves
+    each way's two windows apart in proportion to the time between them: that drift is fitted
+    as a straight line through the differences of the ordered loader's ways (second window less
+    first, relative to their mean) against the time between their windows, where at least two
+    ways have both, and taken out. Returns ``window``, the noise of a window's rate (one
+    standard deviation, relative: the root mean square of what the line leaves of those
+    differences, a degree of freedom less for the line, over √2), ``drift`` (the line's change
+    over the whole test, relative; below 0 the computer got slower) and ``ways``, the standard
+    error of each way's rate (relative): ``window``, or its own windows' where they are further
+    apart than the drift and ``window`` explain (as today's, at the ends of the test with workers
+    of their own, can be), over the square root of its number of windows."""
+    names = [n for n, c in configs.items() if c.get("windows")]
+    if not (order and all(list(order).count(n) == len(configs[n]["windows"]) for n in names)):
+        others = [n for n in names if n != "today"]
+        order = ["today", *others, *others[::-1], "today"]
+    span = max(len(order) - 1, 1)
+    pairs = {}  # name: (its second window less its first over their mean, the time between)
+    for n in names:
+        w = [float(r) for r in configs[n]["windows"]]
+        at = [i / span for i, m in enumerate(order) if m == n]
+        mean = statistics.fmean(w)
+        if len(w) == 2 and len(at) == 2 and mean > 0:
+            pairs[n] = ((w[1] - w[0]) / mean, at[1] - at[0])
+    fit = {n: p for n, p in pairs.items() if n != "today" and p[1] > 0}
+    if len(fit) >= 2:
+        drift = sum(d * t for d, t in fit.values()) / sum(t * t for _d, t in fit.values())
+        dof = len(fit) - 1
+    else:  # too few ways to tell a drift from the noise: none taken out
+        fit, drift, dof = pairs, 0.0, len(pairs)
+    left = {n: d - drift * t for n, (d, t) in pairs.items()}
+    window = math.sqrt(sum(left[n] ** 2 for n in fit) / (2 * dof)) if dof else 0.0
+    ways = {n: max(window, abs(left.get(n, 0.0)) / math.sqrt(2))
+            / math.sqrt(len(configs[n]["windows"])) for n in names}
+    return {"window": window, "drift": drift, "ways": ways}
+
+
+def choose_data_loading(configs: dict, workers: int | None = None, margin: float = DATA_MARGIN,
+                        busy: float = DATA_BUSY, order=None, errors: float = DATA_SE) -> dict:
+    """The way training runs its data workers, from data_loading_test's ``configs`` ({name of
+    DATA_CONFIGS: {"spectra_per_second", "windows", "drift", "applied", ...}}; ``order``: the
+    test's "order", for data_noise): today's unless another delivers at least ``margin`` more
+    beyond what the test cannot tell apart. The ways are taken in the order of how much they
+    change (data_cost, then DATA_CONFIGS' order), each over the one chosen so far only if its
+    gain over that one, less ``errors`` standard errors of the gain (data_noise: the two rates'
+    standard errors taken together), is at least ``margin``, and it delivers at least ``margin``
+    more than every way that changes less: each further change pays for itself. Today's is kept
+    where it was not measured, or where its two windows (the first and the last of the test)
+    are more than ``busy`` apart: the computer was busy with something else. A way whose own two
+    windows are more than ``busy`` apart, or that fewer than ``workers`` workers took, is left
+    out (``left_out``, why). Returns the settings (DATA_KEYS), the way's name (``config``), its
+    spectra a second and today's, the gain, a window's noise and the drift over the test
+    (``window_noise``, ``test_drift``: data_noise) and why (``reason``)."""
+    today = configs.get("today") or {}
+    base = today.get("spectra_per_second")
+    out = {**data_settings("today"), "config": "today", "spectra_per_second": base,
+           "today_spectra_per_second": base, "gain": 0.0, "left_out": {}}
+    if not base:
+        out["reason"] = "as before: setup's test did not measure the data workers"
+        return out
+    noise = data_noise(configs, order)
+    out.update(window_noise=round(noise["window"], 4), test_drift=round(noise["drift"], 4))
+    if (today.get("waiting_share") is not None
+            and today["waiting_share"] < DATA_GPU_BOUND):
+        out["gpu_bound"] = True
+    drift = today.get("drift")
+    if drift is not None and drift > busy:
+        rates = ", ".join(f"{r:.1f}" for r in today.get("windows") or [])
+        out["busy"] = True
+        out["reason"] = (f"as before: the computer was busy with something else during setup's "
+                         f"test (as before, the data workers delivered {rates} spectra/s in its "
+                         f"first and last minute, {100 * drift:.0f} % apart)")
+        return out
+    candidates = []
+    for name, c in configs.items():
+        if name == "today" or name not in DATA_CONFIGS:
+            continue
+        why = None
+        if not c.get("spectra_per_second"):
+            why = "not measured"
+        elif c.get("drift") is not None and c["drift"] > busy:
+            why = f"its two windows {100 * c['drift']:.0f} % apart"
+        elif workers and c.get("applied") is not None and c["applied"] < workers:
+            why = f"{c['applied']} of {workers} workers took it"
+        if why:
+            out["left_out"][name] = why
+            continue
+        candidates.append((data_cost(data_settings(name)), list(DATA_CONFIGS).index(name), name))
+    rates = {"today": float(base),
+             **{n: float(configs[n]["spectra_per_second"]) for _c, _i, n in candidates}}
+
+    def error(name: str, other: str) -> float:  # of the gain of ``name`` over ``other``
+        return math.hypot(noise["ways"].get(name, 0.0), noise["ways"].get(other, 0.0))
+
+    choice = "today"
+    for cost, _i, name in sorted(candidates):
+        less = ["today", *(n for c, _j, n in candidates if c < cost)]
+        if (rates[name] / rates[choice] - 1.0 - errors * error(name, choice) >= margin
+                and all(rates[name] >= rates[n] * (1.0 + margin) for n in less)):
+            choice = name
+    rate = rates[choice]
+    out.update(data_settings(choice), config=choice, spectra_per_second=rate,
+               gain=round(rate / base - 1.0, 3))
+    if choice != "today":
+        out["reason"] = (f"{100 * (rate / base - 1.0):.0f} % more spectra per second than as "
+                         f"before in setup's test ({rate:.1f} against {base:.1f})")
+    else:
+        best = max(candidates, key=lambda c: rates[c[2]], default=None)
+        fastest = ""
+        if best is not None:
+            fastest = (f"; the fastest, {best[2]}, {100 * (rates[best[2]] / base - 1.0):+.0f} % "
+                       f"(± {100 * error(best[2], 'today'):.1f} %)")
+        beyond = ("" if errors <= 0 else ", beyond its standard error" if errors == 1 else
+                  f", beyond {errors:g} standard errors")
+        out["reason"] = (f"as before: no other way was at least {100 * margin:.0f} % faster in "
+                         f"setup's test than the ways that change less{beyond}{fastest}")
+    return out
+
+
+#: how data_lines names the classes of cores
+_KIND_WORDS = {"P": "performance", "E": "efficient", "LP": "low-power", "?": ""}
+
+
+def data_lines(test: dict | None, decision: dict) -> list[str]:
+    """A short account of the data-loading test (data_loading_test) and its choice for the
+    console and setup.log."""
+    from train_all import data_words
+
+    lines = []
+    configs = (test or {}).get("configs") or {}
+    if configs:
+        lines.append(f"  {test['workers']} workers, {test['timed_spectra']} spectra timed in each "
+                     f"window, {test.get('load')}; {test.get('seconds', 0) / 60:.1f} min. "
+                     f"Spectra/s (first and second window), and a busy worker's on each class "
+                     f"of core (today: torch's DataLoader as before; the others the ordered "
+                     f"loader; pool: the workers on the cores the training process does not "
+                     f"keep; core: each on its own; high: opted out of power throttling; "
+                     f"normal: normal priority):")
+        base = (configs.get("today") or {}).get("spectra_per_second")
+        for name, c in configs.items():
+            rate = c["spectra_per_second"]
+            gain = f" {100 * (rate / base - 1.0):+4.0f} %" if base and name != "today" else \
+                "       "
+            ws = ", ".join(f"{r:.1f}" for r in c.get("windows") or [])
+            per = ", ".join(
+                f"{_KIND_WORDS.get(k, k)} {d['per_worker_per_second']:.2f}/s".strip()
+                for k, d in (c.get("by_kind") or {}).items() if d.get("per_worker_per_second"))
+            extra = ""
+            if c.get("waiting_share") is not None:
+                extra += f"; waited {100 * c['waiting_share']:.0f} %"
+            left = (decision.get("left_out") or {}).get(name)
+            if left:
+                extra += f"; left out: {left}"
+            lines.append(f"    {name:<16} {rate:6.1f}{gain} ({ws}); {per or '-'}{extra}")
+        if decision.get("window_noise") is not None:
+            lines.append(f"  a window's rate varied by about {100 * decision['window_noise']:.1f} "
+                         f"% by chance (how far apart each way's two windows are, after a steady "
+                         f"drift of {100 * (decision.get('test_drift') or 0.0):+.1f} % over the "
+                         f"test)")
+    if (test or {}).get("error"):
+        lines.append(f"  the test stopped: {test['error']}")
+    if (test or {}).get("checks", {}).get("why_not"):
+        lines.append("  not measured here: " + "; ".join(
+            f"{k} ({v})" for k, v in test["checks"]["why_not"].items()))
+    if decision.get("gpu_bound"):
+        lines.append("  the GPU set the pace of today's way already: the ways could not be told "
+                     "apart above it")
+    lines.append(f"  training uses: {data_words(decision)}: {decision.get('reason')}")
+    return lines
+
+
+def window_step_seconds(gpu: dict, speed: dict, chunk: int | None, speedups) -> float | None:
+    """Seconds of a training step of the window view as setup measured it: on the runs' first
+    training batch with ``speedups`` (speedup_timings, measured with the runs' chunking), else
+    at the active-bin cap with the chunking ``chunk`` (gpu_views); None where not measured."""
+    from train_all import speedup_name
+
+    ms = ((speed.get("speedup_timings") or {}).get("window") or {}).get(speedup_name(speedups))
+    if ms:
+        return float(ms) / 1000.0
+    m = (gpu.get("gpu_views") or {}).get("window") or {}
+    if chunk is None:
+        m = m.get("unchunked") or {}
+    return float(m["step_seconds"]) if m.get("step_seconds") else None
+
+
+def measure_data_loading(workers: int, rate: float | None, batch_size: int, chunk: int | None,
+                         speedups, lr: float, step_seconds: float | None) -> dict:
+    """data_loading_test of ``workers`` workers under a training-like load (training_load: the
+    window view's training step, with the runs' head chunking ``chunk`` and GPU speedups
+    ``speedups``); a failure is returned as {"error": ...}."""
+    try:
+        load = training_load(batch_size, chunk, speedups, lr, step_seconds)
+    except Exception as exc:
+        return {"error": _error_text(exc)}
+    try:
+        return data_loading_test(workers, rate, load=load, batch_size=batch_size)
+    except Exception as exc:
+        return {"error": _error_text(exc)}
+    finally:
+        try:
+            load.close()
+        except Exception:
+            pass
+
+
 def main() -> int:
     from train_all import (
         BATCH,
@@ -767,6 +1745,9 @@ def main() -> int:
     ap.add_argument("--batch-size", type=int, default=BATCH,
                     help=f"spectra per step to measure the GPU at (default {BATCH}, the recipe's)")
     ap.add_argument("--out", type=Path, default=ROOT / "gpu_training" / "machine.json")
+    ap.add_argument("--no-data-test", action="store_true",
+                    help="do not measure how the data workers deliver spectra fastest (a few "
+                         "minutes): training then runs them as before")
     ap.add_argument("--no-gpu", action="store_true", help=argparse.SUPPRESS)  # tests only
     # one configuration of the GPU speedups, measured in a process of its own (measure_speedups)
     ap.add_argument("--speedup-child", type=Path, default=None, help=argparse.SUPPRESS)
@@ -779,8 +1760,15 @@ def main() -> int:
 
     import psutil
     import torch
+    from train_all import COMMON, data_words
 
-    from lcmsdeconv.nn.machine import cpu_cores, cpu_workers, ram_workers, single_threaded_workers
+    from lcmsdeconv.nn.machine import (
+        ORDERED_GB_PER_WORKER,
+        cpu_cores,
+        cpu_workers,
+        ram_workers,
+        single_threaded_workers,
+    )
 
     ram = args.ram_gb or default_ram
     if args.no_gpu:
@@ -877,15 +1865,61 @@ def main() -> int:
                   f"GPU speedups", flush=True)
         for line in speedup_lines(speed, view_chunks):
             print(line, flush=True)
+    # how the data workers deliver spectra fastest at the number chosen: torch's DataLoader, as
+    # before, against the ordered loader, bound to cores or not, with and without the opt-out of
+    # power throttling, at below-normal and normal priority, in mirrored order under a
+    # training-like load (the window view's training step, with its chunking and speedups)
+    data_test, not_run = None, None
+    if args.no_data_test or args.no_gpu:
+        not_run = "--no-data-test" if args.no_data_test else "the GPU was not measured"
+    else:
+        chunk = chunks.get("window", HEAD_CHUNK)
+        window_speedups = list((speed.get("gpu_speedups") or {}).get("window") or [])
+        print(f"Measuring how {chosen} data workers deliver spectra fastest: as before (torch's "
+              f"DataLoader) against the ordered loader, bound to cores or not, with and without "
+              f"the opt-out of power throttling, at below-normal and normal priority, each twice "
+              f"in mirrored order while this process trains on what they deliver (a few "
+              f"minutes) ...", flush=True)
+        data_test = measure_data_loading(
+            chosen, rate, args.batch_size, chunk, window_speedups,
+            float(COMMON[COMMON.index("--lr") + 1]),
+            window_step_seconds(gpu, speed, chunk, window_speedups))
+    if data_test and not data_test.get("error"):
+        decision = choose_data_loading(data_test.get("configs") or {}, chosen,
+                                       order=data_test.get("order"))
+    else:
+        decision = choose_data_loading({})
+        if data_test:
+            decision["reason"] = (f"as before: setup's test of the data workers stopped "
+                                  f"({data_test['error']})")
+        elif not_run:
+            decision["reason"] = f"as before: setup did not test the data workers ({not_run})"
+    for line in data_lines(data_test, decision):
+        print(line, flush=True)
+    tested = chosen  # the number of workers the data-loading test measured
+    slots_gb = ORDERED_GB_PER_WORKER if decision["loader"] == "ordered" else 0.0
+    ring_limited = False
+    if slots_gb and not args.workers:
+        # the ordered loader's shared slots, which no process counts as its own, are memory too
+        fit = max(1, ram_workers(ram, worker_gb + slots_gb, main_gb))
+        if fit < chosen:
+            chosen, ring_limited = fit, True
+    if decision.get("spectra_per_second") and data_test and not data_test.get("error"):
+        # what that way delivered under a training-like load, in proportion for fewer workers
+        # (the ordered loader: each worker adds its own spectra)
+        rate = float(decision["spectra_per_second"]) * chosen / tested
     info = {"recipe": RECIPE, "workers": chosen, "ram_budget_gb": ram,
             "ram_budget_default": args.ram_gb is None,
             "physical_ram_gb": round(total_ram, 1) if total_ram else None,
             "gpu_memory_gb": args.gpu_memory_gb, "gpu_batch": args.batch_size,
             "head_chunk": HEAD_CHUNK, "head_chunks": chunks, "main_gb": round(main_gb, 2),
             "worker_gb": round(worker_gb, 2),
-            "expected_ram_gb": round(main_gb + chosen * worker_gb, 1),
+            "expected_ram_gb": round(main_gb + chosen * (worker_gb + slots_gb), 1),
             RATE_KEY: round(rate, 1), RATE_WORKERS_KEY: chosen, "cores": cores,
-            "processor_workers": by_cpu, "measured": measured, **gpu, **speed}
+            "processor_workers": by_cpu, "measured": measured, **gpu, **speed,
+            "data_loader": {**decision, "workers": chosen}}
+    if data_test:
+        info["data_loader_test"] = data_test
     if failed:
         info["unchunked_failed"] = failed
     # train_all's default runs as it will train them, each at the slower of the data workers
@@ -911,6 +1945,9 @@ def main() -> int:
         print(f"  {view} view: training will score {how}", flush=True)
     if args.workers:
         why = "as --workers asks" if chosen == args.workers else f"{args.workers} did not run"
+    elif ring_limited:
+        why = (f"as many as the RAM budget holds with the ordered loader's shared slots; "
+               f"{tested} were tested")
     elif did_not_run:
         why = f"as many as ran: {did_not_run} did not"
     elif chosen >= by_cpu:
@@ -920,12 +1957,20 @@ def main() -> int:
     budget = (f"the default for this computer's {total_ram:.0f} GB of memory"
               if args.ram_gb is None and total_ram else
               "the default" if args.ram_gb is None else "--ram-gb")
-    speed_text = (f"measured at that number: {rate:.1f} spectra/s" if chosen == run["workers"]
-                  else f"{rate:.1f} spectra/s in proportion to the {run['spectra_per_second']:.1f} "
-                       f"of {run['workers']} measured")
+    if data_test and not data_test.get("error") and decision.get("spectra_per_second"):
+        speed_text = (f"{rate:.1f} spectra/s as setup's test measured them, loaded as above"
+                      + ("" if chosen == tested else
+                         f" (in proportion to the {decision['spectra_per_second']:.1f} of "
+                         f"{tested})"))
+    elif chosen == run["workers"]:
+        speed_text = f"measured at that number: {rate:.1f} spectra/s"
+    else:
+        speed_text = (f"{rate:.1f} spectra/s in proportion to the "
+                      f"{run['spectra_per_second']:.1f} of {run['workers']} measured")
     print(f"Chosen: {chosen} data workers ({why}); about {info['expected_ram_gb']:.1f} GB of RAM "
           f"with the training process, within the budget of {ram:g} GB ({budget}); "
           f"{speed_text}", flush=True)
+    print(f"Data loading: {data_words(decision)}", flush=True)
     if estimate:
         for line in pace_lines(estimate):
             print(line, flush=True)

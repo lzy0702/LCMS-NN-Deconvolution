@@ -214,8 +214,7 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
         ProfileRows,
         build_labels,
         featurize,
-        noisy_scan,
-        positive_points,
+        frame_scans,
         spectrum_to_grid,
     )
     from .render import profile_reach, render_profile
@@ -267,15 +266,13 @@ def generate_frame_profile(cfg: SynthConfig, rng: np.random.Generator,
     sat_level = float(clean.max() * weights.max() * rng.uniform(0.3, 0.8)) if saturate else None
     # each scan: shot noise on its share of the signal, electronic noise, saturation, and vendor
     # thresholding, which writes every point above the threshold together with its neighbours,
-    # as segments of at least five points (cfg.vendor_pad), never noise points one by one
-    frames_int = [noisy_scan(rng, clean, w, gain, esig, sat_level, thr, cfg.vendor_pad)
-                  for w in weights]
+    # as segments of at least five points (cfg.vendor_pad), never noise points one by one; the
+    # points each scan kept after thresholding (``scans``) and those of their sum (``raw``)
+    raw, scans = frame_scans(rng, clean, weights, gain, esig, sat_level, thr, cfg.vendor_pad,
+                             axis)
 
     # exactly the grid view inference builds for this summed spectrum: each scan resampled on
-    # its own points (what it kept after thresholding) and added, as for a region's scans
-    total = _sum_scans(frames_int)
-    raw = positive_points(axis, total)  # (axis[total > 0], total[total > 0])
-    scans = [positive_points(axis, s) for s in frames_int]
+    # its own points and added, as for a region's scans
     grid, observed, noise_sigma = spectrum_to_grid(raw[0], raw[1], polarity,
                                                    cfg.grid_step, cfg.grid_mz_max,
                                                    frames=scan_spectra(scans, polarity))

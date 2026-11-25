@@ -81,6 +81,26 @@ class TrainConfig:
     #: GPU speedups to use (names of GPU_SPEEDUPS): applied on CUDA only, recorded with the run,
     #: and free to differ when a run resumes
     gpu_speedups: tuple = ()
+    #: how the data workers' spectra reach the training: "dataloader" (torch's DataLoader, which
+    #: hands whole batches to its workers in turn, so that the slowest worker sets the pace) or
+    #: "ordered" (lcmsdeconv.synth.pool: single items to whichever worker is free, the same
+    #: batches); setup measures which delivers more (machine.json). LCMSDECONV_LOADER overrides
+    #: it. The settings from here on change where and how spectra are made, never which: they
+    #: are free to differ when a run resumes
+    loader: str = "dataloader"
+    #: the ordered loader's window: items in work or waiting at most (None: five per worker)
+    loader_window: int | None = None
+    #: where the data workers run (lcmsdeconv.nn.cpus): "none" (not bound, as before), "pool"
+    #: (all of them on the cores the training process does not keep) or "core" (each on its own
+    #: core; with the ordered loader only, the DataLoader gets "pool")
+    cpu_binding: str = "none"
+    #: the data workers' priority: "below_normal" (as before: the computer's other programs come
+    #: first) or "normal"
+    worker_priority: str = "below_normal"
+    #: Windows' power throttling of the data workers and the training process: "system" (as
+    #: before: Windows' heuristics decide, and they may slow windowless processes of lowered
+    #: priority) or "high" (opted out of EcoQoS: full speed whatever the window state)
+    worker_qos: str = "system"
 
 
 #: speedups of GPU training (``TrainConfig.gpu_speedups``, ``--gpu-speedups``). Each changes how
@@ -317,13 +337,11 @@ class _EpochWatch:
 
 def train(config: TrainConfig, synth_config=None):
     import torch
-    from torch.optim import AdamW
-    from torch.optim.lr_scheduler import OneCycleLR
 
     from ..synth.config import SynthConfig
     from ..synth.dataset import make_dataloaders
+    from ..synth.pool import choose_loader
     from .features import N_ISOTOPE_CHANNELS
-    from .losses import ChargeLoss
     from .model import VIEWS, build_model
 
     synth_config = synth_config or SynthConfig(z_max=config.z_max)
@@ -384,10 +402,52 @@ def train(config: TrainConfig, synth_config=None):
 
     if config.num_workers > 0:
         _warm_up(synth_config)
-    tl, vl = make_dataloaders(synth_config, config.train_len, config.val_len,
-                              batch_size=config.batch_size, num_workers=config.num_workers,
-                              base_seed=config.base_seed, cache=config.cache_frames,
-                              pin_memory=device.startswith("cuda"))
+    loader = choose_loader(config.loader)
+    main = _MainPlacement(*_placement(config, device, loader))
+    main.start()  # this process's power throttling, before its workers start
+    try:
+        def loaders(kind: str):
+            return make_dataloaders(synth_config, config.train_len, config.val_len,
+                                    batch_size=config.batch_size, num_workers=config.num_workers,
+                                    base_seed=config.base_seed, cache=config.cache_frames,
+                                    pin_memory=device.startswith("cuda"), loader=kind,
+                                    placement=main.placement, window=config.loader_window)
+
+        try:
+            tl, vl = loaders(loader)
+        except Exception as exc:
+            if loader != "ordered" or config.num_workers <= 0:
+                raise
+            print(f"the ordered loader did not start ({type(exc).__name__}: {exc}); torch's "
+                  f"DataLoader makes the spectra instead", flush=True)
+            main.loader = "dataloader"
+            main.placement = _for_dataloader(main.placement)
+            tl, vl = loaders("dataloader")
+        main.describe_loader(tl)
+        print(_draws_line(), flush=True)
+        try:
+            if getattr(tl, "pool", None) is not None:
+                main.bind(tl)  # its workers have started: this process takes its own cores
+            return _train_loaded(config, synth_config, model, tl, vl, device, speedups, in_ch,
+                                 iso_count, main)
+        finally:
+            close = getattr(tl, "close", None)  # the ordered loader's workers
+            if close is not None:
+                close()
+    finally:
+        main.restore()  # its processors and power throttling, for what follows in this process
+
+
+def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in_ch: int,
+                  iso_count: int, main):
+    """train()'s training proper, on its loaders ``tl`` and ``vl``; ``main`` is the training
+    process's side of the workers' placement (:class:`_MainPlacement`)."""
+    import torch
+    from torch.optim import AdamW
+    from torch.optim.lr_scheduler import OneCycleLR
+
+    from .losses import ChargeLoss
+
     steps_per_epoch = len(tl)
     fused = "fused_adamw" in speedups
     opt = AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay,
@@ -484,7 +544,8 @@ def train(config: TrainConfig, synth_config=None):
         # charges on Orbitrap spectra) on the validation frames, scored as a network is
         print("scoring the comb estimator, as the pipeline runs it, on the validation frames ...",
               flush=True)
-        comb = comb_baseline(vl, num_workers=config.num_workers)
+        comb = comb_baseline(vl, num_workers=config.num_workers, placement=main.placement,
+                             pool=getattr(tl, "pool", None))
         _log(log_path, {"comb_baseline": {k: v for k, v in comb.items() if k != "kinds"}})
     bands = {k: round(v, 3) for k, v in comb["bands_given_ion"].items()}
     print(f"comb estimator ({comb['estimator']}): {metric} {comb[metric]:.3f} bands {bands}")
@@ -500,7 +561,7 @@ def train(config: TrainConfig, synth_config=None):
                  "active_top": active_top, "iso_count": iso_count,
                  "gpu_speedups": list(speedups)}
         _atomic_save(state, resume_path)
-        extra = {"gpu_speedups": list(speedups)}
+        extra = {"gpu_speedups": list(speedups), "spectrum_draws": _draws_status()}
         if history and history[-1].get("pace"):
             extra["pace"] = history[-1]["pace"]  # the last epoch's
         _write_status(out_path, epoch, step, config.epochs, stop_reason, extra)
@@ -535,7 +596,9 @@ def train(config: TrainConfig, synth_config=None):
 
     session_start = time.time()
     last_save = time.time()
-    ram = _RamWatch(config.max_ram_gb)
+    ram = _RamWatch(config.max_ram_gb, extra_gb=getattr(tl, "shared_gb", 0.0))
+    stats = getattr(tl, "item_stats", None)  # what the workers made, where
+    pool = getattr(tl, "pool", None)
     pace = {"steps": 0, "seconds": 0.0}  # training steps done in this session, and their time
     awake = _KeepAwake()
     awake.start()
@@ -551,9 +614,13 @@ def train(config: TrainConfig, synth_config=None):
             tl.sampler.start = first_step * config.batch_size
             epoch_start = time.time()
             watch = _EpochWatch(device)
+            made0 = stats.snapshot() if stats is not None else None
+            twice0 = pool.duplicates if pool is not None else 0
             i = first_step - 1
             try:
                 for i, sample in enumerate(watch.batches(tl), start=first_step):
+                    if not main.bound:  # the workers have started: this process takes its cores
+                        main.bind(tl)
                     # nothing in a step reads a value back from the GPU but the active bins'
                     # positions (LadderNet): the loss is read at log steps only
                     watch.step_starts(i - first_step)
@@ -597,6 +664,11 @@ def train(config: TrainConfig, synth_config=None):
             measured = watch.summary(trained, i + 1 - first_step)
             if speedups:
                 measured["gpu_speedups"] = list(speedups)
+            if stats is not None:
+                measured["workers"] = {**main.record(), **stats.summary(made0, main.kind_of_cpu,
+                                                                        trained)}
+                if pool is not None:
+                    measured["workers"]["made_twice"] = pool.duplicates - twice0
             try:
                 val_ema = evaluate(ema.shadow, vl, loss_fn, device, kinds=comb.get("kinds"))
                 val_live = evaluate(model, vl, loss_fn, device, kinds=comb.get("kinds"))
@@ -656,6 +728,23 @@ def train(config: TrainConfig, synth_config=None):
     return model, history
 
 
+def _draws_status() -> dict:
+    """How this computer draws the training scans' noise (``synth.rng.status``: the compiled
+    draws, checked against numpy's here, or numpy's own and why); the data workers decide the
+    same, on the same numpy and with the same environment."""
+    from ..synth import rng as draws
+
+    return draws.status()
+
+
+def _draws_line() -> str:
+    st = _draws_status()
+    if st["draws"] == "compiled":
+        return ("spectrum draws: compiled, the same as numpy's draw for draw (checked here in "
+                f"{st['check_seconds']:.2f} s)")
+    return f"spectrum draws: numpy's, slower ({st['reason']})"
+
+
 def _warm_up(synth_config) -> None:
     """Generate one spectrum of every configuration in this process before the data workers
     start, so that the compiled numba functions are cached once instead of being compiled by
@@ -670,6 +759,126 @@ def _warm_up(synth_config) -> None:
                else [synth_config])
     for cfg in configs:
         generate_frame(cfg, _np.random.default_rng(0))
+
+
+def _placement(config, device: str, loader: str) -> tuple:
+    """Where the data workers and this process run (:func:`lcmsdeconv.nn.cpus.plan` for this
+    computer's cores, with ``config.cpu_binding``, ``worker_priority`` and ``worker_qos``), and
+    the cores themselves; printed. The placement is None where it changes nothing (no workers,
+    or not bound at below-normal priority with Windows' power throttling: as before)."""
+    from .cpus import MODES, PRIORITIES, QOS_MODES, Placement, allowed_cpus, detect, plan
+
+    for name, value, allowed in (("cpu_binding", config.cpu_binding, MODES),
+                                 ("worker_priority", config.worker_priority, PRIORITIES),
+                                 ("worker_qos", config.worker_qos, QOS_MODES)):
+        if value not in allowed:
+            raise ValueError(f"{name} must be one of {allowed}, not {value!r}")
+    topo = detect()
+    if config.num_workers <= 0:  # no workers: this process's power throttling alone
+        return (Placement("none", qos="high") if config.worker_qos == "high" else None), topo
+    mode = config.cpu_binding
+    if mode == "core" and loader != "ordered":
+        print("the data workers share the cores (--cpu-binding pool) instead of one each: "
+              "torch's DataLoader hands whole batches to its workers in turn, so the slowest "
+              "core would set the pace of all (each on its own core needs --loader ordered)")
+        mode = "pool"
+    # training on the processor: the training process keeps a core for each of its threads
+    main_cores = int(config.threads) if config.threads and not device.startswith("cuda") \
+        else None
+    placement = plan(topo, workers=config.num_workers, allowed=allowed_cpus(), mode=mode,
+                     main_cores=main_cores, priority=config.worker_priority,
+                     qos=config.worker_qos)
+    print(f"processor: {topo.describe()}; {placement.describe()}", flush=True)
+    if (placement.mode, placement.priority, placement.qos) == ("none", "below_normal",
+                                                               "system"):
+        return None, topo  # as before: lcmsdeconv.synth.dataset.worker_init
+    return placement, topo
+
+
+def _for_dataloader(placement):
+    """``placement`` for torch's DataLoader: shared cores instead of one each (see _placement)."""
+    if placement is None or placement.mode != "core":
+        return placement
+    from dataclasses import replace
+
+    pool = tuple(sorted({c for w in placement.workers for c in w}))
+    return replace(placement, mode="pool", workers=tuple(pool for _ in placement.workers))
+
+
+class _MainPlacement:
+    """The training process's side of where its data workers run: its power throttling from the
+    start of training, its own cores once its workers have started (children inherit their
+    parent's affinity when they are created), the record of each epoch, and all of it given
+    back when training ends (an export, a resume or another run in this process then has the
+    whole processor again)."""
+
+    def __init__(self, placement, topo):
+        from .cpus import allowed_cpus
+
+        self.placement = placement
+        self.kind_of_cpu = topo.kind_of_cpu() if topo is not None else {}
+        self.allowed = allowed_cpus()
+        self.loader = None
+        self.bound = placement is None or placement.mode == "none"
+        self._pinned = False
+        self._qos = None  # power throttling before it was set: (set?, previous state)
+
+    def start(self) -> None:
+        from .cpus import get_power_throttling, set_power_throttling
+
+        if self.placement is not None and self.placement.qos == "high":
+            before = get_power_throttling()
+            self._qos = (set_power_throttling(False), before)
+
+    def describe_loader(self, tl) -> None:
+        pool = getattr(tl, "pool", None)
+        self.loader = "ordered" if pool is not None else "dataloader"
+        if pool is not None:
+            ring = f", {tl.shared_gb:.2f} GB of shared slots" if pool.ring is not None else ""
+            print(f"data loading: ordered, item by item to the free workers, at most "
+                  f"{tl.window} items ahead{ring}", flush=True)
+        elif tl.num_workers > 0:
+            print("data loading: torch's DataLoader, whole batches to the workers in turn",
+                  flush=True)
+
+    def bind(self, tl) -> None:
+        """Bind this process to its cores and check where its workers may run."""
+        if self.bound:
+            return
+        self.bound = True
+        from .cpus import affinity_of, apply_main, cpu_ranges
+
+        done = apply_main(self.placement, qos=False)
+        self._pinned = bool(done.get("pinned"))
+        pool = getattr(tl, "pool", None)
+        if pool is not None:
+            pids = pool.pids
+        else:  # torch's DataLoader keeps its workers in its iterator (private)
+            workers = getattr(getattr(tl, "_iterator", None), "_workers", None) or []
+            pids = [w.pid for w in workers]
+        masks = affinity_of(pids)
+        ok = sum(1 for i, pid in enumerate(pids)
+                 if masks.get(pid) == sorted(self.placement.worker_cpus(i)))
+        where = (f"bound to processors {cpu_ranges(self.placement.main)}" if self._pinned
+                 else "not bound")
+        print(f"  {ok} of {len(pids)} data workers bound as planned; this process {where}",
+              flush=True)
+
+    def record(self) -> dict:
+        p = self.placement
+        return {"loader": self.loader, "binding": p.mode if p is not None else "none",
+                "priority": p.priority if p is not None else "below_normal",
+                "qos": p.qos if p is not None else "system"}
+
+    def restore(self) -> None:
+        from .cpus import pin_process, restore_power_throttling
+
+        if self._pinned and self.allowed:
+            pin_process(self.allowed)
+            self._pinned = False
+        if self._qos is not None and self._qos[0]:
+            restore_power_throttling(self._qos[1])
+        self._qos = None
 
 
 def _write_status(out_path: Path, epoch: int, step: int, epochs: int,
@@ -744,11 +953,13 @@ class _KeepAwake:
 class _RamWatch:
     """RAM of this process and its data workers together, checked at most every 15 s: the sum
     of their unique sets (on Windows, private working sets), as the task manager shows them
-    (:func:`lcmsdeconv.nn.machine.process_ram_gb`)."""
+    (:func:`lcmsdeconv.nn.machine.process_ram_gb`), and ``extra_gb`` of shared memory that none
+    of them counts as its own (the ordered loader's slots)."""
 
-    def __init__(self, limit_gb: float | None, every: float = 15.0):
+    def __init__(self, limit_gb: float | None, every: float = 15.0, extra_gb: float = 0.0):
         self.limit = limit_gb
         self.every = every
+        self.extra_gb = float(extra_gb)  # shared memory no process counts as its own
         self.last = 0.0
         self.proc = None
         try:
@@ -767,7 +978,7 @@ class _RamWatch:
 
         from .machine import process_ram_gb
 
-        total = 0.0
+        total = self.extra_gb
         for p in [self.proc, *self.proc.children(recursive=True)]:
             try:
                 total += process_ram_gb(p)
@@ -800,6 +1011,9 @@ def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epo
             share += (f", {100 * m['gpu_busy_share']:.0f} % GPU busy ({m['gpu_step_ms']:.0f} ms "
                       f"a step)")
         parts.append(share)
+    workers = _workers_text(m.get("workers"))
+    if workers:
+        parts.append(workers)
     if ram.proc is not None:
         parts.append(f"RAM {ram.used_gb():.1f} GB" + (f" of {ram.limit:g}" if ram.limit else ""))
     if device.startswith("cuda"):
@@ -814,6 +1028,31 @@ def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epo
         parts.append(f"about {left / 3600:.1f} h to go" if left >= 3600
                      else f"about {left / 60:.0f} min to go")
     return "; ".join(parts)
+
+
+#: how the pace line names the classes of cores (lcmsdeconv.nn.cpus; "?": all alike)
+_CORE_CLASS_NAMES = {"P": "performance cores ", "E": "efficient cores ",
+                     "LP": "low-power cores ", "?": ""}
+
+
+def _workers_text(w: dict | None) -> str | None:
+    """The workers' part of an epoch's pace line: spectra made on each class of core, how fast
+    a worker made them while busy, on which processors, and how busy the workers were."""
+    by = (w or {}).get("by_kind") or {}
+    if not by:
+        return None
+    parts = []
+    for kind, d in by.items():
+        rate = d.get("per_worker_per_second")
+        where = f", on processors {d['processors']}" if d.get("processors") else ""
+        parts.append(f"{_CORE_CLASS_NAMES.get(kind, kind + ' ')}{d['items']}"
+                     + (f" ({rate:.2f}/s a busy worker{where})" if rate else ""))
+    text = "spectra made: " + ", ".join(parts)
+    if w.get("workers_busy") is not None:
+        text += f", workers busy {100 * w['workers_busy']:.0f} %"
+    if w.get("made_twice"):
+        text += f", {w['made_twice']} made twice (held too long)"
+    return text
 
 
 def synth_fingerprint(synth_config) -> str:
@@ -909,7 +1148,7 @@ def _save(path: Path, state, config, in_ch: int, val, comb, metric: str,
                   "val": val, "comb_baseline": comb}, path)
 
 
-def comb_baseline(loader, num_workers: int | None = None) -> dict:
+def comb_baseline(loader, num_workers: int | None = None, placement=None, pool=None) -> dict:
     """Charge metrics of the comb estimator, as the pipeline runs it, on ``loader``'s frames.
 
     Every validation frame is generated again with its whole spectrum, which CombPredictor reads
@@ -921,19 +1160,30 @@ def comb_baseline(loader, num_workers: int | None = None) -> dict:
     ``estimator`` then says. Also returns every frame's kind of spectrum (``kinds``, in loader
     order) and per-kind accuracies with both weightings (``by_kind``, see
     :class:`~lcmsdeconv.nn.checks.ChargeScoreboard`).
+
+    The frames are made by ``num_workers`` processes placed as ``placement`` says
+    (:func:`lcmsdeconv.synth.dataset.worker_init_for`), or by the training's own workers
+    (``pool``, the ordered loader's :class:`~lcmsdeconv.synth.pool.WorkerPool`): the same
+    frames, in the same batches.
     """
     import torch
     from torch.utils.data import DataLoader
 
-    from ..synth.dataset import CombBarFrames, mp_context, worker_init
+    from ..synth.dataset import CombBarFrames, mp_context, worker_init_for
     from .checks import ChargeScoreboard, charge_metrics
 
     source = getattr(loader.dataset, "frames", loader.dataset)  # CachedFrames keeps it
     workers = loader.num_workers if num_workers is None else num_workers
-    frames = DataLoader(CombBarFrames(source), batch_size=loader.batch_size,
-                        num_workers=workers, shuffle=False,
-                        worker_init_fn=worker_init if workers else None,
-                        **mp_context(workers))
+    if pool is not None:
+        from ..synth.pool import ordered_batches
+
+        frames = ordered_batches(pool, "comb", CombBarFrames(source), len(source),
+                                 loader.batch_size)
+    else:
+        frames = DataLoader(CombBarFrames(source), batch_size=loader.batch_size,
+                            num_workers=workers, shuffle=False,
+                            worker_init_fn=worker_init_for(placement, workers),
+                            **mp_context(workers))
     sums: dict[str, float] = {}
     bands: dict[str, list[float]] = {}
     kinds: list[str] = []

@@ -49,6 +49,17 @@ class FrameDataset(Dataset):
             return self._cache[key]
         return self._make(idx)
 
+    def item_spec(self) -> list | None:
+        """[(shape, dtype)] of the items' tensors (x, topk_z, topk_w, heat), read off item 0,
+        when every configuration of the mixture makes items of one shape (the same crop and
+        channels); None otherwise. The ordered loader (lcmsdeconv.synth.pool) sizes the shared
+        slots it passes items through by it."""
+        keys = {(c.crop_size, c.evidence_channels, c.iso_channels, c.measured_channel)
+                for c in self._configs}
+        if len(keys) != 1 or self.length < 1:
+            return None
+        return [(tuple(t.shape), t.dtype) for t in self._make(0)]
+
     def frame(self, idx: int):
         """Item ``idx`` as its configuration and whole :class:`FrameSample`, ``meta`` included."""
         rng = np.random.default_rng(self.base_seed + idx)
@@ -115,18 +126,27 @@ class EpochSampler:
 
 
 class CachedFrames(Dataset):
-    """The items of a :class:`FrameDataset` generated once, by ``num_workers`` processes, and
-    then served from memory (the validation set, read twice every epoch). ``frames`` is the
-    underlying dataset, whose spectra can be generated again with everything they carry."""
+    """The items of a :class:`FrameDataset` generated once, by ``num_workers`` processes placed
+    as ``placement`` says (or by the training's own workers, ``pool``: an
+    :class:`lcmsdeconv.synth.pool.WorkerPool`), and then served from memory (the validation set,
+    read twice every epoch). ``frames`` is the underlying dataset, whose spectra can be
+    generated again with everything they carry."""
 
-    def __init__(self, frames: FrameDataset, num_workers: int = 0, batch_size: int = 8):
+    def __init__(self, frames: FrameDataset, num_workers: int = 0, batch_size: int = 8,
+                 placement=None, pool=None, window: int | None = None):
         from torch.utils.data import DataLoader
 
         self.frames = frames
         self.items: list = []
-        loader = DataLoader(frames, batch_size=batch_size, num_workers=num_workers,
-                            shuffle=False, worker_init_fn=worker_init if num_workers else None,
-                            **mp_context(num_workers))
+        if pool is not None:  # the same items, in the same batches
+            from .pool import ordered_batches
+
+            loader = ordered_batches(pool, "val", frames, len(frames), batch_size, window)
+        else:
+            loader = DataLoader(frames, batch_size=batch_size, num_workers=num_workers,
+                                shuffle=False,
+                                worker_init_fn=worker_init_for(placement, num_workers),
+                                **mp_context(num_workers))
         for x, topk_z, topk_w, heat in loader:
             for i in range(x.shape[0]):
                 self.items.append((x[i].clone(), topk_z[i].to(torch.int16), topk_w[i].clone(),
@@ -175,9 +195,58 @@ def worker_init(_worker_id: int) -> None:
         pass
 
 
+def worker_init_for(placement, num_workers: int = 1):
+    """The ``worker_init_fn`` of a loader with ``num_workers`` workers: None without workers;
+    :func:`worker_init` without a placement (below-normal priority only, as always); with one
+    (:class:`lcmsdeconv.nn.cpus.Placement`) the worker also takes the placement's priority and
+    power throttling and binds itself to its core(s), worker id by worker id. A partial of a
+    module-level function and a frozen dataclass: it pickles, so spawned workers (Windows) get
+    it."""
+    if not num_workers:
+        return None
+    if placement is None:
+        return worker_init
+    import functools
+
+    from ..nn.cpus import worker_init as placed_worker_init
+
+    return functools.partial(placed_worker_init, placement=placement)
+
+
+class CountedItems(Dataset):
+    """``dataset``'s items, unchanged, each counted in ``stats`` (an
+    :class:`lcmsdeconv.synth.pool.ItemStats` in shared memory) by the DataLoader worker that
+    made it and the logical processor it ran on: what each class of core delivers, which the
+    training's pace record reports."""
+
+    def __init__(self, dataset, stats):
+        self.dataset = dataset
+        self.stats = stats
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        import time
+
+        from torch.utils.data import get_worker_info
+
+        from ..nn.cpus import current_cpu
+
+        t0, c0, cpu0 = time.perf_counter(), time.process_time(), current_cpu()
+        item = self.dataset[idx]
+        cpu1 = current_cpu()
+        info = get_worker_info()
+        self.stats.add(info.id if info is not None else 0, cpu1, time.perf_counter() - t0,
+                       time.process_time() - c0,
+                       cpu0 is not None and cpu1 is not None and cpu0 != cpu1)
+        return item
+
+
 def make_dataloaders(config, train_len: int, val_len: int, batch_size: int = 8,
                      num_workers: int = 1, base_seed: int = 0, cache: bool = False,
-                     pin_memory: bool = False):
+                     pin_memory: bool = False, loader: str | None = None, placement=None,
+                     window: int | None = None):
     """Train and validation loaders.
 
     The training loader reads :class:`FrameDataset` items through an :class:`EpochSampler`
@@ -185,18 +254,71 @@ def make_dataloaders(config, train_len: int, val_len: int, batch_size: int = 8,
     one), with persistent, low-priority worker processes. The validation set is generated once
     and kept in memory (:class:`CachedFrames`). With ``cache`` training frames are kept once
     generated too, which only pays with ``num_workers = 0`` (worker processes keep their own
-    copies)."""
+    copies).
+
+    ``loader`` (default "dataloader"; train() reads LCMSDECONV_LOADER first,
+    :func:`lcmsdeconv.synth.pool.choose_loader`): "dataloader" is torch's DataLoader, which
+    hands whole batches to its workers in turn; "ordered" is
+    :class:`lcmsdeconv.synth.pool.OrderedBatches`, which hands single items to whichever worker
+    is free, at most ``window`` items ahead (default :func:`lcmsdeconv.synth.pool.
+    default_window`), on one pool of workers that also makes the validation spectra (and the
+    comb's: ``tl.pool``; ``tl.close()`` stops it). Both give the same batches.
+
+    ``placement`` (:func:`lcmsdeconv.nn.cpus.plan`) sets where each worker runs, its priority
+    and power throttling (:func:`worker_init_for`); it changes where spectra are made, never
+    what they are. ``tl.item_stats`` (:class:`lcmsdeconv.synth.pool.ItemStats`) counts what the
+    workers made, where."""
     from torch.utils.data import DataLoader
+
+    from .pool import LOADERS, ItemStats
 
     if cache:
         num_workers = 0
+    loader = loader or "dataloader"
+    if loader not in LOADERS:
+        raise ValueError(f"loader must be one of {LOADERS}, not {loader!r}")
     train = FrameDataset(config, train_len, base_seed=base_seed, cache=cache)
     val = FrameDataset(config, val_len, base_seed=10_000_000 + base_seed, cache=cache)
-    workers = dict(num_workers=num_workers, persistent_workers=True, worker_init_fn=worker_init,
+    if num_workers > 0 and loader == "ordered":
+        return _ordered_loaders(train, val, train_len, batch_size, num_workers, pin_memory,
+                                placement, window)
+    stats = ItemStats(num_workers, shared=True) if num_workers > 0 else None
+    workers = dict(num_workers=num_workers, persistent_workers=True,
+                   worker_init_fn=worker_init_for(placement, num_workers),
                    prefetch_factor=2, **mp_context(num_workers)) if num_workers > 0 \
         else dict(num_workers=0)
-    tl = DataLoader(train, batch_size=batch_size, sampler=EpochSampler(train_len), drop_last=True,
+    tl = DataLoader(CountedItems(train, stats) if stats is not None else train,
+                    batch_size=batch_size, sampler=EpochSampler(train_len), drop_last=True,
                     pin_memory=pin_memory, **workers)
-    vl = DataLoader(CachedFrames(val, num_workers, batch_size), batch_size=batch_size,
-                    shuffle=False, num_workers=0, pin_memory=pin_memory)
+    tl.item_stats = stats  # what the workers made, where (None without workers)
+    vl = DataLoader(CachedFrames(val, num_workers, batch_size, placement=placement),
+                    batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin_memory)
+    return tl, vl
+
+
+def _ordered_loaders(train, val, train_len: int, batch_size: int, num_workers: int,
+                     pin_memory: bool, placement, window):
+    """make_dataloaders' loaders on one pool of persistent workers (lcmsdeconv.synth.pool): the
+    validation spectra, then the training batches, item by item to whichever worker is free, in
+    exactly the DataLoader's order. Training items pass through shared slots when they all have
+    one shape (FrameDataset.item_spec), else through torch's shared memory."""
+    from torch.utils.data import DataLoader
+
+    from .pool import OrderedBatches, SlotRing, WorkerPool, default_window, ring_slots
+
+    window = int(window or default_window(num_workers, batch_size))
+    spec = train.item_spec()
+    ring = SlotRing(ring_slots(window, batch_size, num_workers), spec) if spec else None
+    labels = [placement.label(w) for w in range(num_workers)] if placement is not None else None
+    pool = WorkerPool(num_workers, init=worker_init_for(placement, num_workers), ring=ring,
+                      labels=labels)
+    try:
+        tl = OrderedBatches(train, batch_size, EpochSampler(train_len), pool, window,
+                            pin_memory=pin_memory)
+        vl = DataLoader(CachedFrames(val, batch_size=batch_size, pool=pool, window=window),
+                        batch_size=batch_size, shuffle=False, num_workers=0,
+                        pin_memory=pin_memory)
+    except BaseException:
+        pool.close()
+        raise
     return tl, vl

@@ -102,9 +102,31 @@ in whole-spectrum frames (recipes v3 and v4, 131 072-bin windows):
   nonzero shares tie are sorted by numpy itself, so the labels are numpy's on every processor;
 - **label rows**: each charge is rendered only on the part of the m/z axis its peaks reach
   (`render.profile_reach`) and resampled from there, its zero samples skipped, into one matrix;
-- **scans**: the Poisson rates and their nonzero positions in one pass;
+- **scans** (`fast.frame_scans`): each scan is one compiled kernel that draws its shot noise and
+  electronic noise with numpy's own algorithms (`synth/rng.py`: the PCG64 bit generator, the
+  ziggurat normal and the Poisson sampler, operation for operation, on the generator's state),
+  saturates, thresholds and adds the scan to the sum (a normal draw by numpy costs about three
+  times a compiled one, most of it in calling overhead);
 - **comb features**: at the nonzero bins only in a window that is mostly zeros (thresholded
-  Orbitrap spectra), tile by tile in the others.
+  Orbitrap spectra), tile by tile in the others;
+- **isotope limit** (`nn.features.isotope_limit`, which inference shares): the highest resolved
+  charge from an estimate, settled at each bin by the reader's own test at that charge and the
+  next, instead of the test at every charge.
+
+numpy does not promise that a distribution's algorithm stays the same between its versions, and
+C runtimes compute `exp` and `log` differently, so the compiled draws are checked where they run:
+the first frame a process makes runs `rng.self_check()` (a tenth to a quarter of a second), which
+compares the compiled `exp`, `log`, `log1p` and `sqrt` with the C runtime's on a million inputs,
+then the draws and whole scans with numpy's, draw for draw. If anything differs, numba is
+missing, or `LCMSDECONV_COMPILED_DRAWS=0` is set, numpy draws the scans as before (the same
+frames, slower), and `lcmsdeconv.synth.rng.status()` tells which and why. The isotope limit's
+shortcut is checked against the loop over the charges once per process in the same way.
+Measured on one core of the same busy machine (thread CPU time of paired, interleaved runs; two
+samples of 120 and 90 items, every frame the same as before), the compiled draws and the isotope
+limit's shortcut take another 13-14 % off a v4 whole-spectrum item, with its kinds weighted as
+training draws them (1.15-1.17 times faster): an Orbitrap item takes 0.67-0.72 of its time, a
+time-of-flight item 0.91-0.92 (a shorter axis, and Poisson draws that cost about what numpy's
+do: one call of the C runtime's `exp` each).
 
 `tests/test_synth_speed.py` compares each with the code it replaces (the labels with ties of
 every kind, under each of numpy's sorts), whole frames of every recipe with the generator as it

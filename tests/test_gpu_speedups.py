@@ -426,6 +426,8 @@ def test_a_failed_speedup_measurement_does_not_stop_the_probe(tmp_path, monkeypa
         raise OSError("no room for the temporary files")
 
     monkeypatch.setattr(probe, "measure_speedups", broken)
+    # how the data workers run fastest: not measured here (tests/test_probe_hybrid.py)
+    monkeypatch.setattr(probe, "measure_data_loading", lambda *_a, **_k: None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(nn_machine, "single_threaded_workers", lambda: None)
     out = tmp_path / "machine.json"

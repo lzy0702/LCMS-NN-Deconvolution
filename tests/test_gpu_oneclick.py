@@ -552,6 +552,8 @@ def test_measuring_again_keeps_a_view_out_of_gpu_memory_in_chunks(tmp_path, monk
                 "speedup_timings": {"window": {"none": 500.0, "tf32": 450.0}, "comb": {}}}
 
     monkeypatch.setattr(probe, "measure_speedups", speedups)
+    # how the data workers run fastest: not measured here (tests/test_probe_hybrid.py)
+    monkeypatch.setattr(probe, "measure_data_loading", lambda *_a, **_k: None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(nn_machine, "single_threaded_workers", lambda: None)
     out = tmp_path / "machine.json"
@@ -604,21 +606,22 @@ def test_without_psutil_the_ram_budget_is_16_gb(monkeypatch):
     assert nn_machine.half_ram_gb() == 8.0  # the training script's, as before
 
 
-@pytest.mark.parametrize("total, workers", [(128, 20), (96, 20), (64, 20), (32, 13), (16, 9)])
+@pytest.mark.parametrize("total, workers", [(128, 22), (96, 22), (64, 22), (32, 13), (16, 9)])
 def test_the_processor_sets_the_workers_where_the_memory_holds_them(monkeypatch, total, workers):
     """The user's computer: 24 cores, 0.88 GB a worker and 2.4 GB for the training process, as
-    setup measured them, within setup's default budget. From 64 GB on, the processor's 20; on 32
-    GB the 13 of a 16 GB budget, as before; an explicit budget wins."""
+    setup measured them, within setup's default budget. From 64 GB on, the processor's 22 (every
+    core but the two the training process keeps); on 32 GB the 13 of a 16 GB budget, as before;
+    an explicit budget wins."""
     nn_machine = _computer(monkeypatch, total, 24)
-    assert nn_machine.cpu_workers() == 20
+    assert nn_machine.cpu_workers() == 22
     budget = nn_machine.default_ram_budget_gb()
     assert nn_machine.auto_workers(budget, worker_gb=0.88, main_gb=2.4) == workers
     assert nn_machine.auto_workers(16.0, worker_gb=0.88, main_gb=2.4) == 13
-    assert [nn_machine.cpu_workers(c) for c in (1, 2, 4, 8, 12, 24)] == [1, 1, 2, 6, 8, 20]
+    assert [nn_machine.cpu_workers(c) for c in (1, 2, 4, 8, 12, 24)] == [1, 1, 3, 6, 10, 22]
 
 
 @pytest.mark.parametrize("total, cores, workers", [
-    (16, 24, 2), (20, 24, 4), (24, 24, 5), (31.8, 24, 9), (64, 24, 20), (128, 24, 20),
+    (16, 24, 2), (20, 24, 4), (24, 24, 5), (31.8, 24, 9), (64, 24, 22), (128, 24, 22),
     (16, 8, 2), (32, 8, 6)])
 def test_the_training_script_takes_half_the_memory_without_a_budget(monkeypatch, total, cores,
                                                                     workers):
@@ -633,7 +636,7 @@ def test_the_training_script_takes_half_the_memory_without_a_budget(monkeypatch,
 def _hybrid_rate(n: int) -> float:
     """Spectra per second of ``n`` data workers on a processor of 8 performance and 16 efficient
     cores, a model of the user's (setup: 10 workers alone at 23.4; training: 20 at 26-27): each
-    worker beyond the eighth adds less."""
+    worker beyond the eighth adds less. 22 workers: 27.8."""
     return 2.6 * min(n, 8) + 0.5 * max(0, n - 8)
 
 
@@ -662,6 +665,8 @@ def _probe_on(monkeypatch, tmp_path, total: float, cores: int = 24, worker_gb: f
                 "worker_commit_gb": 1.6, "workers_total_gb": worker_gb * n}
 
     monkeypatch.setattr(probe, "workers_run", workers_run)
+    # how the data workers run fastest: not measured here (tests/test_probe_hybrid.py)
+    monkeypatch.setattr(probe, "measure_data_loading", lambda *_a, **_k: None)
     if gpu is not None:
         monkeypatch.setattr(probe, "gpu_steps", lambda *_a: gpu)
         monkeypatch.setattr(probe, "measure_speedups", lambda *_a: speedups)
@@ -674,7 +679,7 @@ def _probe_on(monkeypatch, tmp_path, total: float, cores: int = 24, worker_gb: f
 
 
 @pytest.mark.parametrize("total, worker_gb, asked, chosen, budget", [
-    (96, 0.88, [20], 20, 48),     # the processor's share at once: a 48 GB budget holds it
+    (96, 0.88, [22], 22, 48),     # the processor's share at once: a 48 GB budget holds it
     (32, 0.88, [10, 13], 13, 16),  # 10 by the safe estimate of a worker, 13 by its measurement
     (32, 2.0, [10, 6], 6, 16),     # workers larger than the estimate: fewer, measured again
 ])
@@ -687,16 +692,16 @@ def test_the_probe_measures_the_workers_at_the_number_it_chooses(tmp_path, monke
     # the speed of that many workers, not of fewer scaled up
     assert info["v4_spectra_per_second"] == round(_hybrid_rate(chosen), 1)
     assert (info["ram_budget_gb"], info["ram_budget_default"]) == (budget, True)
-    assert info["physical_ram_gb"] == total and info["processor_workers"] == 20
+    assert info["physical_ram_gb"] == total and info["processor_workers"] == 22
     assert info["pace"]["window"]["set_by"] == "workers"  # the GPU was not measured
 
 
 def test_the_probe_keeps_fewer_workers_where_more_do_not_run(tmp_path, monkeypatch, capsys):
-    # 20 do not start (the paging file): half as many are measured and chosen
+    # 22 do not start (the paging file): half as many are measured and chosen
     info, asked = _probe_on(monkeypatch, tmp_path, 96, fails=lambda n: n > 12)
-    assert asked == [20, 10] and info["workers"] == 10
-    assert info["v4_spectra_per_second"] == round(_hybrid_rate(10), 1)
-    assert "as many as ran: 20 did not" in capsys.readouterr().out
+    assert asked == [22, 11] and info["workers"] == 11
+    assert info["v4_spectra_per_second"] == round(_hybrid_rate(11), 1)
+    assert "as many as ran: 22 did not" in capsys.readouterr().out
     # the 13 the memory holds do not run: the 10 measured first are kept, not scaled up, and
     # the reason is that more did not run, not the budget
     info, asked = _probe_on(monkeypatch, tmp_path, 32, fails=lambda n: n > 12)
@@ -705,10 +710,10 @@ def test_the_probe_keeps_fewer_workers_where_more_do_not_run(tmp_path, monkeypat
     text = capsys.readouterr().out
     assert "Chosen: 10 data workers (as many as ran: 13 did not)" in text
     assert "as many as the RAM budget holds" not in text
-    # 20 do not start and 10 do, but workers of 5 GB fit the budget of 48 GB only 8 times: the
+    # 22 do not start and 11 do, but workers of 5 GB fit the budget of 48 GB only 8 times: the
     # budget sets the number, measured again at 8
     info, asked = _probe_on(monkeypatch, tmp_path, 96, worker_gb=5.0, fails=lambda n: n > 12)
-    assert asked == [20, 10, 8] and info["workers"] == 8
+    assert asked == [22, 11, 8] and info["workers"] == 8
     assert "Chosen: 8 data workers (as many as the RAM budget holds" in capsys.readouterr().out
 
 
@@ -780,8 +785,8 @@ def test_the_workers_are_timed_in_full_flow_then_stopped(monkeypatch):
 
 def test_the_probe_compares_the_workers_with_the_gpu_on_a_real_batch(tmp_path, monkeypatch,
                                                                      capsys):
-    """The user's GPU: 153 ms a step at the active-bin cap (26 spectra/s); 20 workers deliver
-    26.8 spectra/s (the model). On the runs' first training batch the GPU takes 95 ms with its
+    """The user's GPU: 153 ms a step at the active-bin cap (26 spectra/s); 22 workers deliver
+    27.8 spectra/s (the model). On the runs' first training batch the GPU takes 95 ms with its
     speedups (42 spectra/s): the workers set the pace; at 180 ms (22 spectra/s) the GPU would."""
     step = {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.153}
     gpu = {"gpu": "Fake GPU", "gpu_total_gb": 16.0,
@@ -793,15 +798,15 @@ def test_the_probe_compares_the_workers_with_the_gpu_on_a_real_batch(tmp_path, m
                                         "comb": {"none": ms}}}
         info, asked = _probe_on(monkeypatch, tmp_path, 96, gpu=gpu, speedups=speedups)
         text = capsys.readouterr().out
-        assert asked == [20] and info["head_chunks"] == {"window": 16, "comb": 16}
+        assert asked == [22] and info["head_chunks"] == {"window": 16, "comb": 16}
         pace = info["pace"]["window"]
-        assert pace["set_by"] == set_by and pace["data_spectra_per_second"] == 26.8
+        assert pace["set_by"] == set_by and pace["data_spectra_per_second"] == 27.8
         assert pace["gpu_spectra_per_second"] == round(4 / (ms / 1000), 1)
         assert pace["gpu_at_cap_spectra_per_second"] == 26.1
         assert (f"window run: the GPU took {ms:.0f} ms a step on the runs' first training batch "
                 f"({4000 / ms:.0f} spectra/s) and 153 ms with every spectrum at the active-bin "
                 f"cap (26 spectra/s, the slowest a step can be)") in text
-        assert verdict in text and "Chosen: 20 data workers (the processor's share" in text
+        assert verdict in text and "Chosen: 22 data workers (the processor's share" in text
         assert "the default for this computer's 96 GB of memory" in text
         assert info["expected_hours"] <= info["expected_hours_at_most"]
 
@@ -850,9 +855,9 @@ def test_train_all_reads_the_machine_json_of_any_setup(tmp_path, monkeypatch, ca
     assert train_all.main() == 0
     text = capsys.readouterr().out
     # without machine.json: this computer's default budget and as many workers as it holds
-    # by the estimate of a worker (WORKER_GB), up to the processor's 20
+    # by the estimate of a worker (WORKER_GB), up to the processor's 22
     workers, ram = {"older": (13, "16"), "old": (13, "16"), "new": (20, "48"),
-                    "none": (20, "48")}[which]
+                    "none": (22, "48")}[which]
     assert [_flag(c, "--workers") for c in commands] == [str(workers)] * 2
     assert all(_flag(c, "--max-ram-gb") == ram for c in commands)
     assert f"{workers} data workers, 4 spectra per step, RAM budget {ram} GB" in text
@@ -877,9 +882,9 @@ def test_train_all_reads_the_machine_json_of_any_setup(tmp_path, monkeypatch, ca
 def test_more_workers_than_setup_measured_do_not_name_the_gpu_as_the_pace(tmp_path, monkeypatch,
                                                                          capsys):
     """The user's case: setup measured 13 workers (30.4 spectra/s) within 16 GB, training ran
-    with --ram-gb 48 and so 20 workers, which delivered 26-27 spectra/s. Scaled up to 20 they
-    would be faster than the GPU (42 and 38 spectra/s on the first training batch), so the GPU
-    is not named as what sets the pace, and the command that measures 20 is."""
+    with --ram-gb 48 and so 20 workers (22 now), which delivered 26-27 spectra/s. Scaled up to 22
+    they would be faster than the GPU (42 and 38 spectra/s on the first training batch), so the
+    GPU is not named as what sets the pace, and the command that measures 22 is."""
     _computer(monkeypatch, 96, 24)
     train_all = _train_all_in(tmp_path, monkeypatch)
     train_all.MACHINE.write_text(json.dumps(OLD_MACHINE))
@@ -892,14 +897,14 @@ def test_more_workers_than_setup_measured_do_not_name_the_gpu_as_the_pace(tmp_pa
     monkeypatch.setattr(train_all.signal, "signal", lambda *_a: None)
     monkeypatch.setattr(sys, "argv", ["train_all.py", "--device", "cpu", "--ram-gb", "48"])
     assert train_all.main() == 0
-    assert [_flag(c, "--workers") for c in commands] == ["20"] * 2
+    assert [_flag(c, "--workers") for c in commands] == ["22"] * 2
     estimate = capsys.readouterr().out.split("[train_all] about ")[1].splitlines()[0]
     assert "window 0.9 h at 42 spectra/s, set by the GPU or by the data workers" in estimate
     assert "comb 1.0 h at 38 spectra/s, set by the GPU or by the data workers" in estimate
     assert "set by the GPU on setup's first training batch" not in estimate
-    assert ("setup's for 13, scaled to 20: an upper bound (on a processor with efficiency cores "
+    assert ("setup's for 13, scaled to 22: an upper bound (on a processor with efficiency cores "
             "each further worker adds less), so the time may be longer and the data workers may "
-            "set the pace; to measure 20: ") in estimate
+            "set the pace; to measure 22: ") in estimate
     assert "probe.py --ram-gb 48 --gpu-memory-gb 14" in estimate
 
 

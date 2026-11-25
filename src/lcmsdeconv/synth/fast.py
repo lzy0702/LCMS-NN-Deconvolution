@@ -8,6 +8,11 @@ without fast-math (no reassociation, no contraction into fused multiply-adds), a
 transcendental function, sort and numpy reduction to the same numpy call as the reference:
 those may be computed differently on another processor, where reference and kernel still agree.
 
+The scans' random draws are the exception: :func:`frame_scans` draws them with numpy's own
+algorithms compiled (:mod:`lcmsdeconv.synth.rng`), which a self-check compares with numpy's
+Generator on this machine once per process before they are used (``tests/test_synth_rng.py``
+compares them too).
+
 Without numba every function falls back to its reference. Inference never calls this module;
 the shared functions it stands for (``nn.features.featurize``,
 ``nn.grid.LogMzGrid.resample_profile``) are unchanged.
@@ -19,6 +24,8 @@ import math
 from functools import lru_cache
 
 import numpy as np
+
+from . import rng as draws
 
 try:  # optional acceleration, as in render.py
     from numba import njit
@@ -401,6 +408,76 @@ def spectrum_to_grid(mz, intensity, polarity: int, step: float, mz_max: float, f
 
 
 # ------------------------------------------------------------------------------- scans
+def frame_scans(rng: np.random.Generator, clean: np.ndarray, weights: np.ndarray, gain: float,
+                esig: float, sat_level: float | None, thr: float, pad: int,
+                axis: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], list]:
+    """A training frame's noisy scans and their sum as positive points, ``(raw, scans)``: equal
+    bit for bit to the reference's lines (:func:`_frame_scans_numpy`)::
+
+        frames_int = [noisy_scan(rng, clean, w, gain, esig, sat_level, thr, pad)
+                      for w in weights]
+        total = frames._sum_scans(frames_int)
+        raw = positive_points(axis, total)
+        scans = [positive_points(axis, s) for s in frames_int]
+
+    with the same draws in the same order, ``rng`` left where they leave it. Each scan is one
+    compiled kernel that draws with numpy's own algorithms (:func:`lcmsdeconv.synth.rng.scan`)
+    when this process's self-check found them equal to numpy's
+    (:func:`lcmsdeconv.synth.rng.available`) and the arguments are what the kernel covers: a
+    plain ``Generator`` on ``PCG64``; float64 profile, axis and weights; finite weights and gain,
+    the gain not zero; a noise level that is finite and not negative (numpy refuses a negative
+    one and -0.0, and a NaN one makes NaN noise); a saturation level that is positive and
+    finite (``np.minimum`` keeps a NaN level, and for a zero level which zero it gives depends
+    on numpy's code path), or None; an axis long enough for the threshold's window. Anything
+    else, and a scan with a rate numpy refuses or one above
+    :data:`lcmsdeconv.synth.rng.RATE_MAX`, takes the reference's lines from the generator's
+    untouched state, with their result or their exception."""
+    if _compiled_scans_apply(rng, clean, weights, gain, esig, sat_level, thr, pad, axis):
+        out = draws.scan_frame(rng, np.ascontiguousarray(clean), weights, float(gain),
+                               float(esig), math.inf if sat_level is None else float(sat_level),
+                               float(thr), int(pad) if thr > 0 else 0,
+                               np.ascontiguousarray(axis))
+        if out is not None:
+            return out
+    return _frame_scans_numpy(rng, clean, weights, gain, esig, sat_level, thr, pad, axis)
+
+
+def _frame_scans_numpy(rng, clean, weights, gain, esig, sat_level, thr, pad, axis):
+    """The lines of ``frames.generate_frame_profile`` that :func:`frame_scans` stands for."""
+    from .frames import _sum_scans
+
+    frames_int = [noisy_scan(rng, clean, w, gain, esig, sat_level, thr, pad) for w in weights]
+    total = _sum_scans(frames_int)
+    raw = positive_points(axis, total)  # (axis[total > 0], total[total > 0])
+    scans = [positive_points(axis, s) for s in frames_int]
+    return raw, scans
+
+
+def _real(x) -> bool:
+    """A Python (or numpy float64) number, not a bool."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _compiled_scans_apply(rng, clean, weights, gain, esig, sat_level, thr, pad, axis) -> bool:
+    """Whether :func:`frame_scans` may draw these scans compiled (see there)."""
+    if not (HAVE_NUMBA and draws.is_pcg64_generator(rng)
+            and isinstance(clean, np.ndarray) and clean.dtype == np.float64 and clean.ndim == 1
+            and clean.size > 0 and isinstance(axis, np.ndarray) and axis.dtype == np.float64
+            and axis.shape == clean.shape
+            and isinstance(weights, np.ndarray) and weights.dtype == np.float64
+            and weights.ndim == 1 and weights.size > 0 and bool(np.all(np.isfinite(weights)))
+            and _real(gain) and math.isfinite(gain) and gain != 0
+            and _real(esig) and math.isfinite(esig) and esig >= 0
+            and math.copysign(1.0, esig) > 0
+            and (sat_level is None or (_real(sat_level) and 0 < sat_level < math.inf))
+            and _real(thr)):
+        return False
+    if thr > 0 and not (isinstance(pad, (int, np.integer)) and not isinstance(pad, bool)
+                        and 0 <= pad and clean.size >= 2 * pad + 1):
+        return False
+    return draws.available()
+
+
 def noisy_scan(rng: np.random.Generator, clean: np.ndarray, w: float, gain: float, esig: float,
                sat_level: float | None, thr: float, pad: int) -> np.ndarray:
     """One scan of a training frame, equal bit for bit to the reference's lines::
@@ -1082,6 +1159,7 @@ def warm_up() -> None:
     _scan_values(i, i, 2.0, f, np.empty(8))
     _threshold_segments(f.copy(), 1.5, 2)
     _poisson_skips_zeros()
+    draws.available()  # the compiled draws' self-check, which compiles the scan kernel
     positive_points(f, f)
     table, count = _comb_table(2e-5, 3)
     _comb_best(f, table, count, 3, np.empty(8), np.empty(8, dtype=np.int64))

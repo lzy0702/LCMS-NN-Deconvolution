@@ -15,9 +15,11 @@ Every step is skipped when it is already done, so running it again is safe:
 5. measures the machine within the limits (gpu_training/probe.py): GPU memory and time of a
    training step of both views under the GPU cap, memory per data worker, the number of
    workers the processor is given and the RAM budget holds (by default half the computer's
-   memory, at least 16 GB and at most 48), the spectra per second that many deliver, and the GPU
-   speedups that make a training step faster on this GPU with the same loss and gradients
-   (gpu_training/machine.json);
+   memory, at least 16 GB and at most 48), the spectra per second that many deliver, the GPU
+   speedups that make a training step faster on this GPU with the same loss and gradients, and
+   the way of running the data workers that delivers the most spectra while a training step
+   runs (torch's DataLoader as before, or the ordered loader, bound to cores or not, opted out
+   of Windows' power throttling or not; gpu_training/machine.json);
 6. checks everything end to end in a few minutes (train_all.py --smoke): a few training steps
    of both views on the GPU with the speedups chosen, their export to ONNX, and the predictor
    reading whole spectra.

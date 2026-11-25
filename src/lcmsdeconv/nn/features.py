@@ -205,7 +205,14 @@ def isotope_limit(grid, instrument, z_max: int = ISOTOPE_Z_MAX,
     widths, a peak never narrower than two bins); 0 where no charge is. ``int16``.
 
     The reader answers no charge above it, so a reading close to the limit may be a lower
-    charge standing for an envelope it cannot resolve (2z read as z)."""
+    charge standing for an envelope it cannot resolve (2z read as z).
+
+    Whether a spacing is resolved can only fall with the charge: from one charge to the next
+    the spacing in bins shrinks by z / (z + 1), by far more than rounding moves it. So the limit
+    is the highest resolved charge, found by the reader's expression itself at that charge and
+    the next, from an estimate of it (:func:`_settled_limit`), instead of the expression at
+    every charge in turn (:func:`_limit_by_charges`, which answers where the estimate cannot be
+    relied on): the same values, in a few passes over the bins instead of one per charge."""
     b = np.arange(grid.size) if bins is None else np.asarray(bins)
     zlim = np.zeros(b.size, dtype=np.int16)
     if b.size == 0:
@@ -215,14 +222,105 @@ def isotope_limit(grid, instrument, z_max: int = ISOTOPE_Z_MAX,
     fwhm = mz / np.asarray(instrument.resolving_power(mz), dtype=float)
     off = np.abs(mz - grid.carrier)
     width_bins = np.maximum(np.log1p(fwhm / off) / grid.step, 2.0)
+    thr = resolution_factor * width_bins
+    settled = _settled_limit(off, thr, grid.step, z_max) if _settling_is_exact() else None
+    if settled is None:
+        return _limit_by_charges(off, thr, grid.step, z_max, zlim)
+    zlim[:] = settled
+    return zlim
+
+
+def _resolved(off: np.ndarray, thr: np.ndarray, step: float, z) -> np.ndarray:
+    """The reader's test of charge ``z`` (an int or an int array) at bins with offsets ``off``
+    and thresholds ``thr``: the spacing ``1.0033548 / z`` in bins reaches the threshold."""
+    return np.log1p((1.0033548 / z) / off) / step >= thr
+
+
+def _limit_by_charges(off, thr, step, z_max, zlim: np.ndarray) -> np.ndarray:
+    """:func:`isotope_limit` charge by charge into ``zlim``, as the reader tests them."""
     for z in range(1, z_max + 1):
-        spacing = 1.0033548 / z
-        n = np.log1p(spacing / off) / grid.step
-        resolved = n >= resolution_factor * width_bins
+        resolved = _resolved(off, thr, step, z)
         if not resolved.any():
             break
         zlim[resolved] = z  # ascending z: the highest resolved charge stays
     return zlim
+
+
+def _settled_limit(off, thr, step, z_max) -> np.ndarray | None:
+    """The highest charge up to ``z_max`` that :func:`_resolved` passes at every bin (0 for
+    none), int64, or None where this does not apply (positive finite offsets, finite thresholds
+    and step, and ``z_max`` an int16 charge are needed).
+
+    The continuous solution of ``log1p((1.0033548 / z) / off) / step = thr`` is ``z = 1.0033548
+    / (off * expm1(thr * step))``; rounded down and clipped to ``0 .. z_max`` it is the answer
+    except within rounding of a whole charge. Each bin is then settled by the test itself: the
+    estimate stands where its charge passes (or is 0) and the next fails (or it is ``z_max``),
+    and elsewhere the charge steps down or up until it does. Decided by the test, at the
+    charges it is decided at in turn, this is the answer the loop over the charges gives,
+    provided numpy gives a value the same bits wherever it sits in an array (checked once per
+    process, :func:`_settling_is_exact`), as the bins here are taken apart."""
+    if not (isinstance(z_max, (int, np.integer)) and 1 <= z_max <= np.iinfo(np.int16).max
+            and np.isfinite(step) and step > 0 and np.all(np.isfinite(thr))
+            and np.all(np.isfinite(off)) and np.all(off > 0)):
+        return None
+    z_max = int(z_max)
+    with np.errstate(all="ignore"):
+        est = 1.0033548 / (off * np.expm1(thr * step))
+    z = np.clip(np.floor(np.nan_to_num(est, nan=0.0, posinf=z_max, neginf=0.0)), 0, z_max)
+    z = z.astype(np.int64)
+    holds = (z == 0) | _resolved(off, thr, step, np.maximum(z, 1))
+    holds &= (z >= z_max) | ~_resolved(off, thr, step, np.minimum(z + 1, z_max))
+    todo = np.flatnonzero(~holds)
+    for _ in range(z_max + 2):  # a charge moves one way, at most z_max steps
+        if todo.size == 0:
+            return z
+        zt = z[todo]
+        down = np.zeros(todo.size, dtype=bool)
+        has = zt >= 1
+        down[has] = ~_resolved(off[todo[has]], thr[todo[has]], step, zt[has])
+        up = np.zeros(todo.size, dtype=bool)
+        below = ~down & (zt < z_max)
+        up[below] = _resolved(off[todo[below]], thr[todo[below]], step, zt[below] + 1)
+        z[todo[down]] -= 1
+        z[todo[up]] += 1
+        todo = todo[down | up]
+    return None
+
+
+_SETTLING: list = []
+
+
+def _settling_is_exact() -> bool:
+    """Whether :func:`_settled_limit` gives :func:`_limit_by_charges`'s values on this machine,
+    checked once per process: numpy's ``log1p`` gives an element the same bits wherever it sits
+    (shifted, strided, reordered, alone), and the two agree on offsets and thresholds across
+    the range of real grids, with bins placed on and next to the boundaries of charges."""
+    if not _SETTLING:
+        ok = False
+        try:
+            rng = np.random.default_rng(7)
+            x = np.exp(rng.uniform(np.log(1e-9), np.log(10.0), 1031))
+            y = np.log1p(x)
+            perm = rng.permutation(x.size)
+            ok = (np.array_equal(np.log1p(x[perm]), y[perm])
+                  and np.array_equal(np.log1p(x[1:]), y[1:])
+                  and np.array_equal(np.log1p(x[::3]), y[::3])
+                  and all(np.log1p(x[i:i + 1])[0] == y[i] for i in range(0, x.size, 97)))
+            step = 2e-5
+            for z_max in (60, 7, 1):
+                off = np.exp(rng.uniform(np.log(50.0), np.log(9000.0), 3000))
+                thr = 2.5 * np.maximum(np.exp(rng.uniform(np.log(0.5), np.log(300.0), 3000)), 2.0)
+                # thresholds a charge just reaches, and just misses
+                z = rng.integers(1, z_max + 1, 600)
+                edge = np.log1p((1.0033548 / z) / off[:600]) / step
+                thr[:600] = np.where(np.arange(600) % 2 == 0, edge, np.nextafter(edge, np.inf))
+                want = _limit_by_charges(off, thr, step, z_max, np.zeros(off.size, np.int16))
+                got = _settled_limit(off, thr, step, z_max)
+                ok = ok and got is not None and np.array_equal(got, want)
+        except Exception:
+            ok = False
+        _SETTLING.append(bool(ok))
+    return _SETTLING[0]
 
 
 def isotope_channels(grid, intensity: np.ndarray, noise_sigma: float, instrument,

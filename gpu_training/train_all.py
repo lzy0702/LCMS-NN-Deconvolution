@@ -18,9 +18,14 @@ scores all charges at once where setup measured that faster, with room to spare 
 and the GPU rather than the data workers sets the pace; HEAD_CHUNK at a time otherwise. A run
 that runs out of GPU memory scoring them all at once continues in chunks from its last saved
 state. Each run uses the GPU speedups setup measured faster on this GPU, with the same loss and
-gradients, for its view (machine.json; none if it says nothing). Each finished run is exported
-to ONNX (its parity with the checkpoint verified) and read once by the predictor over a whole
-synthetic spectrum; the upload zip holds every finished run.
+gradients, for its view (machine.json; none if it says nothing). The data workers run the way
+setup measured fastest on this computer (machine.json's "data_loader": torch's DataLoader or
+the ordered loader, bound to cores or not, opted out of Windows' power throttling or not, at
+below-normal or normal priority; as before where machine.json says nothing); --loader,
+--cpu-binding, --worker-qos and --worker-priority override it, and a run whose data loading
+fails continues from its last saved state as before (torch's DataLoader). Each finished run is
+exported to ONNX (its parity with the checkpoint verified) and read once by the predictor over a
+whole synthetic spectrum; the upload zip holds every finished run.
 """
 
 from __future__ import annotations
@@ -76,6 +81,21 @@ DEFAULT_RUNS = ("window", "comb")
 #: the smoke version of a run: a few steps of tiny batches, written apart from the real runs
 SMOKE_ARGS = ["--epochs", "1", "--train-len", "4", "--val-len", "2", "--batch-size", "2"]
 PAUSED, MEMORY = 3, 4
+#: how the data workers run (train_charge_net.py's --loader, --cpu-binding, --worker-qos and
+#: --worker-priority) as they did before setup measured it: torch's DataLoader, the workers not
+#: bound to cores, Windows' power throttling left to Windows, below-normal priority. Setup's
+#: probe measures the other ways on this computer and records the one to use in machine.json
+#: ("data_loader"); a machine.json without that record (an earlier setup) gives these
+DATA_DEFAULTS = {"loader": "dataloader", "cpu_binding": "none", "worker_qos": "system",
+                 "worker_priority": "below_normal"}
+#: the values each of those settings takes, and train_charge_net.py's option for it
+DATA_CHOICES = {"loader": ("dataloader", "ordered"), "cpu_binding": ("none", "pool", "core"),
+                "worker_qos": ("system", "high"), "worker_priority": ("below_normal", "normal")}
+DATA_OPTIONS = {"loader": "--loader", "cpu_binding": "--cpu-binding",
+                "worker_qos": "--worker-qos", "worker_priority": "--worker-priority"}
+#: what training prints when its data loading fails (lcmsdeconv.synth.pool): a run that stops
+#: with it under another data loading than DATA_DEFAULTS continues with DATA_DEFAULTS
+DATA_LOADER_FAILURE = ("DataWorkerError",)
 
 interrupted = {"count": 0}
 #: views whose run ran out of GPU memory scoring all charges at once in this train_all call
@@ -143,8 +163,10 @@ GPU_OUT_OF_MEMORY = ("OutOfMemoryError", "CUDA out of memory")
 
 def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool) -> int:
     """Run one training run to its end (or a pause); ``pool["workers"]`` is lowered if the RAM
-    budget is reached, and a run that runs out of GPU memory scoring all charges at once
-    continues in chunks of HEAD_CHUNK (``stage["head_chunk"]``)."""
+    budget is reached, a run that runs out of GPU memory scoring all charges at once continues
+    in chunks of HEAD_CHUNK (``stage["head_chunk"]``), and one whose data loading
+    (``pool["data"]``: DATA_DEFAULTS' settings; None: train_charge_net.py's defaults) fails
+    continues with DATA_DEFAULTS, as before."""
     out = ROOT / stage["out"]
     status = "new" if restart else stage_status(out)
     if status == "done":
@@ -155,12 +177,13 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
     while True:
         flag = ["--resume"] if status == "paused" else ["--restart"]
         workers = pool["workers"]
+        data = pool.get("data")
         chunk = stage.get("head_chunk")
         speedups = list(stage.get("gpu_speedups") or [])
         cmd = [sys.executable, "scripts/train_charge_net.py", "--device", device,
                *stage["args"], *(["--head-chunk", str(chunk)] if chunk else []),
                "--gpu-speedups", ",".join(speedups) or "none",
-               "--workers", str(workers), *limits, "--out", stage["out"],
+               "--workers", str(workers), *data_flags(data), *limits, "--out", stage["out"],
                "--keep-pause-files", *flag]
         word = "resuming" if status == "paused" else "starting"
         how = f"{chunk} charges at a time" if chunk else "all charges at once"
@@ -169,6 +192,7 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
               f"{fast}", flush=True)
         env = dict(os.environ, PYTHONUTF8="1", PYTHONUNBUFFERED="1")
         out_of_gpu_memory = False
+        data_failure = None  # the first line saying that the data loading failed
         with open(log, "a", encoding="utf-8") as fh:
             fh.write(f"\n=== {datetime.datetime.now():%Y-%m-%d %H:%M} {' '.join(cmd)}\n")
             proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
@@ -178,6 +202,8 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
                 print(line, end="", flush=True)
                 fh.write(line)
                 out_of_gpu_memory |= any(t in line for t in GPU_OUT_OF_MEMORY)
+                if data_failure is None and any(t in line for t in DATA_LOADER_FAILURE):
+                    data_failure = line.strip()[:300]
             rc = proc.wait()
         if (rc not in (0, PAUSED, MEMORY) and out_of_gpu_memory and not chunk
                 and not interrupted["count"]):
@@ -192,6 +218,20 @@ def run_stage(stage: dict, pool: dict, limits: list, device: str, restart: bool)
                     "machine.json could not be written, so later runs try all at once again")
             print(f"[train_all] {stage['name']}: the GPU ran out of memory scoring all charges "
                   f"at once; continuing with {HEAD_CHUNK} at a time ({note})", flush=True)
+            continue
+        if (rc not in (0, PAUSED, MEMORY) and data_failure and data
+                and dict(data) != DATA_DEFAULTS and not interrupted["count"]):
+            # the new way of loading the data failed on this computer: as before from here on
+            pool["data"] = dict(DATA_DEFAULTS)
+            kept = _remember_data_failure(data, data_failure)
+            resume = out.with_suffix(".resume.pt")
+            saved = resume.exists() and (not restart or resume.stat().st_mtime >= started)
+            status = stage_status(out) if saved else "new"
+            note = ("remembered in machine.json for later runs" if kept else
+                    "machine.json could not be written, so later runs try it again")
+            print(f"[train_all] {stage['name']}: the data loading ({data_words(data)}) failed "
+                  f"({data_failure}); continuing as before, {data_words(DATA_DEFAULTS)} "
+                  f"({note})", flush=True)
             continue
         if rc == MEMORY and workers > 1 and not interrupted["count"]:
             pool["workers"] = max(1, workers - 2)
@@ -252,19 +292,112 @@ def _remember_unchunked_failure(view: str) -> bool:
     return _remember(update)
 
 
-def rate_workers(machine: dict) -> int:
+def _remember_data_failure(settings: dict, reason: str) -> bool:
+    """Record in machine.json that the data loading ``settings`` failed in training: the runs
+    load their data as before (DATA_DEFAULTS) until setup measures again; the time estimate
+    takes setup's measurement of that, where it made one."""
+    def update(info):
+        info["data_loader"] = {
+            **DATA_DEFAULTS, "config": "today", "failed": dict(settings),
+            "reason": f"{data_words(settings)} failed in training ({reason}): as before since"}
+        measured = measured_data_rate(info, DATA_DEFAULTS)
+        if measured:
+            info[RATE_KEY], info[RATE_WORKERS_KEY] = round(measured[0], 1), measured[1]
+    return _remember(update)
+
+
+def data_loading_for(machine: dict, asked: dict | None = None) -> dict | None:
+    """How the runs' data workers run (DATA_DEFAULTS' settings): setup's choice in machine.json
+    ("data_loader"), with each setting ``asked`` for (train_all's options; None: not asked)
+    instead. None where machine.json records none (an earlier setup) or a value this package
+    does not know, and nothing is asked: the runs then take train_charge_net.py's defaults,
+    DATA_DEFAULTS, exactly as before."""
+    rec = machine.get("data_loader")
+    chosen = None
+    if isinstance(rec, dict) and all(rec.get(k) in DATA_CHOICES[k] for k in DATA_DEFAULTS):
+        chosen = {k: rec[k] for k in DATA_DEFAULTS}
+    asked = {k: v for k, v in (asked or {}).items() if v is not None}
+    if asked:
+        chosen = {**(chosen or DATA_DEFAULTS), **asked}
+    return chosen
+
+
+def data_source(machine: dict, data: dict | None, asked: dict | None = None) -> str:
+    """Why the runs load their data as ``data`` (data_loading_for) says, in words."""
+    asked = {k: v for k, v in (asked or {}).items() if v is not None}
+    rec = machine.get("data_loader")
+    told = ", ".join(f"{DATA_OPTIONS[k]} {v}" for k, v in asked.items())
+    if asked:
+        return f"setup's choice, with {told} as asked" if isinstance(rec, dict) and \
+            data_loading_for(machine) is not None else f"{told} as asked, the rest as before"
+    if data is None:
+        if isinstance(rec, dict):
+            return ("as before: gpu_training/machine.json names a data loading this package "
+                    "does not know; running setup again measures it")
+        return ("as before: gpu_training/machine.json does not say how the data workers run "
+                "fastest on this computer (an earlier setup); running setup again measures it")
+    return f"setup's choice: {rec.get('reason')}" if rec.get("reason") else "setup's choice"
+
+
+def data_flags(settings: dict | None) -> list[str]:
+    """train_charge_net.py's options for the data loading ``settings`` ([] for None)."""
+    if not settings:
+        return []
+    return [x for k in DATA_DEFAULTS for x in (DATA_OPTIONS[k], str(settings[k]))]
+
+
+def data_words(settings: dict | None) -> str:
+    """A data loading (DATA_DEFAULTS' settings; None: DATA_DEFAULTS) in words."""
+    s = {**DATA_DEFAULTS, **(settings or {})}
+    loader = {"dataloader": "torch's DataLoader", "ordered": "the ordered loader"}
+    binding = {"none": "workers not bound to cores",
+               "pool": "workers sharing the cores the training process does not keep",
+               "core": "each worker on a core of its own"}
+    qos = {"system": "power throttling left to Windows",
+           "high": "opted out of power throttling (EcoQoS)"}
+    priority = {"below_normal": "below-normal priority", "normal": "normal priority"}
+    return ", ".join(table.get(s[key], str(s[key])) for key, table in (
+        ("loader", loader), ("cpu_binding", binding), ("worker_qos", qos),
+        ("worker_priority", priority)))
+
+
+def measured_data_rate(machine: dict, settings: dict | None) -> tuple[float, int] | None:
+    """What setup measured the data workers deliver on this recipe's spectra under the data
+    loading ``settings``, under a training-like load (machine.json's "data_loader_test"):
+    (spectra per second, workers), or None where it measured nothing of the kind."""
+    test = machine.get("data_loader_test")
+    if not settings or not isinstance(test, dict) or test.get("recipe") != RECIPE:
+        return None
+    want = {**DATA_DEFAULTS, **settings}
+    for c in (test.get("configs") or {}).values():
+        if (isinstance(c, dict) and all(c.get(k) == want[k] for k in DATA_DEFAULTS)
+                and c.get("spectra_per_second") and test.get("workers")):
+            return float(c["spectra_per_second"]), int(test["workers"])
+    return None
+
+
+def rate_workers(machine: dict, settings: dict | None = None) -> int:
     """The number of data workers whose speed setup measured on this recipe's spectra
-    (RATE_WORKERS_KEY, the number it chose), 0 without a record."""
+    (RATE_WORKERS_KEY, the number it chose; that of its data-loading test for the data loading
+    ``settings``, where it measured that), 0 without a record."""
+    measured = measured_data_rate(machine, settings)
+    if measured:
+        return measured[1]
     return int(machine.get(RATE_WORKERS_KEY) or machine.get("workers") or 0)
 
 
-def data_rate(machine: dict, workers: int) -> float | None:
+def data_rate(machine: dict, workers: int, settings: dict | None = None) -> float | None:
     """Spectra per second ``workers`` data workers deliver: setup's measurement on this recipe's
-    spectra, of rate_workers workers, in proportion for another number (None without one, as
-    from a setup of an earlier recipe). For more workers than measured that is an upper bound,
-    and an overestimate on a processor with efficiency cores, where each further worker adds
-    less; for fewer, a lower bound."""
+    spectra (RATE_KEY: under the data loading it chose; under ``settings`` where its
+    data-loading test measured those), of rate_workers workers, in proportion for another
+    number (None without one, as from a setup of an earlier recipe). For more workers than
+    measured that is an upper bound, and an overestimate on a processor with efficiency cores
+    when torch's DataLoader, which waits for the slowest worker, loads the data; for fewer, a
+    lower bound."""
     rate, measured_workers = machine.get(RATE_KEY), rate_workers(machine)
+    measured = measured_data_rate(machine, settings)
+    if measured:
+        rate, measured_workers = measured
     if not rate or not measured_workers:
         return None
     return float(rate) * workers / measured_workers
@@ -328,16 +461,18 @@ def run_pace(stage: dict, machine: dict, data: float, data_at_most: bool = False
     return {**g, "data": data, "pace": pace, "set_by": set_by, "slowest": slowest}
 
 
-def training_hours(stages: list, machine: dict, workers: int) -> dict | None:
-    """Hours of training for ``stages`` with ``workers`` data workers (data_rate), each run at
-    its pace (run_pace) plus a tenth for validation: ``hours``, and ``slowest`` should every step
-    take as long as at the active-bin cap; ``runs`` holds each run's name, view, hours and pace.
-    With more workers than setup measured their rate is an upper bound, and so is each pace.
-    None without setup's measurement of the workers on this recipe."""
-    data = data_rate(machine, workers)
+def training_hours(stages: list, machine: dict, workers: int,
+                   settings: dict | None = None) -> dict | None:
+    """Hours of training for ``stages`` with ``workers`` data workers (data_rate, under the data
+    loading ``settings``), each run at its pace (run_pace) plus a tenth for validation:
+    ``hours``, and ``slowest`` should every step take as long as at the active-bin cap; ``runs``
+    holds each run's name, view, hours and pace. With more workers than setup measured their
+    rate is an upper bound, and so is each pace. None without setup's measurement of the
+    workers on this recipe."""
+    data = data_rate(machine, workers, settings)
     if not data:
         return None
-    at_most = workers > rate_workers(machine)
+    at_most = workers > rate_workers(machine, settings)
     runs, total, slowest = [], 0.0, 0.0
     for st in stages:
         p = run_pace(st, machine, data, at_most)
@@ -473,13 +608,14 @@ def batch_problem(batch: int, machine: dict, gpu_gb: float, view: str = "window"
 
 
 def time_estimate(stages: list, machine: dict, workers: int,
-                  remeasure: str | None = None) -> str | None:
+                  remeasure: str | None = None, settings: dict | None = None) -> str | None:
     """training_hours in words: each run's hours at its pace and what sets the pace, the hours
     should every step take as long as at the active-bin cap (where that is longer), and whether
     the data workers' rate is scaled from another number of workers than setup measured. Scaled
     up it may promise too much, and ``remeasure``, the command that measures that many, is
-    named."""
-    est = training_hours(stages, machine, workers)
+    named. The data workers' rate is setup's under the data loading ``settings`` where it
+    measured that (data_rate)."""
+    est = training_hours(stages, machine, workers, settings)
     if est is None:
         return None
     parts = [f"{r['name']} {r['hours']:.1f} h at {r['pace']:.0f} spectra/s, "
@@ -488,7 +624,7 @@ def time_estimate(stages: list, machine: dict, workers: int,
     if est["slowest"] > 1.05 * est["hours"]:
         text += (f"; up to {est['slowest']:.1f} h should every step take as long as with every "
                  f"spectrum at the active-bin cap")
-    measured = rate_workers(machine)
+    measured = rate_workers(machine, settings)
     if measured and measured != workers:
         text += f"; the data workers' rate is setup's for {measured}, scaled to {workers}"
     if measured and workers > measured:
@@ -520,6 +656,22 @@ def main() -> int:
                     help="GPU memory cap (default: machine.json, else 14)")
     ap.add_argument("--restart", action="store_true",
                     help="discard the saved states of the chosen runs and train them afresh")
+    ap.add_argument("--loader", default=None, choices=DATA_CHOICES["loader"],
+                    help="how the data workers' spectra reach the training: dataloader "
+                         "(torch's, as before) or ordered (single spectra to whichever worker "
+                         "is free; the same batches). Default: what setup measured faster "
+                         "(gpu_training/machine.json), else dataloader")
+    ap.add_argument("--cpu-binding", default=None, choices=DATA_CHOICES["cpu_binding"],
+                    help="the data workers not bound to cores (none, as before), sharing the "
+                         "cores the training process does not keep (pool) or each on its own "
+                         "core (core, with the ordered loader only). Default: setup's choice")
+    ap.add_argument("--worker-qos", default=None, choices=DATA_CHOICES["worker_qos"],
+                    help="Windows' power throttling of the data workers and the training "
+                         "process left to Windows (system, as before) or opted out of (high). "
+                         "Default: setup's choice")
+    ap.add_argument("--worker-priority", default=None, choices=DATA_CHOICES["worker_priority"],
+                    help="the data workers' priority: below_normal (as before: other programs "
+                         "come first) or normal. Default: setup's choice")
     ap.add_argument("--smoke", action="store_true",
                     help="a tiny run of the whole procedure (setup runs it)")
     ap.add_argument("--resume", action="store_true", help=argparse.SUPPRESS)  # always resumes
@@ -538,6 +690,7 @@ def main() -> int:
     sys.path.insert(0, str(ROOT / "src"))
     from lcmsdeconv.nn.machine import (
         MAIN_GB,
+        ORDERED_GB_PER_WORKER,
         auto_workers,
         cpu_workers,
         default_ram_budget_gb,
@@ -554,15 +707,25 @@ def main() -> int:
                 print(f"[train_all] {problem}.", flush=True)
                 return 1
 
+    asked = {k: getattr(args, k) for k in DATA_DEFAULTS}
+    data = data_loading_for(machine, asked)
+    loader = (data or DATA_DEFAULTS)["loader"]
+    # the ordered loader's shared slots, which no process counts as its own memory
+    slots_gb = ORDERED_GB_PER_WORKER if loader == "ordered" else 0.0
     workers = args.workers or machine.get("workers")
-    if not args.workers and machine.get("worker_gb") and ram != machine.get("ram_budget_gb"):
-        # another budget than setup measured for: as many workers as it holds, by the
-        # memory measured for the training process and for one worker
-        fit = ram_workers(ram, machine["worker_gb"], machine.get("main_gb", MAIN_GB))
+    setup_loader = (machine.get("data_loader") or {}).get("loader") if isinstance(
+        machine.get("data_loader"), dict) else None
+    if not args.workers and machine.get("worker_gb") and (
+            ram != machine.get("ram_budget_gb") or (slots_gb and setup_loader != "ordered")):
+        # another budget than setup measured for, or setup's number of workers chosen without
+        # the ordered loader's slots: as many workers as the budget holds, by the memory
+        # measured for the training process and for one worker
+        fit = ram_workers(ram, float(machine["worker_gb"]) + slots_gb,
+                          machine.get("main_gb", MAIN_GB))
         workers = max(1, min(cpu_workers(), fit))
     if workers is None:
-        workers = auto_workers(ram)
-    rate = data_rate(machine, int(workers))
+        workers = auto_workers(ram, loader=loader)
+    rate = data_rate(machine, int(workers), data)
     for st in stages:  # the smoke checks the choices training makes, at the recipe's batch
         st["head_chunk"] = head_chunk_for(machine, st["view"], gpu, args.batch_size, rate)
         st["gpu_speedups"] = speedups_for(machine, st["view"])
@@ -584,12 +747,14 @@ def main() -> int:
     print(f"[train_all] runs: {', '.join(names)}{' (smoke)' if args.smoke else ''}; GPU "
           f"training, {workers} data workers{batch}, RAM budget {ram:g} GB, GPU memory cap "
           f"{gpu:g} GB", flush=True)
+    print(f"[train_all] data loading: {data_words(data)} ({data_source(machine, data, asked)})",
+          flush=True)
     if not args.smoke:
         probe = (r".venv\Scripts\python gpu_training\probe.py" if sys.platform == "win32"
                  else ".venv/bin/python gpu_training/probe.py")
         remeasure = (f"{probe} --ram-gb {ram:g} --gpu-memory-gb {gpu:g}"
                      + (f" --workers {workers}" if args.workers else ""))
-        estimate = time_estimate(stages, machine, int(workers), remeasure)
+        estimate = time_estimate(stages, machine, int(workers), remeasure, settings=data)
         if estimate:
             print(f"[train_all] {estimate}; each epoch then reports the time left and what set "
                   f"its pace", flush=True)
@@ -612,7 +777,7 @@ def main() -> int:
               "faster on this GPU; running setup again measures them", flush=True)
     signal.signal(signal.SIGINT, on_ctrl_c)
 
-    pool = {"workers": int(workers)}
+    pool = {"workers": int(workers), "data": data}
     failed = []
     try:
         for stage in stages:

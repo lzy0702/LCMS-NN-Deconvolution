@@ -46,6 +46,13 @@ Examples:
     python scripts/train_charge_net.py --recipe v4 --iso-channels \\
         --gpu-speedups tf32,index_select --out runs/ladder_v4_iso.pt
 
+    # where the data workers run and how their spectra reach the training (setup measures
+    # which delivers the most on this computer; train_all.py passes it): the ordered loader
+    # hands single spectra to whichever worker is free, each worker bound to a core of its own,
+    # opted out of Windows' power throttling (EcoQoS)
+    python scripts/train_charge_net.py --recipe v4 --iso-channels --loader ordered \\
+        --cpu-binding core --worker-qos high --out runs/ladder_v4_iso.pt
+
     # export for inference (ONNX + JSON sidecar next to it)
     lcmsdeconv export-onnx runs/ladder_stage1.pt -o runs/ladder_stage1.onnx
 
@@ -68,6 +75,7 @@ from lcmsdeconv.nn.machine import auto_workers, single_threaded_workers
 from lcmsdeconv.nn.train import GPU_SPEEDUPS, TrainConfig, parse_gpu_speedups, train
 from lcmsdeconv.synth.compounds import DEFAULT_CLASSES, ClassConfig
 from lcmsdeconv.synth.config import SynthConfig
+from lcmsdeconv.synth.pool import LOADERS, choose_loader
 
 
 def mixture(crop: int = 32768, background_ions: int | None = None) -> list[tuple[float, SynthConfig]]:
@@ -241,6 +249,27 @@ def main():
                          f"gpu_training/train_all.py passes those setup measured faster on this "
                          f"GPU with the same loss and gradients; ignored on the processor; a "
                          f"run may resume with others")
+    ap.add_argument("--loader", default=None, choices=list(LOADERS),
+                    help="how the data workers' spectra reach the training: 'dataloader' "
+                         "(the default: torch's DataLoader, whole batches to the workers in "
+                         "turn, so that the slowest sets the pace) or 'ordered' (single spectra "
+                         "to whichever worker is free; the same batches). The environment "
+                         "variable LCMSDECONV_LOADER overrides it")
+    ap.add_argument("--loader-window", type=int, default=None, metavar="N",
+                    help="the ordered loader's window: spectra in work or waiting at most "
+                         "(default: five per worker)")
+    ap.add_argument("--cpu-binding", default="none", choices=["none", "pool", "core"],
+                    help="where the data workers run: not bound (none, the default), all on "
+                         "the cores this process does not keep (pool), or each on its own core "
+                         "(core; with --loader ordered only, the DataLoader gets pool)")
+    ap.add_argument("--worker-priority", default="below_normal",
+                    choices=["below_normal", "normal"],
+                    help="the data workers' priority: below_normal (the default: the "
+                         "computer's other programs come first) or normal")
+    ap.add_argument("--worker-qos", default="system", choices=["system", "high"],
+                    help="Windows: power throttling of the data workers and this process left "
+                         "to Windows (system, the default) or opted out of (high: full speed "
+                         "whatever the window state)")
     ap.add_argument("--device", default="cuda",
                     help="cuda (default: the network trains on the GPU only), cpu, or auto")
     ap.add_argument("--threads", type=int, default=None, help="CPU threads for torch")
@@ -282,8 +311,12 @@ def main():
         args.singly_charged = "keep" if v3 else "ignore"
     if args.window is None:
         args.window = V3_WINDOW if v3 else 32768
+    try:
+        loader = choose_loader(args.loader)
+    except ValueError as exc:
+        ap.error(f"LCMSDECONV_LOADER: {exc}")
     if args.workers is None:
-        args.workers = auto_workers(args.max_ram_gb)
+        args.workers = auto_workers(args.max_ram_gb, loader=loader)
     if args.workers > 0:
         single_threaded_workers()
     if args.smoke:
@@ -302,7 +335,9 @@ def main():
                       clear_pause_files=not args.keep_pause_files,
                       max_gpu_memory_gb=args.max_gpu_memory_gb,
                       window=args.window, iso_channels=args.iso_channels, view=args.view,
-                      head_chunk=args.head_chunk, gpu_speedups=speedups)
+                      head_chunk=args.head_chunk, gpu_speedups=speedups, loader=loader,
+                      loader_window=args.loader_window, cpu_binding=args.cpu_binding,
+                      worker_priority=args.worker_priority, worker_qos=args.worker_qos)
     print(f"{args.workers} data workers; spectra are generated on the processor, the network "
           f"trains on {args.device}", flush=True)
     if v3:

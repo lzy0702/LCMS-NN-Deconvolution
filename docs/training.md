@@ -89,13 +89,53 @@ views (below) within the RAM and GPU memory limits, with the GPU speedups setup 
 faster, resumes after any interruption and packs what to send back. Its RAM budget is by
 default half the computer's memory, at least 16 GB, at most 48 and at most the memory less 4
 GB (`nn.machine.default_ram_budget_gb`; `--ram-gb` sets another). Setup gives the data workers
-all cores but four (two of eight or fewer) where the budget holds them, and measures their
-speed at that number, in full flow after two batches from each (`probe.workers_run`): with
-performance and efficiency cores each further worker adds less, and the loader delivers
-batches in order with two in work per worker, so a worker that is ahead waits for the slower
-ones. On the user's 24-core processor (8 performance, 16 efficient cores, 96 GB) the earlier
-fixed 16 GB held 13 workers, which trained at 19 spectra/s where 10 workers measured alone and
-scaled to 13 had promised 30; the 20 the processor is given trained at 26-27.
+one logical processor each of every core but the one or two the training process keeps
+(`nn.machine.cpu_workers`, `nn.cpus.plan`: 22 of 8 performance and 16 efficient cores) where
+the budget holds them, and measures their speed at that number, in full flow after two batches
+from each (`probe.workers_run`): with performance and efficiency cores each further worker
+adds less, and torch's DataLoader delivers batches in order with two in work per worker, so a
+worker that is ahead waits for the slower ones. On the user's 24-core processor (8
+performance, 16 efficient cores, 96 GB) the earlier fixed 16 GB held 13 workers, which trained
+at 19 spectra/s where 10 workers measured alone and scaled to 13 had promised 30; the 20 the
+processor was then given trained at 26-27.
+
+Setup then measures how that many workers deliver the most spectra (`probe.data_loading_test`, a
+few minutes), choosing by measurement what `train_charge_net.py` can switch: `--loader
+dataloader` (torch's, as before) or `ordered` (`synth.pool`: single items to whichever worker is
+free, the same batches), `--cpu-binding none`, `pool` or `core`, `--worker-qos system` or `high`
+(the opt-out of Windows' power throttling, Windows only) and `--worker-priority below_normal` or
+`normal` (measured on Windows only: elsewhere a worker's nice value, once raised, cannot be
+lowered again while it runs). The DataLoader runs today's way first and last, each time with
+workers of its own; between them one ordered loader's workers start once and switch from way to
+way while they run (`probe.SwitchedFrames` reads a code in shared memory before every item; the
+training process binds itself as training does), each way twice in mirrored order. Every window
+times the same spectra (whole rounds of the DataLoader, about eight seconds at today's rate),
+after a warm-up and with more items queued behind them, while the main process runs a real
+training step of the window view on the GPU for every batch, with the runs' head chunking and
+speedups (`probe.TrainingLoad`; where that cannot run, the batch copied to the GPU and the main
+thread kept busy for the measured step without holding the interpreter lock).
+`probe.choose_data_loading` keeps today's way unless another delivers at least 3 % more beyond
+the gain's standard error, each further change (in the order of `probe.data_cost`) again 3 %
+more than every way that changes less. The standard error comes from how far apart each way's
+two windows are (`probe.data_noise`), after a steady drift over the test is taken out: in the
+mirrored order the drift moves a way's two windows apart in proportion to the time between them,
+so a straight line through the ordered loader's differences against that time is the drift, and
+what it leaves is chance. In simulation (nine ways, every one as fast as today's) the rule
+picked another way in 1.2 % of tests at 2 % noise per window and 6.6 % at 3 % (the plain 3 %
+margin: 27 % and 48 %), and still found a way truly 8 % faster in 85 % and 59 % of tests.
+Today's two windows more than 10 % apart mean the computer was busy, and keep today's way; a way
+whose own windows are that far apart, or that not every worker took, is left out; a test whose
+ordered loader stops delivering is stopped at each window's time limit (`probe._watchdog`) and
+keeps today's way. `machine.json` records the choice (`data_loader`) and the measurements
+(`data_loader_test`: each way's spectra per second, both windows, a busy worker's rate on each
+class of core, the training process's wait), and the workers' rate becomes the chosen way's;
+with the ordered loader its shared slots (`nn.machine.ORDERED_GB_PER_WORKER`) count against the
+RAM budget. `train_all.py` passes the choice to every run (none, and so today's way, for a
+`machine.json` without it), takes `--loader`, `--cpu-binding`, `--worker-qos` and
+`--worker-priority` over it, estimates the time from the rate measured for the way used, and
+continues a run whose new way fails (`DataWorkerError`) from its last saved state with today's
+way, remembered in `machine.json`. `LCMSDECONV_LOADER=dataloader` forces torch's DataLoader
+whatever is passed.
 
 **Pausing and resuming.** Ctrl+C once, or an empty file named `PAUSE` next to the output, ends
 the run after the current step and saves the whole training state (model, moving average,
@@ -290,10 +330,14 @@ Every epoch records what set its pace, without waiting for the GPU at any step: 
 training time spent waiting for the data loader, and on CUDA the median GPU time of every 25th
 step (CUDA events, read at the epoch's end), that time times the steps as a share of the
 training time, the peak reserved and allocated GPU memory and the allocator's retries in the
-epoch. They are in the pace line, in the epoch's record in `<out>.log.jsonl` (`pace`) and in
+epoch; with data workers also what they made on each class of core (`pace.workers`: items, a
+busy worker's items a second, the processors, how busy the workers were, items made twice by
+the ordered loader), so that a training whose workers run slower than setup measured shows
+where. They are in the pace line, in the epoch's record in `<out>.log.jsonl` (`pace`) and in
 `<out>.status.json`; `gpu_training/README.md` says how to read them. Setup predicts the same
 from its measurements (`train_all.training_hours`, `pace` in `machine.json`): the data workers'
-speed at the number training uses against a GPU step on the runs' first training batch with
+speed at the number training uses (under the data loading chosen, as setup's test measured it
+under a training-like load) against a GPU step on the runs' first training batch with
 the speedups chosen (`speedup_timings`), the slower setting the pace, and the step with every
 spectrum at the active-bin cap (`gpu_views`) as the bound on the time.
 

@@ -13,6 +13,11 @@ WORKER_GB = 1.2
 MAIN_GB = 3.5
 #: kept free below a memory budget, so that the budget is never reached in normal running
 MARGIN_GB = 1.5
+#: the ordered loader's shared slots for each data worker (lcmsdeconv.synth.pool: five items in
+#: work or waiting a worker, the batch being copied out and a few spare; an item of the
+#: 131 072-bin recipes is 9 MiB). No process counts them as its own memory, so the budget adds
+#: them to every worker's
+ORDERED_GB_PER_WORKER = 0.06
 #: the RAM budget of gpu_training's setup and train_all when none is given
 #: (default_ram_budget_gb): half the computer's memory, the other half left to the system and
 #: other programs; at least BUDGET_MIN_GB, the fixed default of earlier packages, which a
@@ -41,7 +46,7 @@ def default_ram_budget_gb(total_gb: float | None = None) -> float:
     memory, :func:`physical_ram_gb`, if not given), within BUDGET_MIN_GB and BUDGET_MAX_GB and
     at most ``total_gb`` less SYSTEM_GB; BUDGET_MIN_GB where the memory cannot be read. 4 GB on a
     computer of 8 GB, 12 on 16, 16 on 20 to 32, 32 on 64 and 48 on 96 or more: on 96 GB room for
-    every worker the processor is given (on a processor of 24 cores, 20 of 0.9 GB each with a
+    every worker the processor is given (on a processor of 24 cores, 22 of 0.9 GB each with a
     training process of 2.4 GB)."""
     total = physical_ram_gb() if total_gb is None else total_gb
     if not total or total <= 0:
@@ -64,10 +69,24 @@ def cpu_cores() -> int:
 
 
 def cpu_workers(cores: int | None = None) -> int:
-    """The processor's cap on data workers: all cores but two of eight or fewer, four of more,
-    left to the training process, its pinned-memory thread and the system."""
-    cores = cpu_cores() if cores is None else cores
-    return max(1, cores - 2 if cores <= 8 else cores - 4)
+    """The processor's cap on data workers: one per logical processor of every core but those
+    the training process keeps for itself and its pinned-memory thread (lcmsdeconv.nn.cpus.plan:
+    two of the fastest cores, one on a processor of four cores or fewer; below three cores all
+    logical processors but one), performance and efficient cores alike: 22 on a processor of 8
+    performance and 16 efficient cores. The workers run at lowered priority, so the system and
+    other programs still come first. This computer's cores as it reports them, and those this
+    process may use (alike cores where the count of logical processors read disagrees with
+    :func:`cpu_cores`); ``cores``: that many alike cores instead (1, 1, 2, 3, 6, 10, 22 for 1,
+    2, 3, 4, 8, 12, 24)."""
+    from .cpus import allowed_cpus, detect, uniform_topology, worker_slots
+
+    if cores is not None:
+        return worker_slots(uniform_topology(max(1, int(cores))), allowed=None)
+    n = cpu_cores()
+    topo = detect()
+    if topo.logical_processors != n:
+        return worker_slots(uniform_topology(n), allowed=None)
+    return worker_slots(topo, allowed_cpus())
 
 
 def ram_workers(budget_gb: float, worker_gb: float = WORKER_GB, main_gb: float = MAIN_GB,
@@ -78,15 +97,18 @@ def ram_workers(budget_gb: float, worker_gb: float = WORKER_GB, main_gb: float =
 
 
 def auto_workers(ram_budget_gb: float | None = None, worker_gb: float = WORKER_GB,
-                 main_gb: float = MAIN_GB, margin_gb: float = MARGIN_GB) -> int:
+                 main_gb: float = MAIN_GB, margin_gb: float = MARGIN_GB,
+                 loader: str = "dataloader") -> int:
     """Data workers that fit the processor and the memory: the processor's cap
     (:func:`cpu_workers`) and, within ``ram_budget_gb``, as many workers as the memory left by
-    the training process and a margin holds; at least one. Without a budget half the computer's
+    the training process and a margin holds (with the ordered ``loader`` each worker's shared
+    slots too, ORDERED_GB_PER_WORKER); at least one. Without a budget half the computer's
     memory (:func:`half_ram_gb`), as scripts/train_charge_net.py has always taken without
     --max-ram-gb; gpu_training's setup and train_all pass theirs (:func:`default_ram_budget_gb`
     unless told another)."""
     budget = ram_budget_gb if ram_budget_gb else half_ram_gb()
-    return max(1, min(cpu_workers(), ram_workers(budget, worker_gb, main_gb, margin_gb)))
+    per_worker = worker_gb + (ORDERED_GB_PER_WORKER if loader == "ordered" else 0.0)
+    return max(1, min(cpu_workers(), ram_workers(budget, per_worker, main_gb, margin_gb)))
 
 
 def process_ram_gb(proc) -> float:

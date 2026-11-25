@@ -101,11 +101,11 @@ def test_one_pool_of_workers_at_a_time(tmp_path, monkeypatch):
     seen = []
     original = tr.comb_baseline
 
-    def counting(loader, num_workers=None):
+    def counting(loader, num_workers=None, **kw):
         kids = [p for p in psutil.Process().children(recursive=True)
                 if "resource_tracker" not in " ".join(p.cmdline())]
         seen.append(len(kids))
-        return original(loader, num_workers=num_workers)
+        return original(loader, num_workers=num_workers, **kw)
 
     monkeypatch.setattr(tr, "comb_baseline", counting)
     monkeypatch.setenv("LCMSDECONV_MP_CONTEXT", "spawn")
@@ -126,6 +126,29 @@ def test_training_leaves_a_status_the_orchestrator_reads_without_torch(tmp_path)
     train(TrainConfig(resume=True, **_cfg(out)), synth_config=_synth())
     st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
     assert (st["epoch"], st["stop_reason"]) == (2, "finished")
+
+
+def test_training_says_how_it_draws_the_spectra(tmp_path, capsys, monkeypatch):
+    import json
+
+    from lcmsdeconv.nn.train import TrainConfig, train
+    from lcmsdeconv.synth import rng
+
+    out = tmp_path / "net.pt"
+    train(TrainConfig(max_seconds=1e-6, **_cfg(out)), synth_config=_synth())
+    st = json.loads(out.with_suffix(".status.json").read_text(encoding="utf-8"))
+    assert st["spectrum_draws"] == rng.status()
+    text = capsys.readouterr().out
+    if rng.status()["draws"] == "compiled":
+        assert "spectrum draws: compiled, the same as numpy's draw for draw" in text
+    # numpy's draws, and why
+    monkeypatch.setitem(rng._STATE, "ok", False)
+    monkeypatch.setitem(rng._STATE, "reason", "numba is not installed")
+    other = tmp_path / "other.pt"
+    train(TrainConfig(max_seconds=1e-6, **_cfg(other)), synth_config=_synth())
+    assert "spectrum draws: numpy's, slower (numba is not installed)" in capsys.readouterr().out
+    st = json.loads(other.with_suffix(".status.json").read_text(encoding="utf-8"))
+    assert st["spectrum_draws"]["draws"] == "numpy"
 
 
 def test_a_restarted_run_sets_the_old_log_aside(tmp_path):
