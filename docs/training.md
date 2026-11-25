@@ -328,6 +328,35 @@ on v3 read only 5 and 4 of them, while reading laddered envelopes better (0.96 o
 0.99-1.00 of the species of 5 kDa or more): at full size the network learns the rule that a peak
 without rungs is z = 1 more firmly, so the recipe, not the size, has to teach the exception.
 
+The gated layout at the same proof size, on v4 and v5 with two seeds each. The seed-1 runs were
+stopped by a time limit after 7 of their 10 epochs, so their saved epoch-6 networks are scored
+(validation share 0.894 and 0.893, against 0.909 and 0.910 for the finished seed-0 runs):
+
+| check | A1G4 (v4) | A1G4s1 (v4, seed 1) | A1G5 (v5) | A1G5s1 (v5, seed 1) |
+| --- | --- | --- | --- | --- |
+| lone multiply charged envelopes (15 cases) | 13/15 | 15/15 | 15/15 | 11/15 |
+| all envelopes of z >= 2 (120) | 0.93 | 0.81 | 0.88 | 0.90 |
+| with a ladder rung at S/N >= 100 (67) | 0.91 | 0.74 | 0.84 | 0.87 |
+| species of 5 kDa or more, z >= 2 (46) | 0.87 | 0.55 | 0.73 | 0.80 |
+| envelopes of z = 1 (8) | 0.86 | 0.73 | 0.83 | 0.82 |
+| reports not confirmed | 84 | 76 | 81 | 89 |
+| of them singly charged background | 6 | 4 | 3 | 8 |
+| real-like synthetic envelopes of z >= 2 | 0.65 | 0.50 | 0.71 | 0.66 |
+| envelopes of z >= 2 read mostly as z = 1 (of 120) | 3 | 19 | 9 | 5 |
+| a lone 6011.5 Da envelope at z = 3, 4, 5, 6 read as | 4, 4, -, - | 1, 1, 1, 1 | 1, 1, 1, 1 | -, -, -, - |
+
+(-: no usable charge.) The two seeds of one recipe differ more than the two recipes do: v4 reads
+0.93 and 0.81 of the envelopes of z >= 2, v5 0.88 and 0.90; of the species of 5 kDa or more v4
+reads 0.87 and 0.55, v5 0.73 and 0.80. The envelopes lost to z = 1 are states of the 5-7 kDa
+species, mostly their z = 3 (m/z 1 700-2 300), which these runs show at z = 3 and 4 (z = 5 at
+3 % of the stronger state or less). How many a network loses changes with the seed in both
+recipes, in opposite directions (v4 3 and 19, v5 9 and 5; the seed-1 networks have one epoch
+less behind them), so the proof arms cannot rank v4 against v5 on the laddered envelopes. The lone
+6011.5 Da envelope does not tell it either: the full-size v3 networks read that one as z = 1 at
+every charge too, yet read none of those z = 3 states as z = 1 (0.99-1.00 of the species of
+5 kDa or more, above). What they miss are the lone envelopes, which v5 is for; the GPU networks
+are checked on the four runs themselves.
+
 `gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
 `runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures
 the data workers on v5's spectra and records the recipe in `machine.json`; with a `machine.json`
