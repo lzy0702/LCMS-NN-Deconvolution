@@ -63,6 +63,11 @@ stopped, inside an epoch if need be; it refuses to resume with settings that wou
 run. The state is also saved every ``--save-every`` minutes and after every epoch, so a crash or
 a power cut loses at most that much work. A new run will not start over a paused one's state
 unless ``--restart`` says to discard it.
+
+On a GPU, a LadderNet run that scores all charges at once (no ``--head-chunk``) stops the same
+way, with exit code 5, when its steps slow to seconds with the GPU memory near the cap, which
+raises no error (the crawl guard, ``lcmsdeconv.nn.train.crawling``): continue it with
+``--resume --head-chunk 16``. gpu_training/train_all.py does so by itself.
 """
 
 from __future__ import annotations
@@ -353,8 +358,10 @@ def main():
 
 
 #: exit codes: the run finished; it was paused (Ctrl+C, a PAUSE file, --minutes); it stopped at
-#: the memory budget (resume it with fewer workers)
-FINISHED, PAUSED, MEMORY = 0, 3, 4
+#: the memory budget (resume it with fewer workers); its GPU steps slowed to seconds with the
+#: GPU memory near the cap, the head scoring all charges at once (the crawl guard,
+#: lcmsdeconv.nn.train.crawling: resume it with --head-chunk)
+FINISHED, PAUSED, MEMORY, GPU_CRAWL = 0, 3, 4, 5
 
 
 def exit_code(out: Path) -> int:
@@ -365,7 +372,8 @@ def exit_code(out: Path) -> int:
     if not resume.exists():
         return FINISHED
     reason = torch.load(resume, map_location="cpu", weights_only=False).get("stop_reason")
-    return {"paused": PAUSED, "time": PAUSED, "memory": MEMORY}.get(reason, FINISHED)
+    return {"paused": PAUSED, "time": PAUSED, "memory": MEMORY,
+            "gpu_memory_crawl": GPU_CRAWL}.get(reason, FINISHED)
 
 
 if __name__ == "__main__":

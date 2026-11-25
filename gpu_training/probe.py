@@ -16,15 +16,18 @@ least 16 GB and at most 48 (lcmsdeconv.nn.machine).
 
 Then it measures the GPU speedups (lcmsdeconv.nn.train.GPU_SPEEDUPS: cuDNN's benchmark, TF32
 matrix products, LadderNet's index_select head, fused AdamW), which change only the rounding of
-the computation, on the runs' first training batch in each view, with the head chunking the runs
-will use, each configuration in a process of its own (_measure_in_child): a speedup is kept for
-a view if a step with it alone is at least 3 % faster than one without any and its loss and
-gradients agree with that step's; the kept ones are combined greedily, fastest first, each
-further one only if it makes the step at least 2 % faster again (choose_speedups). A profile of
-the window view's step with its speedups lists the CUDA kernels that take the most time.
-Everything goes to gpu_training/machine.json, which train_all.py reads. The pace it reports
-compares the workers' speed with the GPU's on the runs' first training batch (the speedup
-measurement), and gives the GPU's step with every spectrum at the active-bin cap as the bound.
+the computation, on the runs' first training batch in each view, with the head scoring
+train_all.HEAD_CHUNK charges at a time (the only way runs use speedups: all charges at once with
+them filled the GPU memory cap on the runs' varied batches, train_all.head_chunk_for), each
+configuration in a process of its own (_measure_in_child): a speedup is kept for a view if a
+step with it alone is at least 3 % faster than one without any and its loss and gradients agree
+with that step's; the kept ones are combined greedily, fastest first, each further one only if
+it makes the step at least 2 % faster again (choose_speedups). A profile of the window view's
+step with its speedups lists the CUDA kernels that take the most time. Only then does it choose
+each view's head chunking, from the speedups chosen. Everything goes to
+gpu_training/machine.json, which train_all.py reads. The pace it reports compares the workers'
+speed with the GPU's on the runs' first training batch (the speedup measurement), and gives the
+GPU's step with every spectrum at the active-bin cap as the bound.
 
 Last it measures how that many workers deliver the most spectra (data_loading_test, a few
 minutes): torch's DataLoader as before against the ordered loader (lcmsdeconv.synth.pool),
@@ -167,6 +170,20 @@ def gpu_view(view: str, batch_size: int, head_chunk: int | None) -> dict:
     del model, opt, batch, x
     torch.cuda.empty_cache()
     return out
+
+
+def gpu_memory_now() -> tuple[float, float] | None:
+    """The GPU's memory free and in all now (GB, torch.cuda.mem_get_info), or None where it
+    cannot be read. On a GPU that drives the display, Windows' desktop and other programs hold
+    part of it, and so does this process's CUDA context once the call has made it; machine.json
+    records the free share at the start of setup's GPU measurement, for information."""
+    import torch
+
+    try:
+        free, total = torch.cuda.mem_get_info()
+    except Exception:  # no CUDA, or a driver that cannot say
+        return None
+    return round(free / 2**30, 2), round(total / 2**30, 2)
 
 
 def gpu_steps(gpu_memory_gb: float, batch_size: int, head_chunk: int | None) -> dict:
@@ -438,9 +455,15 @@ def speedup_steps(view: str, batch: dict, chunk: int | None, weights: dict, conf
                   lr: float) -> dict:
     """One configuration measured for ``view``: the loss and gradients of its first two training
     steps from ``weights``, then the median time of TIMED_STEPS steps after WARM_STEPS more
-    (cuDNN's benchmark, if on, runs in the first), and the memory it took."""
+    (cuDNN's benchmark, if on, runs in the first), and the memory it took: the most the tensors
+    held (``peak_gb``) and the most the caching allocator reserved (``reserved_gb``), from an
+    empty cache, so that a view measured after another in the same process counts its own."""
+    import gc
+
     import torch
 
+    gc.collect()  # the network of a view measured before, should anything still hold it
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     step = _training_step(view, batch, chunk, weights, config, lr)
     checks = [step(keep=True) for _ in range(2)]
@@ -455,7 +478,8 @@ def speedup_steps(view: str, batch: dict, chunk: int | None, weights: dict, conf
         times.append(time.perf_counter() - t)
     return {"ms": 1000.0 * statistics.median(times), "loss": [c[0] for c in checks],
             "grad": [c[1] for c in checks],
-            "peak_gb": torch.cuda.max_memory_allocated() / 2**30}
+            "peak_gb": torch.cuda.max_memory_allocated() / 2**30,
+            "reserved_gb": torch.cuda.max_memory_reserved() / 2**30}
 
 
 def kernel_rows(averages, top: int = PROFILE_TOP) -> list[dict]:
@@ -534,7 +558,8 @@ def speedup_child(tmp: Path, name: str, views: list[str], profile: bool) -> int:
                 else:
                     m = speedup_steps(view, batch, chunk, weights, config, job["lr"])
                     np.savez(out.with_suffix(".npz"), ms=m["ms"], loss=np.array(m["loss"]),
-                             grad0=m["grad"][0], grad1=m["grad"][1], peak_gb=m["peak_gb"])
+                             grad0=m["grad"][0], grad1=m["grad"][1], peak_gb=m["peak_gb"],
+                             reserved_gb=m["reserved_gb"])
             except Exception as exc:  # recorded; the next view is measured all the same
                 out.with_suffix(".err").write_text(f"{type(exc).__name__}: {exc}"[:1000],
                                                    encoding="utf-8")
@@ -579,7 +604,9 @@ def _measure_in_child(tmp: Path, config, views: list[str], profile: bool = False
             with np.load(base.with_suffix(".npz")) as z:
                 out[view] = {"ms": float(z["ms"]), "loss": [float(v) for v in z["loss"]],
                              "grad": [z["grad0"], z["grad1"]],
-                             "peak_gb": round(float(z["peak_gb"]), 2)}
+                             "peak_gb": round(float(z["peak_gb"]), 2),
+                             "reserved_gb": (round(float(z["reserved_gb"]), 2)
+                                             if "reserved_gb" in z.files else None)}
         elif base.with_suffix(".err").exists():
             out[view] = RuntimeError(base.with_suffix(".err").read_text(encoding="utf-8"))
         else:
@@ -608,7 +635,9 @@ def measure_speedups(views: list[str], batch_size: int, chunks: dict,
     0.05: the learned head away from its zero start), then a profile of the window view's step
     with its chosen speedups. Returns machine.json's ``gpu_speedups`` (``{view: [names]}``),
     ``speedup_timings`` (``{view: {configuration: median ms}}``), ``speedup_checks`` (why each
-    was kept or not) and ``cuda_kernels``."""
+    was kept or not), the memory of each step (``speedup_peak_gb``, the most the tensors held,
+    and ``speedup_reserved_gb``, the most the caching allocator reserved; ``{view:
+    {configuration: GB}}``) and ``cuda_kernels``."""
     import torch
     from train_all import COMMON
     from train_charge_net import V3_WINDOW
@@ -659,13 +688,16 @@ def measure_speedups(views: list[str], batch_size: int, chunks: dict,
             print(f"  profiling the window view ({config_name(chosen)}) ...", flush=True)
             kernels = _measure_in_child(tmp, chosen, ["window"], profile=True)["window"]
     peaks: dict = {}
+    reserved: dict = {}
     for (config, view), m in measured.items():
         if isinstance(m, dict):
             peaks.setdefault(view, {})[config_name(config)] = m["peak_gb"]
+            if m.get("reserved_gb") is not None:
+                reserved.setdefault(view, {})[config_name(config)] = m["reserved_gb"]
     return {"gpu_speedups": {v: r["chosen"] for v, r in results.items()},
             "speedup_timings": {v: r["timings"] for v, r in results.items()},
             "speedup_checks": {v: r["notes"] for v, r in results.items()},
-            "speedup_peak_gb": peaks, "cuda_kernels": kernels}
+            "speedup_peak_gb": peaks, "speedup_reserved_gb": reserved, "cuda_kernels": kernels}
 
 
 def speedup_lines(info: dict, chunks: dict | None = None) -> list[str]:
@@ -679,9 +711,11 @@ def speedup_lines(info: dict, chunks: dict | None = None) -> list[str]:
         how = "" if view not in chunks else (
             ", all charges at once" if chunk is None else f", {chunk} charges at a time")
         lines.append(f"  {view} view{how}:")
+        reserved = (info.get("speedup_reserved_gb") or {}).get(view) or {}
         for name, note in notes.items():
-            ms = timings.get(name)
-            lines.append(f"    {name}: " + (f"{ms:.0f} ms a step; " if ms else "") + note)
+            ms, gb = timings.get(name), reserved.get(name)
+            took = f"{ms:.0f} ms a step" + (f", {gb:.1f} GB reserved" if gb else "") if ms else ""
+            lines.append(f"    {name}: " + (f"{took}; " if took else "") + note)
         chosen = (info.get("gpu_speedups") or {}).get(view) or []
         lines.append(f"    training uses: {', '.join(chosen) or 'none'}")
     k = info.get("cuda_kernels") or {}
@@ -1680,13 +1714,15 @@ def data_lines(test: dict | None, decision: dict) -> list[str]:
 
 
 def window_step_seconds(gpu: dict, speed: dict, chunk: int | None, speedups) -> float | None:
-    """Seconds of a training step of the window view as setup measured it: on the runs' first
-    training batch with ``speedups`` (speedup_timings, measured with the runs' chunking), else
-    at the active-bin cap with the chunking ``chunk`` (gpu_views); None where not measured."""
+    """Seconds of a training step of the window view with the head chunking ``chunk`` as setup
+    measured it: on the runs' first training batch with ``speedups`` (speedup_timings, where
+    they were timed with that chunking: ``speedup_chunks``, else ``head_chunks``, else taken to
+    be), else at the active-bin cap (gpu_views); None where not measured."""
     from train_all import speedup_name
 
     ms = ((speed.get("speedup_timings") or {}).get("window") or {}).get(speedup_name(speedups))
-    if ms:
+    timed_with = speed.get("speedup_chunks") or speed.get("head_chunks") or {}
+    if ms and timed_with.get("window", chunk) == chunk:
         return float(ms) / 1000.0
     m = (gpu.get("gpu_views") or {}).get("window") or {}
     if chunk is None:
@@ -1778,9 +1814,13 @@ def main() -> int:
         print("CUDA is not available to PyTorch: run gpu_training/setup.py first.")
         return 1
     else:
+        memory = gpu_memory_now()
+        now = f"; {memory[0]:.1f} of {memory[1]:.1f} GB free now" if memory else ""
         print(f"Measuring training steps of both views on the GPU ({args.batch_size} spectra per "
-              f"step, memory capped at {args.gpu_memory_gb:g} GB) ...", flush=True)
+              f"step, memory capped at {args.gpu_memory_gb:g} GB{now}) ...", flush=True)
         gpu = gpu_steps(args.gpu_memory_gb, args.batch_size, HEAD_CHUNK)
+        if memory:
+            gpu["gpu_free_gb_at_setup"] = memory[0]
     # the training process: what this one holds now (PyTorch, the CUDA context) and the
     # validation spectra it keeps in memory
     main_gb = process_gb(psutil.Process()) + VALIDATION_GB
@@ -1845,16 +1885,16 @@ def main() -> int:
     same = (before.get("gpu"), before.get("gpu_memory_gb"), before.get("gpu_batch")) == (
         gpu.get("gpu"), args.gpu_memory_gb, args.batch_size)
     failed = (before.get("unchunked_failed") or []) if same else []
-    chunks = {view: head_chunk_for({**gpu, "unchunked_failed": failed}, view,
-                                   args.gpu_memory_gb, args.batch_size, rate)
-              for view in gpu["gpu_views"]}
-    # the GPU speedups, on the runs' first training batch, with the chunking each view will use
+    # the GPU speedups, on the runs' first training batch, with the head in chunks: the only way
+    # runs use them (train_all.head_chunk_for). All charges at once with them filled the GPU
+    # memory cap on the runs' varied batches and slowed to seconds a step (the RTX 4080 SUPER of
+    # the profile of 2026-11-25), which one batch measured again and again does not show
     speed: dict = {"gpu_speedups": {}}
     if gpu["gpu_views"]:
         from lcmsdeconv.nn.train import GPU_SPEEDUPS
 
         views = list(dict.fromkeys(RUN_TABLE[name]["view"] for name in DEFAULT_RUNS))
-        view_chunks = {v: chunks.get(v, HEAD_CHUNK) for v in views}
+        view_chunks = {v: HEAD_CHUNK for v in views}
         print(f"Measuring the GPU speedups ({', '.join(GPU_SPEEDUPS)}) on the runs' first "
               f"training batch, each configuration in a process of its own ...", flush=True)
         try:
@@ -1864,12 +1904,21 @@ def main() -> int:
                      "speedup_error": f"{type(exc).__name__}: {exc}"[:400]}
             print(f"  the measurement failed ({speed['speedup_error']}); the runs train without "
                   f"GPU speedups", flush=True)
+        speed = {**speed, "speedup_chunks": view_chunks}
         for line in speedup_lines(speed, view_chunks):
             print(line, flush=True)
+    # then each view's head chunking, from the speedups chosen: all charges at once only for a
+    # view that trains without speedups, where that was measured faster with ample room and the
+    # GPU sets the pace
+    chunks = {view: head_chunk_for({**gpu, "unchunked_failed": failed,
+                                    "gpu_speedups": speed.get("gpu_speedups") or {}}, view,
+                                   args.gpu_memory_gb, args.batch_size, rate)
+              for view in gpu["gpu_views"]}
     # how the data workers deliver spectra fastest at the number chosen: torch's DataLoader, as
     # before, against the ordered loader, bound to cores or not, with and without the opt-out of
     # power throttling, at below-normal and normal priority, in mirrored order under a
-    # training-like load (the window view's training step, with its chunking and speedups)
+    # training-like load (the window view's training step, with the chunking and speedups its
+    # runs will use)
     data_test, not_run = None, None
     if args.no_data_test or args.no_gpu:
         not_run = "--no-data-test" if args.no_data_test else "the GPU was not measured"

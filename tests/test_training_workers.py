@@ -92,6 +92,24 @@ def test_training_script_exit_codes(tmp_path):
     assert out.exists()
 
 
+@pytest.mark.parametrize("reason, code", [
+    ("finished", 0), (None, 0), ("paused", 3), ("time", 3), ("memory", 4),
+    ("gpu_memory_crawl", 5)])
+def test_the_exit_code_follows_why_the_run_stopped(tmp_path, reason, code):
+    """train_charge_net.exit_code from the state the run left: 5 for the crawl guard's stop
+    (lcmsdeconv.nn.train.crawling), which gpu_training/train_all.py continues in chunks."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_workers_train_charge_net",
+                                                  ROOT / "scripts" / "train_charge_net.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    out = tmp_path / "net.pt"
+    assert script.exit_code(out) == script.FINISHED == 0  # no state left: finished
+    torch.save({"stop_reason": reason}, out.with_suffix(".resume.pt"))
+    assert script.exit_code(out) == code
+
+
 def test_one_pool_of_workers_at_a_time(tmp_path, monkeypatch):
     """The comb is scored before the persistent training workers start, so that the two pools
     never hold memory together (that would breach the RAM budget at every stage start)."""

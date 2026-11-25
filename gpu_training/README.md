@@ -103,13 +103,25 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   24 576 bins per spectrum, which is the bulk of the memory. Scoring the charges 16 at a time
   and recomputing them in the backward pass gives the same results in about a third of the
   memory (measured on a processor, about 2.5 GB per step against 7 GB) for about a third more
-  time per step. Setup measures both ways for both networks on your GPU (`gpu_views` in
-  `machine.json`), and training scores all charges at once where that is faster, its peak with
-  30 % to spare stays under the cap, and the GPU rather than the data workers sets the pace
-  (otherwise chunks cost no time); setup prints the choice. Should a run still run out of GPU
-  memory that way, it continues from its last saved state 16 charges at a time, and so do later
-  runs of that network (`unchunked_failed` in `machine.json`, kept when setup measures again
-  with the same GPU, cap and batch size).
+  time per step without GPU speedups. Setup measures both ways for both networks on your GPU
+  (`gpu_views` in `machine.json`), and a network trains 16 charges at a time whenever it uses
+  GPU speedups (below). Without them it scores all charges at once only where that is faster,
+  its peak times 1.5 stays 2 GB under the cap (less the CUDA context's 0.75 GB), and the GPU
+  rather than the data workers sets the pace (otherwise chunks cost no time); setup prints the
+  choice. Why so much room: setup measures the peak on one batch, but the number of bins whose
+  ladders are read varies from batch to batch, and with all charges at once the memory PyTorch
+  reserves grows with it. On the RTX 4080 SUPER of the profile of 2026-11-25, all charges at
+  once with the index_select head took the reserve from the 8.9 GB setup measured to 13.2 GB of
+  the 13.25 the cap leaves, and the steps then took seconds instead of a tenth of a second, with
+  no error; with cuDNN's benchmark as well, setup's choice, a test gave no result within 15
+  minutes. In chunks of 16 the same speedups took about 105 ms a step with about 4 GB reserved,
+  the fastest way that held.
+- **When the GPU runs out of memory or crawls:** should a run scoring all charges at once
+  still run out of GPU memory, or its steps slow to seconds with the memory PyTorch reserves
+  near the cap (which raises no error: the training's crawl guard watches for it, below), it
+  stops with its state saved and continues at once from there 16 charges at a time, with the
+  same GPU speedups, and so do later runs of that network (`unchunked_failed` in
+  `machine.json`, kept when setup measures again with the same GPU, cap and batch size).
 - **Batch size:** `--batch-size 8` takes 8 spectra per step. A batch whose memory, scaled from
   setup's measurement, exceeds the GPU cap is refused before the training starts, with the
   largest size that fits. The learning rate stays the recipe's; the networks were set up at 4.
@@ -196,21 +208,26 @@ finished run (checkpoint, ONNX model and its `.json` sidecar, training logs and 
   `index_select` (the ladder head reads its rows in a way whose backward pass needs no sort)
   and `fused_adamw` (the optimiser updates every weight in one step). Setup measures them on
   your GPU, each in a process of its own, on the first training batch of both networks with
-  the chunking training will use: a step with every switch off, then with each one alone (a
-  few steps to warm up, then the median of eight timed steps). A switch is kept if its step is
-  at least 3 % faster and its loss and gradients, from the same weights on the same batch, agree
-  with those of the step without it (the loss within 0.1 %, the gradients pointing the same way
-  to a cosine of 0.999 and of the same size within 1 %: TensorFloat-32 rounding stays well
-  inside these, a real change of the computation does not). The kept ones are then combined,
-  fastest first, each further one only if it makes the step at least 2 % faster again and still
-  agrees. A switch that fails in any way is left off. `gpu_speedups` in `machine.json` records
-  the choice for each network,
-  `speedup_timings` the measured steps, `speedup_checks` why each switch was kept or not, and
-  `cuda_kernels` the 15 GPU kernels that take the most time in the window network's step; setup
-  prints a summary (also in `setup.log`). Training uses the chosen switches and prints them as
-  each run starts (`GPU speedups tf32, index_select`, or `no GPU speedups`). A `machine.json`
-  from an earlier setup has no such record: training then uses none, and says that running
-  setup again measures them. A paused run may resume with other switches.
+  the ladder scoring 16 charges at a time, the only way training uses them (see "GPU memory"):
+  a step with every switch off, then with each one alone (a few steps to warm up, then the
+  median of eight timed steps). A switch is kept if its step is at least 3 % faster and its
+  loss and gradients, from the same weights on the same batch, agree with those of the step
+  without it (the loss within 0.1 %, the gradients pointing the same way to a cosine of 0.999
+  and of the same size within 1 %: TensorFloat-32 rounding stays well inside these, a real
+  change of the computation does not). The kept ones are then combined, fastest first, each
+  further one only if it makes the step at least 2 % faster again and still agrees. A switch
+  that fails in any way is left off. `gpu_speedups` in `machine.json` records
+  the choice for each network, `speedup_timings` the measured steps, `speedup_chunks` the
+  chunking they were measured with, `speedup_reserved_gb` the most GPU memory each step
+  reserved, `speedup_checks` why each switch was kept or not, and `cuda_kernels` the 15 GPU
+  kernels that take the most time in the window network's step; `gpu_free_gb_at_setup` is the
+  GPU memory that was free when the measurement began (the display and other programs hold the
+  rest). Setup prints a summary (also in `setup.log`), and chooses each network's chunking only
+  after the switches. Training uses the chosen switches and prints them as each run starts
+  (`GPU speedups tf32, index_select`, or `no GPU speedups`). A `machine.json` from an earlier
+  setup that chose switches for all charges at once trains them 16 charges at a time all the
+  same; one without the record uses none, and training says that running setup again measures
+  them. A paused run may resume with other switches.
 - **Sleep:** while training, Windows is kept from going to sleep (the screen may still turn off).
   Pause Windows Update for the day before a long run.
 
@@ -255,6 +272,23 @@ all four. The last line gives speed, what set the pace, memory and the time left
 The same numbers are in each epoch's record in `runs\*.log.jsonl` (`pace`) and in
 `runs\*.status.json`, with the GPU speedups the run used. The best checkpoint is saved whenever
 it improves; logs are in `runs\*.log.jsonl` and `runs\*.console.log`.
+
+**What to expect.** On an RTX 4080 SUPER each run starts with `scoring 16 charges at a time;
+GPU speedups cudnn_benchmark, index_select` (or the speedups setup chose on your GPU), the
+`epoch N step M` lines come about 2-2.5 seconds apart (20 steps of about 0.1 s), and the
+epoch's last line shows at most about 8 GB reserved. Lines 20 or more seconds apart, with the
+reserve near the cap, mean the GPU is crawling.
+
+**The crawl guard.** The steps of a run can slow from a tenth of a second to several seconds,
+without any error, once the memory PyTorch reserves comes close to the cap (on a GPU that also
+drives the display, Windows then appears to move part of it to the computer's RAM). Training
+watches for this from its 21st step on: when 3 of the last 5 steps each took more than 10 times
+the usual step of the run's start (the median of its steps 5 to 20) and more than 2 seconds,
+with the reserve at 90 % of the cap or more, a run scoring all charges at once stops with
+`GPU memory crawl (...)`, its state saved (exit code 5), and train_all continues it at once 16
+charges at a time with the same GPU speedups, as after running out of GPU memory. A run that
+already scores the charges in chunks only prints `warning: the GPU slowed down: ...` once and
+goes on; close other programs that use the GPU if you see it.
 
 ## Pausing and resuming
 
@@ -358,6 +392,12 @@ a tiny size, to check in a few minutes that it runs. For example
 - **A run stops with an error from cuDNN, from `index_select` or from the optimiser** after
   setup chose GPU speedups: set each network's list under `gpu_speedups` in
   `gpu_training\machine.json` to `[]` and start the training again; it resumes without them.
+- **The training crawls** (the `epoch N step M` lines 20 seconds or more apart, the epoch's
+  line showing the GPU memory reserved near the cap): a run scoring all charges at once stops
+  and continues in chunks by itself (the crawl guard, above). Otherwise close the other
+  programs that use the GPU (games, videos, a browser's hardware acceleration), or lower the
+  cap, for example `gpu_training\setup_and_train.bat --gpu-memory-gb 12`: a run in chunks needs
+  far less.
 - **A run stops with an error from the data workers** (`DataWorkerError`) after setup chose
   another way of running them: train_all continues by itself as before (torch's DataLoader)
   and remembers it. To run them as before from the start, use the options of "How the data

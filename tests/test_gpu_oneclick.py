@@ -297,13 +297,16 @@ def _with_unchunked(whole):
 
 
 @pytest.mark.parametrize("whole, gpu_gb, batch, failed, chunk", [
-    ((8.0, 0.15), 14.0, 4, [], None),        # 8 x 1.3 = 10.4 GB under 14 - 0.75, and faster
-    ((10.5, 0.15), 14.0, 4, [], 16),         # 13.7 GB: too little room
-    ((8.0, 0.15), 11.0, 4, [], 16),          # a lower cap
-    ((8.0, 0.195), 14.0, 4, [], 16),         # hardly faster than the chunked 0.2 s
-    ((8.0, 0.15), 14.0, 8, [], 16),          # a larger batch than measured
-    ((8.0, 0.15), 14.0, 2, [], None),        # a smaller one
-    ((8.0, 0.15), 14.0, 4, ["window"], 16),  # a run of this view ran out of GPU memory
+    ((6.0, 0.15), 14.0, 4, [], None),        # 6 x 1.5 = 9 GB under 14 - 0.75 - 2, and faster
+    ((7.5, 0.15), 14.0, 4, [], None),        # 11.25 GB: just under
+    ((8.0, 0.15), 14.0, 4, [], 16),          # 12 GB: within 2 GB of the 13.25 the cap leaves
+    ((8.87, 0.1487), 14.0, 4, [], 16),       # the user's: 13.3 GB (varied batches took 13.17)
+    ((10.5, 0.15), 14.0, 4, [], 16),         # 15.75 GB: no room
+    ((6.0, 0.15), 11.0, 4, [], 16),          # a lower cap: 9 GB against 8.25
+    ((6.0, 0.195), 14.0, 4, [], 16),         # hardly faster than the chunked 0.2 s
+    ((6.0, 0.15), 14.0, 8, [], 16),          # a larger batch than measured
+    ((6.0, 0.15), 14.0, 2, [], None),        # a smaller one
+    ((6.0, 0.15), 14.0, 4, ["window"], 16),  # a run of this view ran out of GPU memory
     ((None, None), 14.0, 4, [], 16),         # out of GPU memory in setup
     (None, 14.0, 4, [], 16),                 # not measured (an earlier package's setup)
 ])
@@ -381,8 +384,9 @@ def test_a_run_out_of_gpu_memory_unchunked_continues_in_chunks(tmp_path, monkeyp
     assert commands[1][-1] == then
     machine = json.loads(train_all.MACHINE.read_text())
     assert machine["unchunked_failed"] == ["window"] and machine["workers"] == 6
-    assert train_all.head_chunk_for({**_with_unchunked((8.0, 0.1)), **machine}, "window",
-                                    14.0, 4) == 16
+    roomy = _with_unchunked((6.0, 0.1))  # all at once but for the record
+    assert train_all.head_chunk_for(roomy, "window", 14.0, 4) is None
+    assert train_all.head_chunk_for({**roomy, **machine}, "window", 14.0, 4) == 16
 
 
 def test_other_failures_and_chunked_runs_are_not_retried(tmp_path, monkeypatch):
@@ -400,6 +404,62 @@ def test_other_failures_and_chunked_runs_are_not_retried(tmp_path, monkeypatch):
                         _FakeTraining(commands, [(["ValueError: no\n"], 1), (["done\n"], 0)]))
     assert train_all.run_stage(whole, {"workers": 6}, [], "cuda", False) == 1
     assert len(commands) == 1 and "unchunked_failed" not in train_all.MACHINE.read_text()
+    # the crawl guard stops unchunked runs only; a chunked one that stopped so is not retried
+    commands.clear()
+    monkeypatch.setattr(train_all.subprocess, "Popen",
+                        _FakeTraining(commands, [([], train_all.GPU_CRAWL), (["done\n"], 0)]))
+    assert train_all.run_stage(chunked, {"workers": 6}, [], "cuda", False) == train_all.GPU_CRAWL
+    assert len(commands) == 1 and "unchunked_failed" not in train_all.MACHINE.read_text()
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_a_run_the_crawl_guard_stops_continues_in_chunks_with_its_speedups(tmp_path, monkeypatch,
+                                                                          capsys, restart):
+    """Exit code 5: the training's crawl guard found its steps slowed to seconds with the GPU
+    memory near the cap (lcmsdeconv.nn.train.crawling), which raises no out-of-memory error,
+    and saved the state. The run resumes from that state (a restart's too: it saved it in this
+    session) 16 charges at a time with the same GPU speedups, and machine.json remembers it."""
+    import os
+    import time
+
+    train_all = _train_all_in(tmp_path, monkeypatch)
+    stage = train_all.make_run("window")
+    stage["head_chunk"], stage["gpu_speedups"] = None, ["cudnn_benchmark", "index_select"]
+    out = tmp_path / stage["out"]
+    commands = []
+    crawl = ["  epoch 0 step 40/1500 loss 0.9134 ce 0.8011 heat 0.5615\n",
+             "GPU memory crawl (3 of the last 5 training steps took 2.6-16.7 s against 0.15 s "
+             "early in this session, ...): state saved to runs/ladder_v5_window.resume.pt\n"]
+
+    class Guarded(_FakeTraining):
+        """The training: the first stops at the crawl guard, which saves the state first."""
+
+        def __call__(self, cmd, **kw):
+            proc = super().__call__(cmd, **kw)
+            if len(self.record) == 1:
+                out.with_suffix(".resume.pt").write_text("state")
+                out.with_suffix(".status.json").write_text(json.dumps(
+                    {"epoch": 0, "step": 43, "epochs": 20, "stop_reason": "gpu_memory_crawl"}))
+                later = time.time() + 1.0  # saved during the session, after it started
+                os.utime(out.with_suffix(".resume.pt"), (later, later))
+            return proc
+
+    monkeypatch.setattr(train_all.subprocess, "Popen",
+                        Guarded(commands, [(crawl, train_all.GPU_CRAWL), (["done\n"], 0)]))
+    assert train_all.run_stage(stage, {"workers": 6}, [], "cuda", restart) == 0
+    assert len(commands) == 2 and "--head-chunk" not in commands[0]
+    assert commands[0][-1] == "--restart"  # nothing saved before (or set aside by a restart)
+    assert (_flag(commands[1], "--head-chunk"), commands[1][-1]) == ("16", "--resume")
+    assert [_flag(c, "--gpu-speedups") for c in commands] == ["cudnn_benchmark,index_select"] * 2
+    assert json.loads(train_all.MACHINE.read_text()) == {"workers": 6,
+                                                         "unchunked_failed": ["window"]}
+    assert train_all.failed_views == {"window"}  # later runs of the view in this call: chunks
+    text = capsys.readouterr().out
+    assert ("window: the GPU slowed to seconds a step scoring all charges at once, its memory "
+            "near the cap; continuing with 16 at a time (remembered in machine.json for this "
+            "view)") in text
+    assert "window: resuming with 6 data workers, scoring 16 charges at a time; GPU speedups " \
+           "cudnn_benchmark, index_select" in text
 
 
 def test_the_smoke_always_starts_afresh_and_checks_again(tmp_path, monkeypatch):
@@ -468,7 +528,7 @@ def test_setup_runs_again_when_any_package_code_changes(setup_mod, rel):
 
 def test_all_charges_at_once_only_where_the_gpu_sets_the_pace():
     train_all = _load("train_all")
-    machine = _with_unchunked((8.0, 0.15))  # chunked: 4 spectra in 0.2 s, 20 per second
+    machine = _with_unchunked((6.0, 0.15))  # chunked: 4 spectra in 0.2 s, 20 per second
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, 30.0) is None
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, 20.0) == 16  # workers' pace
     assert train_all.head_chunk_for(machine, "window", 14.0, 4, None) is None  # not measured
@@ -509,7 +569,7 @@ def test_a_view_out_of_gpu_memory_stays_in_chunks_for_its_later_runs(tmp_path, m
     from types import SimpleNamespace
 
     train_all = _train_all_in(tmp_path, monkeypatch)
-    train_all.MACHINE.write_text(json.dumps({**_with_unchunked((8.0, 0.1)), "workers": 6,
+    train_all.MACHINE.write_text(json.dumps({**_with_unchunked((6.0, 0.1)), "workers": 6,
                                              "v5_spectra_per_second": 60.0, "v5_workers": 6}))
     for name in ("window", "window-plain"):
         (tmp_path / train_all.RUN_TABLE[name]["out"]).write_text("checkpoint")
@@ -548,8 +608,9 @@ def test_measuring_again_keeps_a_view_out_of_gpu_memory_in_chunks(tmp_path, monk
     # on a GPU, by processes of their own (tests/test_gpu_speedups.py checks how)
     def speedups(view_names, batch, chunks, gpu_gb):
         asked.append((view_names, batch, chunks, gpu_gb))
-        return {"gpu_speedups": {"window": ["tf32"], "comb": []},
-                "speedup_timings": {"window": {"none": 500.0, "tf32": 450.0}, "comb": {}}}
+        return {"gpu_speedups": {"window": [], "comb": ["tf32"]},
+                "speedup_timings": {"window": {"none": 500.0}, "comb": {"none": 500.0,
+                                                                        "tf32": 450.0}}}
 
     monkeypatch.setattr(probe, "measure_speedups", speedups)
     # how the data workers run fastest: not measured here (tests/test_probe_hybrid.py)
@@ -564,10 +625,12 @@ def test_measuring_again_keeps_a_view_out_of_gpu_memory_in_chunks(tmp_path, monk
     assert probe.main() == 0
     info = json.loads(out.read_text())
     assert info.get("unchunked_failed") == (["window"] if kept else None)
-    assert info["head_chunks"] == {"window": 16 if kept else None, "comb": None}
-    # the speedups are measured with the chunking each view's run will use
-    assert asked == [(["window", "comb"], 4, {"window": 16 if kept else None, "comb": None}, cap)]
-    assert info["gpu_speedups"] == {"window": ["tf32"], "comb": []}
+    # the comb view trains with a speedup: in chunks, whatever the room
+    assert info["head_chunks"] == {"window": 16 if kept else None, "comb": 16}
+    # the speedups are measured in chunks, the only way runs use them
+    assert asked == [(["window", "comb"], 4, {"window": 16, "comb": 16}, cap)]
+    assert info["speedup_chunks"] == {"window": 16, "comb": 16}
+    assert info["gpu_speedups"] == {"window": [], "comb": ["tf32"]}
     assert info["recipe"] == "v5" and info["v5_workers"] == 4
 
 
@@ -973,3 +1036,186 @@ def test_the_estimate_names_what_sets_the_pace_and_its_bounds():
     run["head_chunk"] = 16
     assert "set by the GPU on setup's first training batch" in train_all.time_estimate(
         [run], machine, 10)
+
+
+# ------------------------------------------------------------------ speedups only in chunks
+#: machine.json of the user's setup of 2026-11-25 (package f6b8186, the RTX 4080 SUPER of the
+#: profile of that day), as far as train_all's choices go: all charges at once measured faster
+#: at the active-bin cap (window 149 against 182 ms, 8.87 GB reserved) with the GPU setting the
+#: pace, then cuDNN's benchmark and the index_select head kept for both views on the runs' first
+#: training batch, all charges at once (81 against 125 ms). The profile of the same computer
+#: (window view): on eight of the runs' batches that configuration gave no result within 900 s,
+#: nor did cuDNN's benchmark alone; the index_select head alone, all charges at once, took the
+#: reserve to 13.17 GB of the 13.25 the cap left, with steps of up to 16 s; in chunks of 8, 16 or
+#: 32 the same speedups took 104-106 ms a step with 3.1-6.0 GB reserved
+USER_MACHINE = {
+    "recipe": "v4", "workers": 20, "ram_budget_gb": 32.0, "ram_budget_default": True,
+    "gpu": "NVIDIA GeForce RTX 4080 SUPER", "gpu_total_gb": 16.0, "gpu_memory_gb": 14.0,
+    "gpu_batch": 4, "head_chunk": 16, "head_chunks": {"window": None, "comb": None},
+    "main_gb": 2.47, "worker_gb": 0.74, "v4_spectra_per_second": 52.0, "v4_workers": 20,
+    "gpu_views": {
+        "window": {"batch": 4, "peak_gb": 2.98, "allocated_gb": 2.14, "step_seconds": 0.1815,
+                   "unchunked": {"batch": 4, "peak_gb": 8.87, "allocated_gb": 6.67,
+                                 "step_seconds": 0.1487}},
+        "comb": {"batch": 4, "peak_gb": 2.86, "allocated_gb": 2.16, "step_seconds": 0.1933,
+                 "unchunked": {"batch": 4, "peak_gb": 8.94, "allocated_gb": 6.69,
+                               "step_seconds": 0.1608}}},
+    "gpu_speedups": {"window": ["cudnn_benchmark", "index_select"],
+                     "comb": ["cudnn_benchmark", "index_select"]},
+    "speedup_timings": {
+        "window": {"none": 124.88, "cudnn_benchmark": 110.04, "tf32": 124.53,
+                   "index_select": 96.88, "fused_adamw": 124.35,
+                   "cudnn_benchmark+index_select": 80.94},
+        "comb": {"none": 135.99, "cudnn_benchmark": 125.14, "tf32": 136.66,
+                 "index_select": 107.36, "fused_adamw": 135.34,
+                 "cudnn_benchmark+index_select": 91.03}}}
+
+
+def _roomy(machine: dict, peak_gb: float = 6.0) -> dict:
+    """``machine`` with all charges at once measured at ``peak_gb`` in both views: 6 GB x 1.5 =
+    9 GB, under the 11.25 GB a cap of 14 GB leaves with 2 GB to spare."""
+    views = {v: {**m, "unchunked": {**m["unchunked"], "peak_gb": peak_gb}}
+             for v, m in machine["gpu_views"].items()}
+    return {**machine, "gpu_views": views}
+
+
+@pytest.mark.parametrize("cap", [14.0, 12.0])
+def test_a_view_with_gpu_speedups_trains_in_chunks(cap):
+    train_all = _load("train_all")
+    for view in ("window", "comb"):  # the user's setup: in chunks, with its speedups
+        for rate in (52.0, None):  # setup's workers (recipe v4), and none for this recipe
+            assert train_all.head_chunk_for(USER_MACHINE, view, cap, 4, rate) == 16
+        assert train_all.speedups_for(USER_MACHINE, view) == ["cudnn_benchmark", "index_select"]
+        # without speedups the user's peaks leave too little room either: 8.87 x 1.5 = 13.3 GB
+        # and 8.94 x 1.5 = 13.4 GB against 11.25 (14 GB) or 9.25 (12 GB)
+        assert train_all.head_chunk_for({**USER_MACHINE, "gpu_speedups": {}}, view, cap, 4,
+                                        52.0) == 16
+    roomy = _roomy(USER_MACHINE)
+    assert train_all.head_chunk_for(roomy, "window", 14.0, 4, 52.0) == 16  # speedups: chunks
+    for none in ({}, {"window": []}, {"window": ["turbo"]}, ["window"]):  # no known speedup
+        assert train_all.head_chunk_for({**roomy, "gpu_speedups": none}, "window", 14.0, 4,
+                                        52.0) is None
+    # and only where the GPU sets the pace: in chunks it takes 22 spectra a second (4 in the
+    # 182 ms of a chunked step), more than data workers delivering 20 would give it
+    assert train_all.head_chunk_for({**roomy, "gpu_speedups": {}}, "window", 14.0, 4,
+                                    20.0) == 16
+
+
+def test_train_all_trains_the_users_setup_in_chunks_with_its_speedups(tmp_path, monkeypatch,
+                                                                     capsys):
+    """train_all on the user's machine.json as it is: both runs 16 charges at a time, with
+    cuDNN's benchmark and the index_select head, without setup running again."""
+    train_all = _train_all_in(tmp_path, monkeypatch)
+    train_all.MACHINE.write_text(json.dumps(USER_MACHINE))
+    for name in train_all.DEFAULT_RUNS:  # what the trainings leave, for the export
+        (tmp_path / train_all.RUN_TABLE[name]["out"]).write_text("checkpoint")
+    commands = []
+    monkeypatch.setattr(train_all.subprocess, "Popen", _FakeTraining(commands, [([], 0)]))
+    monkeypatch.setattr(train_all.subprocess, "run",
+                        lambda cmd, **_kw: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(train_all.signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(sys, "argv", ["train_all.py", "--device", "cpu"])
+    assert train_all.main() == 0
+    assert [_flag(c, "--view") for c in commands] == ["window", "comb"]
+    assert [_flag(c, "--head-chunk") for c in commands] == ["16", "16"]
+    assert [_flag(c, "--gpu-speedups") for c in commands] == ["cudnn_benchmark,index_select"] * 2
+    text = capsys.readouterr().out
+    assert text.count("scoring 16 charges at a time; GPU speedups cudnn_benchmark, "
+                      "index_select") == 2
+    assert "all charges at once" not in text
+
+
+def test_the_estimate_takes_a_speedup_timing_only_with_its_chunking():
+    train_all = _load("train_all")
+    probe = _load("probe")
+    machine = {**_roomy(USER_MACHINE), "speedup_chunks": {"window": 16, "comb": 16},
+               "speedup_timings": {"window": {"none": 150.0, "tf32": 100.0}}}
+    run = {"view": "window", "head_chunk": 16, "gpu_speedups": ["tf32"]}
+    assert train_all.gpu_rates(machine, run)["batch_ms"] == 100.0
+    assert probe.window_step_seconds(machine, machine, 16, ["tf32"]) == 0.1
+    run = {"view": "window", "head_chunk": None, "gpu_speedups": []}  # measured in chunks only
+    rates = train_all.gpu_rates(machine, run)
+    assert rates["batch_ms"] is None and rates["cap_ms"] == pytest.approx(148.7)
+    assert probe.window_step_seconds(machine, machine, None, []) == 0.1487  # the cap's step
+    # an earlier setup measured them with the chunking it chose for the runs (head_chunks)
+    older = {k: v for k, v in machine.items() if k != "speedup_chunks"}
+    assert train_all.gpu_rates(older, run)["batch_ms"] == 150.0
+    assert probe.window_step_seconds(older, older, None, []) == 0.15
+    assert train_all.gpu_rates(older, {**run, "head_chunk": 16})["batch_ms"] is None
+
+
+def test_the_probe_measures_the_speedups_in_chunks_then_chooses_the_chunking(tmp_path,
+                                                                            monkeypatch, capsys):
+    """All charges at once measured faster with room to spare and the GPU setting the pace: a
+    view whose speedups are kept trains in chunks, as they were measured; one without speedups
+    all at once. The data-loading test trains the window view as its runs will. machine.json
+    records the chunking the speedups were measured with, the memory each step reserved and the
+    GPU memory free when the measurement began."""
+    import torch
+
+    import lcmsdeconv.nn.machine as nn_machine
+
+    probe = _load("probe")
+    step = {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.8,
+            "unchunked": {"batch": 4, "peak_gb": 5.0, "step_seconds": 0.5}}
+    monkeypatch.setattr(probe, "gpu_steps", lambda *_a: {
+        "gpu": "Fake GPU", "gpu_total_gb": 16.0,
+        "gpu_views": {"window": dict(step), "comb": dict(step)}})
+    monkeypatch.setattr(probe, "workers_run", lambda n, **_k: {
+        "workers": n, "startup_seconds": 1.0, "spectra_per_second": 10.0 * n, "worker_gb": 0.5,
+        "worker_commit_gb": 0.6, "workers_total_gb": 0.5 * n})
+    asked, loads = [], []
+    reserved = {"window": {"none": 4.1, "cudnn_benchmark+index_select": 4.06},
+                "comb": {"none": 4.2}}
+
+    def speedups(view_names, batch, chunks, gpu_gb):
+        asked.append(dict(chunks))
+        return {"gpu_speedups": {"window": ["cudnn_benchmark", "index_select"], "comb": []},
+                "speedup_timings": {
+                    "window": {"none": 400.0, "cudnn_benchmark+index_select": 250.0},
+                    "comb": {"none": 400.0}},
+                "speedup_reserved_gb": reserved}
+
+    def data_loading(workers, rate, batch, chunk, speedups, lr, step_seconds):
+        loads.append((chunk, list(speedups), step_seconds))
+        return None
+
+    monkeypatch.setattr(probe, "measure_speedups", speedups)
+    monkeypatch.setattr(probe, "measure_data_loading", data_loading)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a: (12.5 * 2**30, 15.99 * 2**30))
+    monkeypatch.setattr(nn_machine, "single_threaded_workers", lambda: None)
+    out = tmp_path / "machine.json"
+    monkeypatch.setattr(sys, "argv", ["probe.py", "--workers", "4", "--out", str(out)])
+    assert probe.main() == 0
+    info = json.loads(out.read_text())
+    assert asked == [{"window": 16, "comb": 16}]
+    assert info["speedup_chunks"] == {"window": 16, "comb": 16}
+    assert info["head_chunks"] == {"window": 16, "comb": None}
+    assert loads == [(16, ["cudnn_benchmark", "index_select"], 0.25)]
+    pace = info["pace"]
+    assert pace["window"]["gpu_spectra_per_second"] == 16.0  # 4 spectra in 250 ms, in chunks
+    # the comb view's "none" was timed in chunks: its run, all at once, is paced by the cap's step
+    assert pace["comb"]["gpu_spectra_per_second"] is None
+    assert pace["comb"]["gpu_at_cap_spectra_per_second"] == 8.0
+    assert info["speedup_reserved_gb"] == reserved and info["gpu_free_gb_at_setup"] == 12.5
+    text = capsys.readouterr().out
+    assert "memory capped at 14 GB; 12.5 of 16.0 GB free now" in text
+    assert "window view, 16 charges at a time:" in text and "comb view, 16 charges at a time:" \
+        in text
+    assert "window view: training will score 16 charges at a time" in text
+    assert "comb view: training will score all charges at once" in text
+
+
+def test_the_free_gpu_memory_is_read_where_the_driver_tells_it(monkeypatch):
+    import torch
+
+    probe = _load("probe")
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_a: (13.004 * 2**30, 16 * 2**30))
+    assert probe.gpu_memory_now() == (13.0, 16.0)
+
+    def no_driver(*_a):
+        raise RuntimeError("Found no NVIDIA driver on your system")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", no_driver)
+    assert probe.gpu_memory_now() is None  # the probe goes on without the reading

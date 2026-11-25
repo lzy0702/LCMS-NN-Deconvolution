@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import statistics
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -318,8 +319,6 @@ class _EpochWatch:
         time of the timed steps, the share of the time the GPU was busy by that measure, the
         memory peaks (GB, since the run started in this process) and the allocator's retries
         in this epoch."""
-        import statistics
-
         rec = {"data_wait_share": round(self.wait / max(seconds, 1e-9), 4)}
         if not self.cuda:
             return rec
@@ -333,6 +332,108 @@ class _EpochWatch:
                    gpu_allocated_gb=round(torch.cuda.max_memory_allocated() / 2**30, 2),
                    alloc_retries=self._retries() - self.retries0)
         return rec
+
+
+#: the crawl guard (crawling). On the RTX 4080 SUPER of the profile of 2026-11-25 (16 GB,
+#: driving the display under Windows' WDDM), LadderNet's head scoring all charges at once with
+#: GPU speedups let the caching allocator's reserve climb on the runs' varied batches to 13.2 of
+#: the 13.25 GB the cap left for tensors; the steps then took seconds (a 90th percentile of
+#: 21 s) with no out-of-memory error and no allocator retry, so nothing stopped the run. A step
+#: crawls when it takes more than CRAWL_FACTOR times the median of the session's steps
+#: CRAWL_BASELINE (counted from 0; the first five are left out, as cuDNN's benchmark and the
+#: allocator's first growth slow them) and more than CRAWL_FLOOR_SECONDS; a run crawls when
+#: CRAWL_SLOW of its last CRAWL_RECENT steps do while the allocator reserves CRAWL_RESERVED of
+#: the cap or more
+CRAWL_BASELINE = (5, 20)
+CRAWL_RECENT, CRAWL_SLOW = 5, 3
+CRAWL_FACTOR, CRAWL_FLOOR_SECONDS = 10.0, 2.0
+CRAWL_RESERVED = 0.9
+
+
+def _normal_step(step_seconds) -> float:
+    """A session's pace: the median of its steps CRAWL_BASELINE (``step_seconds`` holds them)."""
+    first, last = CRAWL_BASELINE
+    return statistics.median(step_seconds[first:last + 1])
+
+
+def _slow_steps(step_seconds) -> list[float]:
+    """Those of the last CRAWL_RECENT of ``step_seconds`` that crawl: longer than CRAWL_FACTOR
+    times the session's pace (_normal_step) and than CRAWL_FLOOR_SECONDS."""
+    limit = max(CRAWL_FLOOR_SECONDS, CRAWL_FACTOR * _normal_step(step_seconds))
+    return [s for s in step_seconds[-CRAWL_RECENT:] if s > limit]
+
+
+def crawling(step_seconds: list[float], reserved_gb: float, cap_gb: float) -> bool:
+    """Whether a CUDA run crawls: at least 3 of the last 5 of ``step_seconds`` (the session's
+    steps in order, each timed on its own) took more than 10 times the median of its steps 5 to
+    20 and more than 2 s, while the caching allocator reserves ``reserved_gb``, at least 90 % of
+    ``cap_gb`` (the cap on tensors the run set: its GPU memory cap less the CUDA context). False
+    until the session has 21 steps, for a run as slow from its start (that is its pace), and
+    with the memory further from the cap, where slow steps have another cause (another program
+    on the GPU, a throttled processor)."""
+    if (len(step_seconds) <= CRAWL_BASELINE[1] or not cap_gb
+            or reserved_gb < CRAWL_RESERVED * cap_gb):
+        return False
+    return len(_slow_steps(step_seconds)) >= CRAWL_SLOW
+
+
+class _CrawlGuard:
+    """The crawl guard of a CUDA run (:func:`crawling`): times every training step from the
+    arrival of its batch to its end, and reads after it what the caching allocator reserves.
+    A run whose LadderNet head scores all charges at once (``stops``) waits for the GPU at the
+    end of every step, so that each time is that step's own, and stops on a crawl: in chunks the
+    head needs a fraction of the memory. Any other run is timed without that wait (LadderNet
+    waits for the GPU at every step's active bins, so the times follow the GPU's within a step)
+    and only says so, once: chunks would not help it."""
+
+    def __init__(self, cap_gb: float, stops: bool):
+        import torch
+
+        self._torch = torch
+        self.cap_gb = float(cap_gb)
+        self.stops = bool(stops)
+        self.seconds: list[float] = []
+        self.warned = False
+        self.clock = time.perf_counter
+        self._start = 0.0
+
+    def step_starts(self) -> None:
+        self._start = self.clock()
+
+    def step_ends(self) -> str | None:
+        """After a step: why the run stops (a crawl, where the run stops for one), else None."""
+        torch = self._torch
+        if self.stops:
+            torch.cuda.synchronize()
+        self.seconds.append(self.clock() - self._start)
+        if len(self.seconds) > 4096:  # crawling reads the baseline and the last steps only
+            del self.seconds[CRAWL_BASELINE[1] + 1:-CRAWL_RECENT]
+        reserved = torch.cuda.memory_reserved() / 2**30
+        if not crawling(self.seconds, reserved, self.cap_gb):
+            return None
+        slow = _slow_steps(self.seconds)
+        what = (f"{len(slow)} of the last {CRAWL_RECENT} training steps took "
+                f"{min(slow):.1f}-{max(slow):.1f} s against {_normal_step(self.seconds):.2f} s "
+                f"early in this session, with {reserved:.1f} of the {self.cap_gb:.1f} GB the cap "
+                f"leaves for tensors reserved by PyTorch's allocator")
+        if self.stops:
+            return (f"GPU memory crawl ({what}: the head, scoring all charges at once, has filled "
+                    f"the cap on the varied batches)")
+        if not self.warned:
+            self.warned = True
+            print(f"  warning: the GPU slowed down: {what}. The head already scores the "
+                  f"charges in chunks, so the run goes on; other programs using the GPU's "
+                  f"memory (the display's too) can cause this", flush=True)
+        return None
+
+
+def _crawl_guard(device: str, model, cap_gb: float | None) -> _CrawlGuard | None:
+    """The crawl guard of a run on ``device`` (None off CUDA, or without a cap): one that stops
+    a LadderNet whose head scores all charges at once (``head_chunk`` None), and only warns
+    any other run."""
+    if not (str(device).startswith("cuda") and cap_gb):
+        return None
+    return _CrawlGuard(cap_gb, stops=getattr(model, "head_chunk", 0) is None)
 
 
 def train(config: TrainConfig, synth_config=None):
@@ -376,8 +477,11 @@ def train(config: TrainConfig, synth_config=None):
             "'.venv\\Scripts\\python gpu_training\\check_gpu.py' (Linux: .venv/bin/python "
             "gpu_training/check_gpu.py); to reinstall PyTorch for CUDA, run "
             "'gpu_training\\setup_windows.bat --reinstall-torch'.")
-    if device.startswith("cuda") and config.max_gpu_memory_gb:
-        _cap_gpu_memory(torch, config.max_gpu_memory_gb)
+    gpu_cap_gb = None  # the GPU memory tensors may take, which the crawl guard watches
+    if device.startswith("cuda"):
+        gpu_cap_gb = (_cap_gpu_memory(torch, config.max_gpu_memory_gb)
+                      if config.max_gpu_memory_gb
+                      else torch.cuda.get_device_properties(0).total_memory / 2**30)
     ladder_kw = ({"iso_count": N_ISOTOPE_CHANNELS if config.iso_channels else None,
                   "view": config.view, "head_chunk": config.head_chunk}
                  if config.arch == "ladder" else {})
@@ -429,7 +533,7 @@ def train(config: TrainConfig, synth_config=None):
             if getattr(tl, "pool", None) is not None:
                 main.bind(tl)  # its workers have started: this process takes its own cores
             return _train_loaded(config, synth_config, model, tl, vl, device, speedups, in_ch,
-                                 iso_count, main)
+                                 iso_count, main, gpu_cap_gb)
         finally:
             close = getattr(tl, "close", None)  # the ordered loader's workers
             if close is not None:
@@ -439,9 +543,10 @@ def train(config: TrainConfig, synth_config=None):
 
 
 def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in_ch: int,
-                  iso_count: int, main):
+                  iso_count: int, main, gpu_cap_gb: float | None = None):
     """train()'s training proper, on its loaders ``tl`` and ``vl``; ``main`` is the training
-    process's side of the workers' placement (:class:`_MainPlacement`)."""
+    process's side of the workers' placement (:class:`_MainPlacement`), ``gpu_cap_gb`` the GPU
+    memory tensors may take on CUDA (the crawl guard's cap)."""
     import torch
     from torch.optim import AdamW
     from torch.optim.lr_scheduler import OneCycleLR
@@ -586,10 +691,11 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
     def paused() -> bool:
         return pause["requested"] or bool(pause_files())
 
-    def stop_here(epoch: int, step: int, why: str, reason: str = "paused") -> tuple:
+    def stop_here(epoch: int, step: int, why: str, reason: str = "paused",
+                  then: str = "run the same command with --resume to continue") -> tuple:
         save_state(epoch, step, reason)
-        print(f"{why}: state saved to {resume_path}; run the same command with --resume to "
-              f"continue (epoch {epoch}, step {step})", flush=True)
+        print(f"{why}: state saved to {resume_path}; {then} (epoch {epoch}, step {step})",
+              flush=True)
         if best_state is not None:
             model.load_state_dict(best_state)
         return model, history
@@ -600,6 +706,7 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
     stats = getattr(tl, "item_stats", None)  # what the workers made, where
     pool = getattr(tl, "pool", None)
     pace = {"steps": 0, "seconds": 0.0}  # training steps done in this session, and their time
+    guard = _crawl_guard(device, model, gpu_cap_gb)
     awake = _KeepAwake()
     awake.start()
     flags = set_gpu_flags(speedups) if speedups else None
@@ -622,8 +729,11 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
                     if not main.bound:  # the workers have started: this process takes its cores
                         main.bind(tl)
                     # nothing in a step reads a value back from the GPU but the active bins'
-                    # positions (LadderNet): the loss is read at log steps only
+                    # positions (LadderNet): the loss is read at log steps only, and the crawl
+                    # guard of an unchunked head waits for the GPU at the step's end
                     watch.step_starts(i - first_step)
+                    if guard is not None:
+                        guard.step_starts()
                     batch = _batch_dict(sample, device)
                     out = model(batch["features"])
                     losses = loss_fn(out, batch)
@@ -636,6 +746,7 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
                     ema.update(model)
                     running.add(losses["loss"])
                     watch.step_ends()
+                    crawl = guard.step_ends() if guard is not None else None
                     if i % config.log_every == 0:
                         print(f"  epoch {epoch} step {i}/{steps_per_epoch} loss "
                               f"{float(losses['loss'].detach()):.4f} ce "
@@ -649,6 +760,11 @@ def _train_loaded(config, synth_config, model, tl, vl, device: str, speedups, in
                         return stop_here(epoch, i + 1,
                                          f"memory budget of {config.max_ram_gb:g} GB reached "
                                          f"({ram.used_gb():.1f} GB in use)", "memory")
+                    if crawl:
+                        return stop_here(epoch, i + 1, crawl, "gpu_memory_crawl",
+                                         "run the same command with --resume --head-chunk 16 to "
+                                         "continue in chunks, as gpu_training/train_all.py does "
+                                         "by itself")
                     if time.time() - last_save > 60.0 * config.save_every_minutes:
                         save_state(epoch, i + 1)
                         last_save = time.time()
@@ -904,15 +1020,18 @@ def _write_status(out_path: Path, epoch: int, step: int, epochs: int,
             time.sleep(0.5)
 
 
-def _cap_gpu_memory(torch, max_gb: float, context_gb: float = 0.75) -> None:
+def _cap_gpu_memory(torch, max_gb: float, context_gb: float = 0.75) -> float:
     """Keep this process's GPU memory below ``max_gb``: PyTorch's caching allocator gets
     ``max_gb`` less an allowance for the CUDA context, and raises out-of-memory rather than
-    spill into shared system memory, which Windows drivers otherwise do."""
+    spill into shared system memory, which Windows drivers otherwise do. Returns the cap on
+    tensors (GB). The allocator's reserve may still come so close to it that the steps crawl
+    without an error (crawling)."""
     total = torch.cuda.get_device_properties(0).total_memory
     frac = min(1.0, max(0.05, (max_gb - context_gb) * 2**30 / total))
     torch.cuda.set_per_process_memory_fraction(frac, 0)
     print(f"GPU memory capped at {max_gb:g} GB of {total / 2**30:.1f} GB "
           f"({frac * total / 2**30:.1f} GB for tensors, the rest for the CUDA context)")
+    return frac * total / 2**30
 
 
 class _KeepAwake:

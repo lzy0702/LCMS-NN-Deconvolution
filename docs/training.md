@@ -80,8 +80,9 @@ The script trains on the GPU unless told `--device cpu`. Data workers default to
 cores and `--max-ram-gb` allow (`lcmsdeconv.nn.machine`), run at lowered priority, and stay
 alive for the whole run: the epoch travels with the item indices (`EpochSampler`), so
 Windows, which starts every worker as a fresh process, starts them once. The validation spectra
-are generated once and kept in memory. A run stopped at the memory budget pauses like Ctrl+C;
-the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget).
+are generated once and kept in memory. A run stopped at the memory budget pauses like Ctrl+C,
+and so does a GPU run whose steps crawl with the memory near the cap (the crawl guard, below);
+the exit code tells the cases apart (0 finished, 3 paused, 4 memory budget, 5 GPU memory crawl).
 
 `gpu_training/README.md` is the guide for training on your own GPU: `setup_windows.bat` (or
 `setup_linux.sh`) installs and measures the machine, `train_all.bat` trains recipe v5 in both
@@ -237,10 +238,13 @@ on recipe v5 (below) with isotope channels, on the same spectra (seed 0).
   A full-size step at 4 spectra of 131 072 bins, every spectrum at the active-bin cap, peaked
   on the processor at 6.7 GB (window) and 7.1 GB (comb) above the process's baseline, 2.4-2.5
   GB in chunks of 16 charges, for 30 % more step time. The GPU package measures both on the
-  GPU (`gpu_training/probe.py`): `train_all.head_chunk_for` scores all charges at once where
-  that is faster, its peak times 1.3 stays under the cap and the GPU rather than the data
-  workers sets the pace, 16 at a time otherwise, and `train_all.run_stage` continues a run that
-  runs out of GPU memory unchunked from its last saved state in chunks.
+  GPU (`gpu_training/probe.py`): `train_all.head_chunk_for` trains 16 at a time a run with GPU
+  speedups (below), and scores all charges at once in a run without them only where that is
+  faster, its peak times 1.5 (`UNCHUNKED_MARGIN`) stays 2 GB (`UNCHUNKED_HEADROOM_GB`) under
+  the cap less the CUDA context, and the GPU rather than the data workers sets the pace.
+  `train_all.run_stage` continues a run that runs out of GPU memory unchunked, or that the
+  crawl guard stops (exit code 5, below), from its last saved state in chunks, with the same
+  speedups.
 
 **The isotope limit** (channel 6, `nn.features.isotope_limit`): at every bin, the highest charge
 whose isotope spacing the reader resolves at that m/z with the instrument's resolving power, by
@@ -397,16 +401,52 @@ run may resume with others (the optimiser state is moved to the implementation t
 uses). `gpu_training/probe.py` measures each on the user's GPU, each configuration in a process
 of its own (cuDNN keeps the algorithm it first chose for a convolution, with or without its
 benchmark, for the rest of a process), on the runs' first training batch in each view with the
-head chunking the run will use: kept if a step with it alone is at least 3 % faster than one
-without any and its loss and gradients from the same weights agree (relative loss difference
-at most 1e-3, gradient cosine at least 0.999, gradient norms within 1 %), then combined
-greedily, fastest first, each further one only if it makes the step 2 % faster again
-(`probe.choose_speedups`). train_all passes each run its view's choice; a `machine.json` without
-one gives none.
+head scoring 16 charges at a time (`train_all.HEAD_CHUNK`, recorded as `speedup_chunks`), the
+only way runs use them: kept if a step with it alone is at least 3 % faster than one without
+any and its loss and gradients from the same weights agree (relative loss difference at most
+1e-3, gradient cosine at least 0.999, gradient norms within 1 %), then combined greedily,
+fastest first, each further one only if it makes the step 2 % faster again
+(`probe.choose_speedups`). Each step's peak reserve is recorded too (`speedup_reserved_gb`, and
+the GPU memory free when setup began, `gpu_free_gb_at_setup`). Only then does setup choose each
+view's head chunking (`head_chunk_for`, with the speedups chosen), so that its own data-loading
+test trains the window view as its runs will. train_all passes each run its view's choice; a
+`machine.json` without one gives none.
 
-Every epoch records what set its pace, without waiting for the GPU at any step: the share of the
-training time spent waiting for the data loader, and on CUDA the median GPU time of every 25th
-step (CUDA events, read at the epoch's end), that time times the steps as a share of the
+The user's profile of 2026-11-25 (the RTX 4080 SUPER of 16 GB, driving the display under
+Windows' WDDM, a cap of 14 GB) showed why speedups and all charges at once do not mix. Setup
+had measured all charges at once faster at the active-bin cap (window view 149 against 182 ms a
+step, 8.87 GB reserved) and then cuDNN's benchmark with the `index_select` head faster on the
+runs' first batch (81 against 125 ms), so both views would have trained that way. On the runs'
+batches, whose active rows vary from 28 000 to 98 000, the unchunked head's largest tensors vary
+with them: with the `index_select` head (alone, or with the other speedups) the caching
+allocator's reserve climbed to 13.2 of the 13.25 GB the cap left for tensors, 1.48 times what
+setup had measured on one batch (without speedups 11.45 GB, 1.29 times), and the steps then
+took seconds (a 90th percentile of 21 s with all four speedups; setup's own choice gave no
+result within 900 s) with no out-of-memory error and no allocator retry, so the out-of-memory
+fallback could not fire. In chunks of 16 the same speedups took about 105 ms a step with about
+4 GB reserved, the fastest configuration that held; a short real training in chunks of 32 ran
+at 109 ms a step, 98 % GPU busy, 5 % of the time waiting for data. Hence the rule above, and
+the margin of 1.5 with 2 GB to spare for a run without speedups. The four 900 s timeouts used
+the profile's whole hour, so none of its processor experiments ran.
+
+**The crawl guard** (`nn.train.crawling`) is the runtime defence against a crawl that raises no
+error. On CUDA every training step is timed from the arrival of its batch to its end, and after
+it the allocator's reserve is read (`torch.cuda.memory_reserved`). A run crawls when, from its
+21st step on, 3 of the last 5 steps each took more than 10 times the median of the session's
+steps 5 to 20 and more than 2 s, while the reserve is at least 90 % of the cap on tensors (the
+GPU memory cap less the context). A LadderNet whose head scores all charges at once waits for
+the GPU (`torch.cuda.synchronize`) at the end of every step, so that each time is the step's
+own, and stops on a crawl through the pause path with the reason `gpu_memory_crawl`, which
+`train_charge_net.py` turns into exit code 5; `train_all.run_stage` then resumes it with
+`--head-chunk 16` and the same speedups and records `unchunked_failed` for the view. Any other
+CUDA run is timed without that wait (LadderNet's `nonzero` keeps it within a step of the GPU)
+and only warns once: chunks would not help it. A run slow from its start does not trip the
+guard: that is its pace.
+
+Every epoch records what set its pace, without waiting for the GPU at any step (the crawl
+guard's wait aside): the share of the training time spent waiting for the data loader, and on
+CUDA the median GPU time of every 25th step (CUDA events, read at the epoch's end), that time
+times the steps as a share of the
 training time, the peak reserved and allocated GPU memory and the allocator's retries in the
 epoch; with data workers also what they made on each class of core (`pace.workers`: items, a
 busy worker's items a second, the processors, how busy the workers were, items made twice by

@@ -358,16 +358,20 @@ def test_each_configuration_is_measured_in_a_process_of_its_own(tmp_path, monkey
                 {"view": "window", "speedups": ["tf32"], "steps": 3, "kernels": []}))
         else:
             np.savez(tmp_path / f"{name}__window.npz", ms=12.5, loss=np.array([1.0, 0.9]),
-                     grad0=np.ones(5), grad1=np.zeros(5), peak_gb=2.345)
+                     grad0=np.ones(5), grad1=np.zeros(5), peak_gb=2.345, reserved_gb=4.064)
             (tmp_path / f"{name}__comb.err").write_text("OutOfMemoryError: CUDA out of memory")
+            # a result written without the reserve (an earlier probe's child)
+            np.savez(tmp_path / f"{name}__older.npz", ms=13.0, loss=np.array([1.0, 0.9]),
+                     grad0=np.ones(5), grad1=np.zeros(5), peak_gb=2.0)
         return SimpleNamespace(returncode=0 if name != "tf32" else 3, stdout="", stderr="boom")
 
     monkeypatch.setattr(probe.subprocess, "run", child)
-    out = probe._measure_in_child(tmp_path, ("tf32",), ["window", "comb", "other"])
+    out = probe._measure_in_child(tmp_path, ("tf32",), ["window", "comb", "other", "older"])
     assert commands[0][1:3] == [str(GPU / "probe.py"), "--speedup-child"]
-    assert commands[0][-2:] == ["--views", "window,comb,other"]
+    assert commands[0][-2:] == ["--views", "window,comb,other,older"]
     assert out["window"]["ms"] == 12.5 and out["window"]["loss"] == [1.0, 0.9]
     assert out["window"]["peak_gb"] == 2.35 and list(out["window"]["grad"][0]) == [1.0] * 5
+    assert out["window"]["reserved_gb"] == 4.06 and out["older"]["reserved_gb"] is None
     assert isinstance(out["comb"], RuntimeError) and "out of memory" in str(out["comb"])
     assert isinstance(out["other"], RuntimeError) and "exit code 3" in str(out["other"])
     prof = probe._measure_in_child(tmp_path, ("tf32",), ["window", "comb"], profile=True)
@@ -392,7 +396,8 @@ def test_measure_speedups_prefetches_the_singles_then_combines_each_view(tmp_pat
             return {v: {"view": v, "speedups": list(config), "steps": 3, "kernels": []}
                     for v in views}
         return {v: {"ms": ms[v][probe.config_name(config)], "loss": [1.0, 0.9], "grad": grads,
-                    "peak_gb": 1.5} for v in views}
+                    "peak_gb": 1.5, "reserved_gb": 2.25 if v == "window" else None}
+                for v in views}
 
     batch = {"features": torch.zeros(2, 8, 64), "topk_z": torch.zeros(2, 64, 3, dtype=torch.long),
              "topk_w": torch.zeros(2, 64, 3), "heat": torch.zeros(2, 64)}
@@ -407,7 +412,13 @@ def test_measure_speedups_prefetches_the_singles_then_combines_each_view(tmp_pat
     assert jobs[0]["chunks"] == {"window": None, "comb": 16} and jobs[0]["lr"] == 2e-3
     assert res["speedup_timings"]["window"]["tf32+index_select"] == 70.0
     assert res["speedup_peak_gb"]["comb"]["none"] == 1.5
+    # the memory each step reserved, where the child read it
+    assert res["speedup_reserved_gb"] == {"window": {n: 2.25 for n in (
+        "none", "cudnn_benchmark", "tf32", "index_select", "fused_adamw", "tf32+index_select")}}
     assert res["cuda_kernels"]["speedups"] == ["tf32", "index_select"]
+    lines = "\n".join(probe.speedup_lines(res, {"window": 16, "comb": 16}))
+    assert "    tf32+index_select: 70 ms a step, 2.2 GB reserved; " in lines
+    assert "    index_select: 95 ms a step; " in lines  # the comb's, without a reading
 
 
 def test_a_failed_speedup_measurement_does_not_stop_the_probe(tmp_path, monkeypatch):
@@ -457,6 +468,7 @@ def test_the_child_side_measures_each_configuration_on_the_processor(tmp_path, m
     for name in ("reset_peak_memory_stats", "synchronize", "empty_cache"):
         monkeypatch.setattr(torch.cuda, name, lambda *a, **k: None)
     monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *a, **k: 0)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda *a, **k: 1.5 * 2**30)
     monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
     monkeypatch.setattr(torch.nn.Module, "cuda", lambda self, *a, **k: self)
     monkeypatch.setattr(nn_train, "_cap_gpu_memory", lambda *a, **k: None)
@@ -512,6 +524,9 @@ def test_the_child_side_measures_each_configuration_on_the_processor(tmp_path, m
         assert set(res["gpu_speedups"][view]) <= {"cudnn_benchmark", "tf32", "index_select"}
     assert res["speedup_checks"]["comb"]["cudnn_benchmark"].startswith("failed")
     assert "CUDNN_STATUS_NOT_SUPPORTED" in res["speedup_checks"]["comb"]["cudnn_benchmark"]
+    # the memory the allocator reserved, from the child's step to the parent's record
+    assert res["speedup_reserved_gb"]["window"]["none"] == 1.5
+    assert "fused_adamw" not in res["speedup_reserved_gb"]["comb"]  # its process did not start
     k = res["cuda_kernels"]
     assert k["view"] == "window" and ("kernels" in k or "error" in k)
     lines = probe.speedup_lines(res, {"window": None, "comb": 4})
@@ -763,6 +778,153 @@ def test_the_epoch_watch_measures_the_wait_for_data():
     assert rec == {"data_wait_share": round(watch.wait / 0.25, 4)}
 
 
+# ------------------------------------------------------------------ the crawl guard
+#: the cap on tensors of a 14 GB cap on the user's 16 GB GPU (14 - 0.75 GB for the context)
+CAP = 13.25
+
+
+def _session(*later: float, normal: float = 0.15, warm: float = 1.2, n: int = 21) -> list:
+    """A session's step times: five warm-up steps, ``normal`` ones up to ``n`` steps, then
+    ``later``."""
+    return [warm] * 5 + [normal] * (n - 5) + list(later)
+
+
+@pytest.mark.parametrize("steps, reserved, crawls", [
+    # the profile's window run with index_select (2.6-16.7 s a step at 13.17 GB): three of five
+    (_session(4.1, 0.15, 16.7, 0.2, 2.6), 13.17, True),
+    (_session(4.1, 0.15, 16.7, 0.2, 0.2), 13.17, False),          # two of five
+    (_session(4.1, 0.15, 16.7, 0.2, 2.6), 11.45, False),          # memory under 0.9 x the cap
+    (_session(4.1, 16.7, 2.6, normal=0.15, n=18), 13.17, True),   # step 21 already
+    (_session(4.1, 16.7, 2.6, normal=0.15, n=17), 13.17, False),  # 20 steps: too short
+    (_session(30.0, 30.0, 30.0, n=13), 13.25, False),             # 16 steps: too short
+    ([3.0] * 40, 13.2, False),                                     # as slow from the start
+    (_session(1.5, 1.5, 1.5, normal=0.05), 13.2, False),          # 30 x slower, under 2 s
+    (_session(2.1, 2.1, 2.1, normal=0.05), 13.2, True),           # over 2 s
+    (_session(3.0, 3.0, 3.0, normal=0.25), 13.2, True),           # 12 x slower
+    (_session(2.4, 2.4, 2.4, normal=0.25), 13.2, False),          # 9.6 x slower
+    (_session(4.1, 16.7, 2.6), 0.0, False),                       # no memory reading
+])
+def test_a_run_crawls_when_its_steps_slow_tenfold_with_the_memory_near_the_cap(steps, reserved,
+                                                                               crawls):
+    from lcmsdeconv.nn.train import crawling
+
+    assert crawling(steps, reserved, CAP) is crawls
+    assert crawling(steps, reserved, 0.0) is False and crawling(steps, reserved, None) is False
+
+
+def test_the_pace_is_that_of_steps_5_to_20():
+    """A slow start (cuDNN's benchmark, the allocator's first growth) changes nothing, and five
+    fast first steps do not make steps 5 to 20 that are slow already the exception: a run slow
+    from there on is at its pace."""
+    from lcmsdeconv.nn.train import crawling
+
+    slow_start = [60.0] * 5 + [0.15] * 16 + [3.0] * 3
+    assert crawling(slow_start, 13.2, CAP)
+    slow_baseline = [0.15] * 5 + [0.15] * 7 + [3.0] * 9 + [3.0] * 3  # most of steps 5-20 slow
+    assert not crawling(slow_baseline, 13.2, CAP)
+
+
+def _guard_run(guard, steps, monkeypatch, reserved_gb: float):
+    """``guard`` over a session of ``steps`` (seconds each), the GPU stood in for: returns the
+    number of steps run and why it stopped (None: it did not), and how often it waited for the
+    GPU."""
+    clock, waits = [0.0], []
+    guard.clock = lambda: clock[0]
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *_a, **_k: waits.append(1))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *_a, **_k: reserved_gb * 2**30)
+    for k, seconds in enumerate(steps, start=1):
+        guard.step_starts()
+        clock[0] += seconds
+        why = guard.step_ends()
+        if why:
+            return k, why, len(waits)
+    return len(steps), None, len(waits)
+
+
+def test_the_crawl_guard_stops_an_unchunked_run_and_warns_a_chunked_one_once(monkeypatch,
+                                                                            capsys):
+    from lcmsdeconv.nn.train import _CrawlGuard
+
+    steps = _session(4.1, 0.15, 16.7, 0.2, 2.6, 30.0, 30.0)
+    # the head scoring all charges at once: every step waited for, the run stops at the crawl
+    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=True), steps, monkeypatch, 13.17)
+    assert (ran, waits) == (26, 26)
+    assert why == ("GPU memory crawl (3 of the last 5 training steps took 2.6-16.7 s against "
+                   "0.15 s early in this session, with 13.2 of the 13.2 GB the cap leaves for "
+                   "tensors reserved by PyTorch's allocator: the head, scoring all charges at "
+                   "once, has filled the cap on the varied batches)")
+    # further from the cap the same steps have another cause: the run goes on
+    ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True), steps, monkeypatch, 11.45)
+    assert (ran, why) == (len(steps), None)
+    # in chunks the head cannot do better: never waited for, never stopped, said once
+    ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=False), steps, monkeypatch, 13.17)
+    assert (ran, why, waits) == (len(steps), None, 0)
+    text = capsys.readouterr().out
+    assert text.count("warning: the GPU slowed down: 3 of the last 5 training steps took "
+                      "2.6-16.7 s") == 1
+    assert "The head already scores the charges in chunks, so the run goes on" in text
+
+
+def test_the_crawl_guard_keeps_the_steps_it_reads_only(monkeypatch):
+    from lcmsdeconv.nn.train import _CrawlGuard
+
+    guard = _CrawlGuard(CAP, stops=True)
+    _guard_run(guard, [0.15] * 5000, monkeypatch, 13.2)
+    assert len(guard.seconds) < 4100  # the baseline and the latest, not every step
+    ran, why, _w = _guard_run(guard, [3.0] * 3, monkeypatch, 13.2)
+    assert (ran, why.startswith("GPU memory crawl (3 of the last 5")) == (3, True)
+
+
+def test_the_guard_watches_cuda_runs_and_stops_an_unchunked_ladder_only():
+    from lcmsdeconv.nn.model import build_model
+    from lcmsdeconv.nn.train import _crawl_guard
+
+    whole = build_model("small", 100, 4, arch="ladder", window=8192)
+    chunked = build_model("small", 100, 4, arch="ladder", window=8192, head_chunk=16)
+    unet = build_model("small", 100, 4, arch="unet")
+    assert _crawl_guard("cuda", whole, CAP).stops is True
+    assert _crawl_guard("cuda:0", chunked, CAP).stops is False
+    assert _crawl_guard("cuda", unet, CAP).stops is False
+    assert _crawl_guard("cuda", whole, CAP).cap_gb == CAP
+    assert _crawl_guard("cpu", whole, CAP) is None and _crawl_guard("cuda", whole, None) is None
+
+
+def test_a_crawl_stops_the_run_with_its_state_saved_and_exit_code_5(tmp_path, monkeypatch,
+                                                                    capsys):
+    """The training loop with the guard stood in for (it watches CUDA runs only): it stops after
+    the step the guard names, saves the state as a pause does, with the reason the training
+    script turns into exit code 5, and says how to continue."""
+    import lcmsdeconv.nn.train as nn_train
+
+    class Crawls:
+        def __init__(self):
+            self.steps = 0
+
+        def step_starts(self):
+            pass
+
+        def step_ends(self):
+            self.steps += 1
+            return "GPU memory crawl (stood in for)" if self.steps == 3 else None
+
+    monkeypatch.setattr(nn_train, "_crawl_guard", lambda device, model, cap: Crawls())
+    out = tmp_path / "net.pt"
+    nn_train.train(nn_train.TrainConfig(**_cfg(out, train_len=8)), synth_config=_synth())
+    state = torch.load(out.with_suffix(".resume.pt"), weights_only=False)
+    assert (state["epoch"], state["step"], state["stop_reason"]) == (0, 3, "gpu_memory_crawl")
+    st = json.loads(out.with_suffix(".status.json").read_text())
+    assert (st["epoch"], st["step"], st["stop_reason"]) == (0, 3, "gpu_memory_crawl")
+    text = capsys.readouterr().out
+    assert (f"GPU memory crawl (stood in for): state saved to {out.with_suffix('.resume.pt')}; "
+            f"run the same command with --resume --head-chunk 16 to continue in chunks, as "
+            f"gpu_training/train_all.py does by itself (epoch 0, step 3)") in text
+    spec = importlib.util.spec_from_file_location("_speedups_train_charge_net",
+                                                  ROOT / "scripts" / "train_charge_net.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    assert script.exit_code(out) == script.GPU_CRAWL == 5
+
+
 # ------------------------------------------------------------------ the GPU package
 def _train_all_in(tmp_path, monkeypatch, machine: dict):
     train_all = _load("train_all")
@@ -812,6 +974,30 @@ def test_each_run_gets_the_speedups_setup_chose_for_its_view(tmp_path, monkeypat
     assert "scoring 16 charges at a time; GPU speedups tf32, index_select" in text
     assert "scoring 16 charges at a time; no GPU speedups" in text
     assert "running setup again measures them" not in text
+
+
+def test_a_setup_that_chose_speedups_all_at_once_trains_them_in_chunks(tmp_path, monkeypatch,
+                                                                      capsys):
+    """A setup that chose GPU speedups for steps with all charges at once, as the user's of
+    2026-11-25 did for both views (cuDNN's benchmark and the index_select head, which together
+    filled the GPU memory cap on the runs' varied batches and gave no result within 900 s; in
+    chunks of 16 the same speedups were the fastest configuration measured). Here even with room
+    to spare all at once (5 GB x 1.5 against 11.25), train_all trains them in chunks, without
+    setup running again (tests/test_gpu_oneclick.py: the user's machine.json itself)."""
+    machine = {"workers": 6, "head_chunks": {"window": None, "comb": None},
+               "gpu_views": {v: {"batch": 4, "peak_gb": 3.0, "step_seconds": 0.19,
+                                 "unchunked": {"batch": 4, "peak_gb": 5.0, "step_seconds": 0.15}}
+                             for v in ("window", "comb")},
+               "gpu_speedups": {"window": ["cudnn_benchmark", "index_select"],
+                                "comb": ["cudnn_benchmark", "index_select"]}}
+    train_all, commands = _train_all_in(tmp_path, monkeypatch, machine)
+    monkeypatch.setattr(sys, "argv", ["train_all.py", "--device", "cpu", "--workers", "1"])
+    assert train_all.main() == 0
+    assert [c[c.index("--head-chunk") + 1] for c in commands] == ["16", "16"]
+    assert [_speedups_of(c) for c in commands] == ["cudnn_benchmark,index_select"] * 2
+    text = capsys.readouterr().out
+    assert "scoring 16 charges at a time; GPU speedups cudnn_benchmark, index_select" in text
+    assert "all charges at once" not in text
 
 
 def test_an_earlier_machine_json_gives_no_speedups_and_asks_for_setup(tmp_path, monkeypatch,
