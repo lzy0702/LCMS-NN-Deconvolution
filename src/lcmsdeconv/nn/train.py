@@ -436,7 +436,8 @@ class _CrawlGuard:
         slow = _slow_steps(self.seconds, self.expected)
         against = ("setup's step with every spectrum at the active-bin cap" if self.expected
                    else "early in this session")
-        what = (f"{len(slow)} of the last {CRAWL_RECENT} training steps took "
+        counted = min(CRAWL_RECENT, len(self.seconds) - CRAWL_WARMUP)
+        what = (f"{len(slow)} of the last {counted} training steps took "
                 f"{min(slow):.1f}-{max(slow):.1f} s against "
                 f"{_pace(self.seconds, self.expected):.2f} s, {against}, with {reserved:.1f} of "
                 f"the {self.cap_gb:.1f} GB the cap leaves for tensors reserved by PyTorch's "

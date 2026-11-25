@@ -1415,7 +1415,11 @@ def test_the_end_to_end_check_trains_as_train_all_does(tmp_path, monkeypatch):
     (root / "scripts").mkdir(parents=True)
     (root / "gpu_training").mkdir()
     (root / "scripts" / "train_charge_net.py").write_text(FAKE_TRAINING, encoding="utf-8")
-    (root / "gpu_training" / "machine.json").write_text(json.dumps(MACHINE), encoding="utf-8")
+    # setup's steps at the active-bin cap: the crawl guard's pace, as run_stage passes it
+    machine = {**MACHINE, "gpu_views": {"window": {
+        "batch": 4, "peak_gb": 2.98, "step_seconds": 0.1815,
+        "unchunked": {"batch": 4, "peak_gb": 8.87, "step_seconds": 0.1487}}}}
+    (root / "gpu_training" / "machine.json").write_text(json.dumps(machine), encoding="utf-8")
     monkeypatch.setattr(e2e, "ROOT", root)
     monkeypatch.setattr(e2e, "require_cuda", lambda device="cuda": None)
     monkeypatch.setenv("OMP_NUM_THREADS", "1")
@@ -1424,7 +1428,7 @@ def test_the_end_to_end_check_trains_as_train_all_does(tmp_path, monkeypatch):
     rec = e2e.train_check(ctx, train_len=480, size="small")
     assert rec["exit_code"] == 0 and not rec["error_lines"], rec
     cfg = rec["config"]
-    choice = e2e.train_all_choice(MACHINE, "window")
+    choice = e2e.train_all_choice(machine, "window")
     cmd = cfg["command"].split()
     flags = train_all.data_flags(train_all.data_loading_for(MACHINE))
     i = cmd.index("--loader")
@@ -1432,8 +1436,13 @@ def test_the_end_to_end_check_trains_as_train_all_does(tmp_path, monkeypatch):
     chunk = choice["chunk"]
     g = cmd.index("--gpu-speedups")
     assert cmd[g + 1] == "cudnn_benchmark,index_select"
-    if chunk:  # train_all's head chunk, right before the speedups as run_stage puts it
-        assert cmd[g - 2:g] == ["--head-chunk", str(chunk)]
+    # train_all's head chunk and setup's step at the cap in that chunking, right before the
+    # speedups as run_stage puts them
+    pace = train_all.cap_step_seconds(machine, "window", 4)["chunks" if chunk else "all"]
+    assert pace == choice["expected_step_seconds"] == (0.1815 if chunk else 0.1487)
+    assert cmd[g - 2:g] == ["--expected-step-seconds", f"{pace:g}"]
+    if chunk:
+        assert cmd[g - 4:g - 2] == ["--head-chunk", str(chunk)]
     else:
         assert "--head-chunk" not in cmd
     for opt, value in (("--max-ram-gb", "32"), ("--max-gpu-memory-gb", "12"),

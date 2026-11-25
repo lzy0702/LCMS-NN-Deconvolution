@@ -874,7 +874,8 @@ def test_the_crawl_guard_stops_an_unchunked_run_and_warns_a_chunked_one_once(mon
     ran, why, waits = _guard_run(_CrawlGuard(CAP, stops=True, expected=SETUP_STEP), steps,
                                  monkeypatch, 13.18)
     assert (ran, waits) == (9, 9)
-    assert why == ("GPU memory crawl (3 of the last 8 training steps took 1.4-16.7 s against "
+    # 9 steps, the first two not counted: 3 of the 7 counted
+    assert why == ("GPU memory crawl (3 of the last 7 training steps took 1.4-16.7 s against "
                    "0.15 s, setup's step with every spectrum at the active-bin cap, with 13.2 of "
                    "the 13.2 GB the cap leaves for tensors reserved by PyTorch's allocator: the "
                    "head, scoring all charges at once, has filled the cap on the varied batches)")
@@ -887,7 +888,7 @@ def test_the_crawl_guard_stops_an_unchunked_run_and_warns_a_chunked_one_once(mon
                                  monkeypatch, 13.18)
     assert (ran, why, waits) == (len(steps), None, 0)
     text = capsys.readouterr().out
-    assert text.count("warning: the GPU slowed down: 3 of the last 8 training steps took "
+    assert text.count("warning: the GPU slowed down: 3 of the last 7 training steps took "
                       "1.4-16.7 s") == 1
     assert "The head already scores the charges in chunks, so the run goes on" in text
     # without setup's step: the pace of the session's steps 5 to 20
@@ -895,6 +896,11 @@ def test_the_crawl_guard_stops_an_unchunked_run_and_warns_a_chunked_one_once(mon
     ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True), late, monkeypatch, 13.2)
     assert ran == 24 and why.startswith("GPU memory crawl (3 of the last 8 training steps took "
                                         "3.0-3.0 s against 0.15 s, early in this session, ")
+    # stopped as soon as it can be: the steps counted so far, the first two left out
+    ran, why, _w = _guard_run(_CrawlGuard(CAP, stops=True, expected=SETUP_STEP), [15.0] * 9,
+                              monkeypatch, 13.18)
+    assert ran == 5 and why.startswith("GPU memory crawl (3 of the last 3 training steps took "
+                                       "15.0-15.0 s against 0.15 s, setup's step ")
 
 
 def test_the_crawl_guard_keeps_the_steps_it_reads_only(monkeypatch):

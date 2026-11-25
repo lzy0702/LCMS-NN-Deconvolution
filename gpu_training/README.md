@@ -317,8 +317,6 @@ bash gpu_training/setup_linux.sh       # or the two steps one at a time
 bash gpu_training/train_all.sh
 ```
 
-## Measuring your computer for the developers (profile)" in gpu_training/README.md (up to "## Troubleshooting") with:
-
 ## Measuring your computer for the developers (profile)
 
 To tune training for your computer, both the GPU side and the synthesis of the training
