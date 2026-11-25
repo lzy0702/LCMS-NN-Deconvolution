@@ -314,7 +314,7 @@ envelopes read right:
 | envelopes of z = 1 (8) | >= 0.80 | 1.00 | 0.93 | 0.80 |
 | species: paper / SI / traced | 20/20, >= 28/29, 8/8 | 20/20, 28/29, 7/8 | the same | the same |
 | reports not confirmed | <= 64 | 73 | 82 | 76 |
-| of them singly charged background | <= 3 | 1 | 2 | 3 |
+| of those the comb does not make, singly charged background | <= 3 | 1 | 2 | 3 |
 
 v5 reads lone envelopes and rungless species better and keeps the laddered ones; it pays on the
 few singly charged envelopes (at the bar). None of the three finds 3206.4 of the IP-RPLC NC run,
@@ -329,8 +329,10 @@ on v3 read only 5 and 4 of them, while reading laddered envelopes better (0.96 o
 without rungs is z = 1 more firmly, so the recipe, not the size, has to teach the exception.
 
 The gated layout at the same proof size, on v4 and v5 with two seeds each. The seed-1 runs were
-stopped by a time limit after 7 of their 10 epochs, so their saved epoch-6 networks are scored
-(validation share 0.894 and 0.893, against 0.909 and 0.910 for the finished seed-0 runs):
+stopped by a time limit during their eighth epoch, so the networks saved after their seventh are
+scored (charge accuracy on the validation spectra 0.894 and 0.893; the seed-0 runs' best
+networks, from their eighth epoch, reach 0.909 and 0.910, and stood at 0.906 and 0.909 after
+their seventh):
 
 | check | A1G4 (v4) | A1G4s1 (v4, seed 1) | A1G5 (v5) | A1G5s1 (v5, seed 1) |
 | --- | --- | --- | --- | --- |
@@ -340,22 +342,27 @@ stopped by a time limit after 7 of their 10 epochs, so their saved epoch-6 netwo
 | species of 5 kDa or more, z >= 2 (46) | 0.87 | 0.55 | 0.73 | 0.80 |
 | envelopes of z = 1 (8) | 0.86 | 0.73 | 0.83 | 0.82 |
 | reports not confirmed | 84 | 76 | 81 | 89 |
-| of them singly charged background | 6 | 4 | 3 | 8 |
-| real-like synthetic envelopes of z >= 2 | 0.65 | 0.50 | 0.71 | 0.66 |
+| of those the comb does not make, singly charged background | 6 | 4 | 3 | 8 |
+| real-like synthetic envelopes of z >= 2 (default spectra, the runs' charges) | 0.65 | 0.50 | 0.71 | 0.66 |
 | envelopes of z >= 2 read mostly as z = 1 (of 120) | 3 | 19 | 9 | 5 |
 | a lone 6011.5 Da envelope at z = 3, 4, 5, 6 read as | 4, 4, -, - | 1, 1, 1, 1 | 1, 1, 1, 1 | -, -, -, - |
 
-(-: no usable charge.) The two seeds of one recipe differ more than the two recipes do: v4 reads
-0.93 and 0.81 of the envelopes of z >= 2, v5 0.88 and 0.90; of the species of 5 kDa or more v4
-reads 0.87 and 0.55, v5 0.73 and 0.80. The envelopes lost to z = 1 are states of the 5-7 kDa
-species, mostly their z = 3 (m/z 1 700-2 300), which these runs show at z = 3 and 4 (z = 5 at
-3 % of the stronger state or less). How many a network loses changes with the seed in both
-recipes, in opposite directions (v4 3 and 19, v5 9 and 5; the seed-1 networks have one epoch
-less behind them), so the proof arms cannot rank v4 against v5 on the laddered envelopes. The lone
-6011.5 Da envelope does not tell it either: the full-size v3 networks read that one as z = 1 at
-every charge too, yet read none of those z = 3 states as z = 1 (0.99-1.00 of the species of
-5 kDa or more, above). What they miss are the lone envelopes, which v5 is for; the GPU networks
-are checked on the four runs themselves.
+(-: no usable charge.) Which recipe reads more of the real envelopes turns with the seed: at
+seed 0 v4 reads 0.93 of the envelopes of z >= 2 and v5 0.88, at seed 1 v4 0.81 and v5 0.90; of
+the species of 5 kDa or more v4 0.87 and 0.55, v5 0.73 and 0.80. On the four real-envelope shares
+v5's two runs agree within 0.01-0.07 and v4's differ by 0.12-0.32; on the lone envelopes and the
+singly charged background v5's runs differ more (15 and 11 of 15, 3 and 8; v4 13 and 15, 6 and
+4). Only the real-like synthetic envelopes rank the recipes the same way at both seeds (v5 0.71
+and 0.66, v4 0.65 and 0.50). The envelopes lost to z = 1 are states of the 5.1-7.1 kDa species,
+mostly their z = 3 (m/z 1 710-2 380), which these runs show at z = 3 and 4 (z = 5 at 2.5 % of the
+stronger state or less, 6 % for n+1). How many a network loses varies between the two runs of
+each recipe (v4 3 and 19, v5 9 and 5; the seed-1 runs one epoch shorter), so the proof arms
+cannot rank v4 against v5 on the laddered envelopes. The lone 6011.5 Da envelope does not predict
+the loss either: the two networks above that read it as z = 1 at every charge lose the most (19
+and 9), but the full-size v3 networks also read it as z = 1 at every charge and read none of
+those z = 3 states as z = 1 (0.99-1.00 of the species of 5 kDa or more, above). What they miss
+are the lone envelopes, which v5 is for; the v5 networks trained on the GPU are to be scored on
+the four runs themselves.
 
 `gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
 `runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures
