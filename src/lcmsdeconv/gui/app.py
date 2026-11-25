@@ -68,7 +68,8 @@ class ProcessWorker(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, run_file: str | None = None, method_name: str | None = None):
+    def __init__(self, run_file: str | None = None, method_name: str | None = None,
+                 waters_function: int | None = None):
         super().__init__()
         self.setWindowTitle("lcmsdeconv")
         self.resize(1280, 860)
@@ -80,7 +81,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         if run_file:
-            self.load_run(run_file)
+            self.load_run(run_file, function=waters_function)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -249,23 +250,29 @@ class MainWindow(QMainWindow):
         s.timed_events = self.events_model.events()
 
     def on_open(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open mzML", "", "mzML (*.mzML *.mzml);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open mzML or mzMLb", "",
+            "mzML, mzMLb (*.mzML *.mzml *.mzMLb *.mzmlb);;All files (*)")
         if path:
             self.load_run(path)
 
-    def load_run(self, path: str):
+    def load_run(self, path: str, function: int | None = None):
+        """Read a run; ``function`` picks a Waters function (default: as read_mzml chooses)."""
         from ..io.mzml import read_mzml
 
         self.statusBar().showMessage(f"reading {path}…")
         QApplication.processEvents()
         try:
-            self.run = read_mzml(path)
+            self.run = read_mzml(path, function=function)
         except Exception as exc:
             QMessageBox.critical(self, "Could not read run", str(exc))
             return
         self.process_btn.setEnabled(True)
+        waters = (f", Waters function {self.run.meta['function']}"
+                  if "waters_functions" in self.run.meta else "")
         self.statusBar().showMessage(
-            f"{Path(path).name}: {len(self.run.spectra)} frames, polarities {self.run.polarities}")
+            f"{Path(path).name}: {len(self.run.spectra)} frames{waters}, "
+            f"polarities {self.run.polarities}")
         self._plot_raw_chromatograms()
 
     def on_method_changed(self, name: str):
@@ -428,9 +435,10 @@ class MainWindow(QMainWindow):
             self.mass_plot.setTitle("Deconvolved mass spectrum")
 
 
-def launch(run_file: str | None = None, method: str | None = None) -> int:
+def launch(run_file: str | None = None, method: str | None = None,
+           waters_function: int | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     _apply_theme(app)
-    win = MainWindow(run_file, method)
+    win = MainWindow(run_file, method, waters_function=waters_function)
     win.show()
     return app.exec()

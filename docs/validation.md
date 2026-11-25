@@ -155,7 +155,7 @@ package could not reach:
 - Adduct fractions become uncertain when the adduct spacing is below about 0.7 peak widths, which
   happens for sodium on a monoclonal antibody at a resolving power of 10 000.
 - Thermo `.raw` files are read directly (optional `opentfraw` dependency); other vendor formats
-  must be converted to mzML first.
+  must be converted to mzML or mzMLb first.
 - Under ion-pairing HILIC with triethylammonium acetate, oligonucleotide impurities may carry one
   dominant charge state; once the resampling was fixed their weaker states are seen, but an
   impurity with a single state above the noise is still missed unless

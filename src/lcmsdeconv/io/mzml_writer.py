@@ -9,6 +9,16 @@ import numpy as np
 
 from ..core.model import Run
 
+# the PSI-MS chromatogram type written for each kind (others are written as total ion current)
+_CHROMATOGRAM_TYPES = {
+    "uv": "electromagnetic radiation chromatogram",
+    "bpc": "basepeak chromatogram",
+    "eic": "selected ion current chromatogram",
+    "pressure": "pressure chromatogram",
+    "flow": "flow rate chromatogram",
+    "temperature": "temperature chromatogram",
+}
+
 
 def write_mzml(run: Run, path: str | Path, include_chromatograms: bool = True) -> Path:
     from psims.mzml import MzMLWriter
@@ -42,11 +52,7 @@ def write_mzml(run: Run, path: str | Path, include_chromatograms: bool = True) -
                 if chroms:
                     with out.chromatogram_list(count=len(chroms)):
                         for c in chroms:
-                            ctype = (
-                                "electromagnetic radiation chromatogram"
-                                if c.kind == "uv"
-                                else "total ion current chromatogram"
-                            )
+                            ctype = _CHROMATOGRAM_TYPES.get(c.kind, "total ion current chromatogram")
                             out.write_chromatogram(
                                 c.time.astype(np.float64),
                                 c.intensity.astype(np.float32),

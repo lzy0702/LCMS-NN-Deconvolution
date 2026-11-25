@@ -47,7 +47,9 @@ class Chromatogram:
     time: np.ndarray  # minutes
     intensity: np.ndarray
     name: str = "TIC"
-    kind: str = "tic"  # tic | bpc | uv | eic | deic | other
+    # tic | bpc | uv | eic | deic | other, or the LC's sensors, never a detector trace:
+    # pressure | flow | temperature
+    kind: str = "tic"
     unit: str = "counts"
     meta: dict[str, Any] = field(default_factory=dict)
 

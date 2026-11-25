@@ -13,6 +13,14 @@ lcmsdeconv gui                           # desktop application
 and `report.html`. Pass `--uv-csv trace.csv` when the UV trace is exported separately rather than
 stored in the mzML.
 
+Runs can be mzML or mzMLb (mzML in HDF5, `msconvert --mzMLb`). A Waters run's scan IDs carry
+its function numbers (`function=N process=P scan=S`); one function is read, the one with the
+most MS1 scans (on a tie the lowest number, the low-energy function of MSE data), so the
+lockspray reference scans interleaved with it stay out, and `--waters-function N` reads another.
+Chromatograms stored in the file are read with their type: UV traces (electromagnetic radiation
+or absorption chromatograms) serve as the UV signal, while pressure, flow-rate and temperature
+traces of the LC are kept apart and never taken for a detector trace.
+
 ## Methods
 
 A method is a YAML file describing the instrument, the deconvolution settings, the adduct

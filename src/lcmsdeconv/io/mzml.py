@@ -1,12 +1,55 @@
-"""Streaming mzML reader built on pyteomics."""
+"""Streaming mzML and mzMLb reader built on pyteomics."""
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
 from ..core.model import Chromatogram, Run, Spectrum
+
+# a Waters native ID: "function=N process=P scan=S"
+_WATERS_FUNCTION = re.compile(r"(?:^|\s)function=(\d+)(?=\s|$)")
+
+# the chromatogram types of the PSI-MS CV (MS:1000626 and its children) and the kind each is read
+# as: the LC's own sensors, which are not detector traces, then optical detectors (uv), then ion
+# currents
+_CHROMATOGRAM_TYPES = {
+    "pressure chromatogram": "pressure",
+    "flow rate chromatogram": "flow",
+    "temperature chromatogram": "temperature",
+    "electromagnetic radiation chromatogram": "uv",
+    "absorption chromatogram": "uv",
+    "emission chromatogram": "uv",
+    "total ion current chromatogram": "tic",
+    "basepeak chromatogram": "bpc",
+    "selected ion current chromatogram": "eic",
+    "selected ion monitoring chromatogram": "eic",
+    "selected reaction monitoring chromatogram": "eic",
+    "consecutive reaction monitoring chromatogram": "eic",
+    "precursor ion current chromatogram": "eic",
+    "ion current chromatogram": "tic",
+}
+_SENSOR_KINDS = ("pressure", "flow", "temperature")
+_SENSOR_NAMES = (
+    ("pressure", re.compile(r"\bpressure\b")),
+    ("flow", re.compile(r"\bflow\b")),
+    ("temperature", re.compile(r"\btemp(?:erature)?\b")),
+)
+# a time array's unit (its UO accession) per minute
+_PER_MINUTE = {"UO:0000028": 60000.0, "UO:0000010": 60.0, "UO:0000031": 1.0, "UO:0000032": 1 / 60}
+
+# what the XML of an mzMLb file is checked for before it is parsed
+_DTD_MARKUP = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+_XML_ENCODING = re.compile(rb"""\bencoding\s*=\s*["']([^"']*)["']""")
+_ASCII_ENCODINGS = frozenset(
+    {"utf-8", "utf8", "us-ascii", "ascii", "iso-8859-1", "iso_8859-1", "latin-1", "latin1"})
+
+
+class UnsafeXMLError(ValueError):
+    """An mzMLb file's XML declares a DOCTYPE or an ENTITY, or hides its markup from the check."""
 
 
 def _polarity(scan: dict) -> int:
@@ -34,76 +77,214 @@ def _rt_minutes(scan: dict) -> float:
     return val
 
 
-def read_mzml(path: str | Path, ms_level: int = 1, load_chromatograms: bool = True) -> Run:
-    """Read an mzML file into a :class:`Run` (MS1 frames + chromatograms).
+def _is_mzmlb(path: str | Path) -> bool:
+    return Path(path).suffix.lower() == ".mzmlb"
+
+
+def _check_mzmlb_xml(path: Path, block: int = 1 << 22) -> None:
+    """Refuse an mzMLb file whose mzML document declares a DOCTYPE or an ENTITY.
+
+    mzML has neither. A document type is where XML declares entities, which make a parser expand
+    text (nested, exponentially) or read other files, so the XML of an mzMLb file, which may come
+    from anywhere, is searched for both before any parser reads it. The search reads bytes, so
+    the document must also be in an encoding whose markup is ASCII (UTF-8 or Latin-1, as mzML
+    writers make it): one in UTF-16 or UTF-7 could hide its declarations from it.
+    """
+    import h5py
+
+    with h5py.File(path, "r") as h5:
+        xml = h5.get("mzML")
+        if not isinstance(xml, h5py.Dataset) or xml.ndim != 1 or xml.dtype.itemsize != 1:
+            raise ValueError(f"{path}: no mzML document (mzMLb keeps it as the byte dataset 'mzML')")
+        n = int(xml.shape[0])
+        head = np.asarray(xml[: min(n, 4096)]).tobytes()
+        head = head[3:] if head.startswith(b"\xef\xbb\xbf") else head
+        encoding = "utf-8"  # what XML without a declared encoding is read as
+        if head.startswith(b"<?xml"):
+            end = head.find(b"?>")
+            found = _XML_ENCODING.search(head[:end]) if end >= 0 else None
+            if end < 0:
+                encoding = ""  # a declaration too long to read here could name any encoding
+            elif found:
+                encoding = found.group(1).decode("latin-1").lower()
+        # UTF-16 and UTF-32 start with a byte order mark or a NUL byte next to the '<'
+        if (encoding not in _ASCII_ENCODINGS or b"\x00" in head[:4]
+                or not head.lstrip(b" \t\r\n").startswith(b"<")):
+            raise UnsafeXMLError(f"{path}: its mzML document is not UTF-8 or Latin-1 XML; not read")
+        tail = b""
+        for start in range(0, n, block):
+            text = tail + np.asarray(xml[start:start + block]).tobytes()
+            if _DTD_MARKUP.search(text):
+                raise UnsafeXMLError(f"{path}: its mzML document declares a DOCTYPE or an ENTITY, "
+                                     "which mzML never does; not read")
+            tail = text[-8:]
+
+
+def _open_reader(path: Path):
+    """pyteomics' reader of an mzML file, or of an mzMLb file once its XML has passed the check.
+
+    The mzMLb reader leaves its data arrays as records that read and decode them when asked
+    (:func:`_decoded`), so only the arrays kept are read from the HDF5 file.
+    """
+    if _is_mzmlb(path):
+        _check_mzmlb_xml(path)
+        from pyteomics.mzmlb import MzMLb
+
+        return MzMLb(str(path), decode_binary=False)
+    from pyteomics import mzml
+
+    return mzml.read(str(path))
+
+
+def _decoded(array) -> np.ndarray:
+    """A data array, decoded if pyteomics left it as a record."""
+    if isinstance(array, np.ndarray):
+        return array
+    decode = getattr(array, "decode", None)
+    return decode() if callable(decode) else np.asarray(array)
+
+
+def _waters_function(native_id) -> int | None:
+    m = _WATERS_FUNCTION.search(str(native_id or ""))
+    return int(m.group(1)) if m else None
+
+
+def _spectrum(sc: dict, position: int) -> Spectrum:
+    mz = np.asarray(_decoded(sc["m/z array"]), dtype=np.float64)
+    it = np.asarray(_decoded(sc["intensity array"]), dtype=np.float64)
+    order = np.argsort(mz)
+    mz, it = mz[order], it[order]
+    centroided = "centroid spectrum" in sc
+    profile = "profile spectrum" in sc
+    is_prof = True if profile else (False if centroided else None)
+    return Spectrum(
+        mz=mz,
+        intensity=it,
+        rt=_rt_minutes(sc),
+        polarity=_polarity(sc),
+        ms_level=sc.get("ms level", 1),
+        scan_id=str(sc.get("id", position)),
+        index=position,
+        is_profile=is_prof,
+    )
+
+
+def _choose_function(counts: dict[int, int], function: int | None, name: str,
+                     ms_level: int) -> int | None:
+    """The Waters function whose scans are kept; None when no scan carries a function number."""
+    if function is not None:
+        function = int(function)
+        if function not in counts:
+            seen = (f"its MS{ms_level} scans by function: {counts}" if counts
+                    else "its scan IDs carry no Waters function numbers")
+            raise ValueError(f"{name}: no MS{ms_level} scans of Waters function {function} ({seen})")
+        return function
+    if not counts:
+        return None
+    # the most scans; on a tie the lowest number (in MSE data the low-energy function)
+    return min(counts, key=lambda n: (-counts[n], n))
+
+
+def read_mzml(path: str | Path, ms_level: int = 1, load_chromatograms: bool = True,
+              function: int | None = None) -> Run:
+    """Read an mzML or mzMLb file into a :class:`Run` (MS frames of one level + chromatograms).
+
+    A ``.mzMLb`` file (any case of the suffix; mzML in HDF5, as ProteoWizard writes it) is read
+    with pyteomics' MzMLb once its XML has passed :func:`_check_mzmlb_xml`, and the arrays of
+    the scans kept are the only ones read.
+
+    Waters native IDs read ``function=N process=P scan=S``. A Waters run holds its MS
+    function(s) and a lockspray reference function (a few scans of a narrow window round the
+    lock mass) whose scans are interleaved with theirs and must not enter the run. When scans
+    carry function numbers, those of one function are kept: ``function`` if given, else the
+    function with the most scans of ``ms_level`` (on a tie the lowest number, in MSE data the
+    low-energy function), and ``run.meta`` records ``{"waters_functions": {N: scans of ms_level,
+    ...}, "function": N}``. A ``function`` the run has no scans of raises ValueError. Scans
+    without a function number are kept as before. ``Spectrum.index`` counts the scans kept from
+    0; ``scan_id`` is the native ID.
 
     UV/PDA traces stored as chromatograms are picked up; UV stored as spectra with a
     non-MS spectrum type is ignored here (rare in practice).
     """
-    from pyteomics import mzml
-
     path = Path(path)
-    spectra: list[Spectrum] = []
-    with mzml.read(str(path)) as reader:
+    lazy = _is_mzmlb(path)
+    found: list[tuple[int | None, int, Spectrum | dict]] = []
+    with _open_reader(path) as reader:
         for i, sc in enumerate(reader):
-            if sc.get("ms level", 1) != ms_level and "m/z array" in sc:
-                if sc.get("ms level", 1) != ms_level:
-                    continue
-            if "m/z array" not in sc:
+            if "m/z array" not in sc or sc.get("ms level", 1) != ms_level:
                 continue
-            mz = np.asarray(sc["m/z array"], dtype=np.float64)
-            it = np.asarray(sc["intensity array"], dtype=np.float64)
-            order = np.argsort(mz)
-            mz, it = mz[order], it[order]
-            centroided = "centroid spectrum" in sc
-            profile = "profile spectrum" in sc
-            is_prof = True if profile else (False if centroided else None)
-            spectra.append(
-                Spectrum(
-                    mz=mz,
-                    intensity=it,
-                    rt=_rt_minutes(sc),
-                    polarity=_polarity(sc),
-                    ms_level=sc.get("ms level", 1),
-                    scan_id=str(sc.get("id", i)),
-                    index=i,
-                    is_profile=is_prof,
-                )
-            )
+            # an mzMLb scan is decoded once it is known to be kept
+            found.append((_waters_function(sc.get("id")), i, sc if lazy else _spectrum(sc, i)))
+        counts = dict(sorted(Counter(fn for fn, _i, _s in found if fn is not None).items()))
+        chosen = _choose_function(counts, function, path.name, ms_level)
+        spectra: list[Spectrum] = []
+        for fn, i, item in found:
+            if fn is not None and fn != chosen:
+                continue
+            s = item if isinstance(item, Spectrum) else _spectrum(item, i)
+            s.index = len(spectra)
+            spectra.append(s)
+    meta = {"waters_functions": counts, "function": chosen} if counts else {}
     chroms: dict[str, Chromatogram] = {}
     if load_chromatograms:
         chroms = _read_chromatograms(path)
-    return Run(spectra=spectra, chromatograms=chroms, name=path.stem, source=str(path))
+    return Run(spectra=spectra, chromatograms=chroms, name=path.stem, source=str(path), meta=meta)
+
+
+def _array_unit(record: dict, array: str) -> str | None:
+    """The unit accession of a data array (pyteomics keeps it on the array's key)."""
+    key = next((k for k in record if k == array), None)
+    return getattr(key, "unit_accession", None)
+
+
+def _chromatogram_kind(ch: dict, name: str) -> str:
+    """tic, bpc, eic or uv (any optical detector), or pressure, flow or temperature.
+
+    The chromatogram's type term decides; without one, its name. The last three are the LC's own
+    sensors (pump pressure, flow rate, column temperature), not detector traces, also when only
+    the name says so.
+    """
+    typed = next((kind for term, kind in _CHROMATOGRAM_TYPES.items() if term in ch), None)
+    if typed in _SENSOR_KINDS:
+        return typed
+    low = name.lower()
+    for kind, pattern in _SENSOR_NAMES:
+        if pattern.search(low):
+            return kind
+    if typed is not None:
+        return typed
+    kind = "tic"
+    if "sic" in low or "selected ion" in low or "eic" in low:
+        kind = "eic"
+    if "uv" in low or "pda" in low or "dad" in low:
+        kind = "uv"
+    return kind
 
 
 def _read_chromatograms(path: Path) -> dict[str, Chromatogram]:
-    from pyteomics import mzml
+    """The chromatograms of an mzML or mzMLb file, times in minutes.
 
+    A chromatogram that cannot be read ends the reading with those read so far; an mzMLb file
+    whose XML is refused raises :class:`UnsafeXMLError`.
+    """
+    path = Path(path)
     out: dict[str, Chromatogram] = {}
     try:
-        with mzml.read(str(path)) as reader:
-            get = getattr(reader, "iterfind", None)
-            if get is None:
-                return out
+        with _open_reader(path) as reader:
             for ch in reader.iterfind("chromatogram"):
                 t = ch.get("time array")
                 y = ch.get("intensity array")
                 if t is None or y is None:
                     continue
-                cid = str(ch.get("id", "chromatogram"))
-                kind = "tic"
-                low = cid.lower()
-                if "sic" in low or "selected ion" in low or "eic" in low:
-                    kind = "eic"
-                if "absorption" in ch or "electromagnetic radiation" in ch or "uv" in low or "pda" in low or "dad" in low:
-                    kind = "uv"
-                if "total ion current chromatogram" in ch:
-                    kind = "tic"
-                unit = "counts"
-                name = cid
+                name = str(ch.get("id", "chromatogram"))
+                per_minute = _PER_MINUTE.get(_array_unit(ch, "time array"), 1.0)
                 out[name] = Chromatogram(
-                    np.asarray(t, dtype=float), np.asarray(y, dtype=float), name, kind, unit
+                    np.asarray(_decoded(t), dtype=float) / per_minute,
+                    np.array(_decoded(y), dtype=float), name, _chromatogram_kind(ch, name),
+                    "counts",
                 )
+    except UnsafeXMLError:
+        raise
     except Exception:
         return out
     return out

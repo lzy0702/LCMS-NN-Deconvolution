@@ -25,11 +25,15 @@ def main():
 @click.option("--model", default=None, type=click.Path(dir_okay=False),
               help="ONNX charge model (defaults to the bundled model).")
 @click.option("--uv-csv", default=None, type=click.Path(exists=True, dir_okay=False),
-              help="UV trace as a two-column CSV/TXT when it is not inside the mzML.")
+              help="UV trace as a two-column CSV/TXT when it is not inside the mzML/mzMLb.")
+@click.option("--waters-function", default=None, type=click.IntRange(min=1),
+              help="Waters MS function to read, the N of 'function=N' in the scan IDs "
+                   "(default: the function with the most MS1 scans, which leaves out the "
+                   "lockspray function).")
 @click.option("--report/--no-report", default=True, help="Write an HTML report.")
 @click.option("--quiet", is_flag=True)
-def process(input_file, method, out, model, uv_csv, report, quiet):
-    """Process an mzML (or Thermo .raw) run: deconvolve, link, integrate and quantify."""
+def process(input_file, method, out, model, uv_csv, waters_function, report, quiet):
+    """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify."""
     from .core.method import Method
     from .io.mzml import read_mzml, read_uv_csv
     from .io.results import save_json
@@ -39,16 +43,24 @@ def process(input_file, method, out, model, uv_csv, report, quiet):
     if not quiet:
         click.echo(f"reading {input_file}")
     if str(input_file).lower().endswith(".raw"):
+        if waters_function is not None:
+            raise click.UsageError("--waters-function is for Waters runs in mzML or mzMLb")
         from .io.thermo import read_thermo_raw
 
         run = read_thermo_raw(input_file)
     else:
-        run = read_mzml(input_file)
+        try:
+            run = read_mzml(input_file, function=waters_function)
+        except ValueError as exc:  # no scans of that function, or an mzMLb file refused
+            raise click.ClickException(str(exc)) from exc
     if uv_csv:
         ch = read_uv_csv(uv_csv)
         run.chromatograms[ch.name] = ch
     if not quiet:
         click.echo(f"{len(run.spectra)} MS frames, polarities {run.polarities}")
+        if "waters_functions" in run.meta:
+            click.echo(f"Waters function {run.meta['function']} read "
+                       f"(MS1 scans by function: {run.meta['waters_functions']})")
 
     def progress(msg):
         if not quiet:
@@ -222,13 +234,18 @@ def report(results_dir, open_it):
 
 
 @main.command()
-@click.option("--run", "run_file", default=None, type=click.Path(exists=True, dir_okay=False))
+@click.option("--run", "run_file", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="mzML or mzMLb run to open.")
 @click.option("--method", "-m", default=None)
-def gui(run_file, method):
+@click.option("--waters-function", default=None, type=click.IntRange(min=1),
+              help="Waters MS function of the --run file to read (default: as for process).")
+def gui(run_file, method, waters_function):
     """Launch the desktop application."""
+    if waters_function is not None and not run_file:
+        raise click.UsageError("--waters-function applies to the --run file")
     from .gui.app import launch
 
-    launch(run_file, method)
+    launch(run_file, method, waters_function=waters_function)
 
 
 @main.command("methods")

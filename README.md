@@ -42,7 +42,11 @@ For an offline machine, build a wheelhouse on a connected one (`pip download`) a
 `pip install --no-index --find-links wheelhouse lcmsdeconv`.
 
 Thermo `.raw` files are read directly with the `[thermo]` extra (the open-source `opentfraw`
-parser, no vendor libraries); other vendor formats need converting to mzML first.
+parser, no vendor libraries); other vendor formats need converting to mzML or mzMLb
+(`msconvert --mzMLb`) first. From a Waters run (scan IDs `function=N process=P scan=S`) one
+function is read: the one with the most MS1 scans, on a tie the lowest number (the low-energy
+function of MSE), which leaves out the lockspray reference scans; `--waters-function N` picks
+another.
 
 ## Use
 
