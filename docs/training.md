@@ -347,11 +347,12 @@ come from the eighth of their ten epochs (charge accuracy on the validation spec
 
 (-: no usable charge.) Which recipe reads more of the real envelopes turns with the seed: at
 seed 0 v4 reads 0.93 of the envelopes of z >= 2 and v5 0.88, at seed 1 v4 0.82 and v5 0.89; of
-the species of 5 kDa or more v4 0.87 and 0.58, v5 0.73 and 0.78. On the four real-envelope shares
-v5's two runs agree within 0.01-0.05 and v4's differ by 0.07-0.29; the singly charged background
-differs more between v5's runs (3 and 9; v4 6 and 4), the lone envelopes by two cases in both
-(v4 13 and 15, v5 15 and 13). Only the real-like synthetic envelopes rank the recipes the same way
-at both seeds (v5 0.71 and 0.63, v4 0.65 and 0.54). The envelopes lost to z = 1 are states of the
+the species of 5 kDa or more v4 0.87 and 0.58, v5 0.73 and 0.78. On the table's four
+real-envelope shares v5's two runs differ by 0.01-0.05, v4's by 0.07-0.29; the singly charged
+background differs more between v5's runs (3 and 9; v4 6 and 4), the lone envelopes by two cases
+in both (v4 13 and 15, v5 15 and 13). Of the checks in the table, only the real-like synthetic
+envelopes rank the recipes the same way at both seeds (v5 0.71 and 0.63, v4 0.65 and 0.54). The
+envelopes lost to z = 1 are states of the
 5.1-7.1 kDa species, mostly their z = 3 (m/z 1 710-2 380), which these runs show at z = 3 and 4
 (z = 5 at 2.5 % of the stronger state or less, 6 % for n+1). How many a network loses varies
 between the two runs of each recipe (v4 3 and 11, v5 9 and 5), so the proof arms cannot rank v4
