@@ -352,16 +352,15 @@ real-envelope shares v5's two runs differ by 0.01-0.05, v4's by 0.07-0.29; the s
 background differs more between v5's runs (3 and 9; v4 6 and 4), the lone envelopes by two cases
 in both (v4 13 and 15, v5 15 and 13). Of the checks in the table, only the real-like synthetic
 envelopes rank the recipes the same way at both seeds (v5 0.71 and 0.63, v4 0.65 and 0.54). The
-envelopes lost to z = 1 are states of the
-5.1-7.1 kDa species, mostly their z = 3 (m/z 1 710-2 380), which these runs show at z = 3 and 4
-(z = 5 at 2.5 % of the stronger state or less, 6 % for n+1). How many a network loses varies
-between the two runs of each recipe (v4 3 and 11, v5 9 and 5), so the proof arms cannot rank v4
-against v5 on the laddered envelopes. The lone 6011.5 Da envelope does not predict the loss
-either: the two networks above that read it as z = 1 at every charge lose the most (11 and 9),
-but the full-size v3 networks also read it as z = 1 at every charge and read none of those
-z = 3 states as z = 1 (0.99-1.00 of the species of 5 kDa or more, above). What they miss are the
-lone envelopes, which v5 is for; the v5 networks trained on the GPU are to be scored on the four
-runs themselves.
+envelopes lost to z = 1 are states of the 5.1-7.1 kDa species, mostly their z = 3 (m/z
+1 710-2 380), which these runs show at z = 3 and 4 (z = 5 at 2.5 % of the stronger state or less,
+6 % for n+1). How many a network loses varies between the two runs of each recipe (v4 3 and 11,
+v5 9 and 5), so the proof arms cannot rank v4 against v5 on the laddered envelopes. The lone
+6011.5 Da envelope does not predict the loss either: the two networks above that read it as
+z = 1 at every charge lose the most (11 and 9), but the full-size v3 networks also read it as
+z = 1 at every charge and read none of those z = 3 states as z = 1 (0.99-1.00 of the species of
+5 kDa or more, above). What they miss are the lone envelopes, which v5 is for; the v5 networks
+trained on the GPU are to be scored on the four runs themselves.
 
 `gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
 `runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures
