@@ -34,7 +34,7 @@ def main():
 @click.option("--quiet", is_flag=True)
 def process(input_file, method, out, model, uv_csv, waters_function, report, quiet):
     """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify."""
-    from .core.method import Method
+    from .core.method import Method, rt_window_text
     from .io.mzml import read_mzml, read_uv_csv
     from .io.results import save_json
     from .process import process_run
@@ -61,12 +61,24 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
         if "waters_functions" in run.meta:
             click.echo(f"Waters function {run.meta['function']} read "
                        f"(MS1 scans by function: {run.meta['waters_functions']})")
+        if run.meta.get("lockspray"):
+            click.echo(f"{len(run.meta['lockspray'])} lockspray scans kept"
+                       + ("" if meth.acquisition.lock_mass_mz is not None
+                          else " (not used: the method sets no acquisition.lock_mass_mz)"))
 
     def progress(msg):
         if not quiet:
             click.echo(f"  {msg}")
 
+    # the lock-mass correction and the analysis window are applied here, once
     result = process_run(run, meth, model_path=model, progress=progress)
+    if not quiet and result.lock_mass:
+        from .io.lockmass import lock_mass_text
+
+        click.echo(f"lock mass {result.lock_mass['reference_mz']:.4f}: "
+                   f"{lock_mass_text(result.lock_mass)}")
+    if not quiet and result.rt_window:
+        click.echo(f"analysis window: {rt_window_text(result.rt_window)}")
     outdir = Path(out)
     outdir.mkdir(parents=True, exist_ok=True)
     save_json(result.summary(), outdir / "results.json")

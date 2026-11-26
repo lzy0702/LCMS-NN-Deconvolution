@@ -60,6 +60,10 @@ for _a in [
     Adduct("DIPEA", _f("C8H19N"), "amine", -1, ("DBA", "dibutylamine", "octylamine")),
     Adduct("DEA", _f("C4H11N"), "amine", -1, ("diethylamine",)),
     Adduct("TBA", _f("C12H27N"), "amine", -1, ("tributylamine",)),
+    # tripropylamine ion pairing (with HFIP): the amine, and its N-oxide (an oxidised amine,
+    # 15.995 Da heavier), which can decorate a species with a ladder of several
+    Adduct("TPA", _f("C9H21N"), "amine", -1, ("tripropylamine",)),
+    Adduct("TPAO", _f("C9H21NO"), "amine", -1, ("TPA N-oxide", "tripropylamine N-oxide")),
     Adduct("DMCHA", _f("C8H17N"), "amine", -1),
     Adduct("HFIP", _f("C3H2F6O"), "solvent", -1),
     Adduct("TFA", _f("C2HF3O2"), "acid", 0, ("trifluoroacetate", "trifluoroacetic acid")),

@@ -319,19 +319,29 @@ class _EpochWatch:
 
     def summary(self, seconds: float, steps: int) -> dict:
         """The epoch's record, for ``steps`` training steps in ``seconds`` (validation not
-        included): the share of that time spent waiting for data and, on CUDA, the median GPU
-        time of the timed steps, the share of the time the GPU was busy by that measure, the
-        memory peaks (GB, since the run started in this process) and the allocator's retries
-        in this epoch."""
-        rec = {"data_wait_share": round(self.wait / max(seconds, 1e-9), 4)}
+        included; ``train_steps`` and ``train_seconds``): the share of that time spent waiting
+        for data and, on CUDA, the median GPU time of the timed steps, the share of the time the
+        GPU was busy by that measure, the memory peaks (GB, since the run started in this
+        process) and the allocator's retries in this epoch.
+
+        The busy share, median step time x steps / ``seconds``, is capped at 1.0: it can read
+        higher, because a step's events time everything between them on the GPU's clock, also
+        the time the step's work waits queued behind the previous step's (the host queues steps
+        ahead of the GPU, and a driver that batches its submissions, as Windows' WDDM does,
+        holds work back), and the median of every ``every``-th step stands for all of them. A
+        share at the cap says the GPU set the pace; the epoch's speed is ``train_steps`` /
+        ``train_seconds``, not one derived from the share."""
+        rec = {"data_wait_share": round(self.wait / max(seconds, 1e-9), 4),
+               "train_steps": int(steps), "train_seconds": round(float(seconds), 3)}
         if not self.cuda:
             return rec
         torch = self._torch
         if self.events:
             self.events[-1][1].synchronize()
             ms = statistics.median(a.elapsed_time(b) for a, b in self.events)
+            busy = min(1.0, ms * steps / 1000.0 / max(seconds, 1e-9))
             rec.update(gpu_step_ms=round(ms, 1), gpu_steps_timed=len(self.events),
-                       gpu_busy_share=round(ms * steps / 1000.0 / max(seconds, 1e-9), 4))
+                       gpu_busy_share=round(busy, 4))
         rec.update(gpu_reserved_gb=round(torch.cuda.max_memory_reserved() / 2**30, 2),
                    gpu_allocated_gb=round(torch.cuda.max_memory_allocated() / 2**30, 2),
                    alloc_retries=self._retries() - self.retries0)
@@ -1156,8 +1166,9 @@ def _pace_line(pace: dict, epoch: int, epoch_start: float, config, steps_per_epo
     if "data_wait_share" in m:
         share = f"of the training time {100 * m['data_wait_share']:.0f} % waiting for data"
         if m.get("gpu_step_ms") is not None:
-            share += (f", {100 * m['gpu_busy_share']:.0f} % GPU busy ({m['gpu_step_ms']:.0f} ms "
-                      f"a step)")
+            # at most 100 %: _EpochWatch.summary says why the events can read more
+            busy = min(1.0, float(m["gpu_busy_share"]))
+            share += f", {100 * busy:.0f} % GPU busy ({m['gpu_step_ms']:.0f} ms a step)"
         parts.append(share)
     workers = _workers_text(m.get("workers"))
     if workers:

@@ -256,7 +256,9 @@ all four. The last line gives speed, what set the pace, memory and the time left
   than the processor is given (`--ram-gb`) or the processor has cores to spare (`--workers`).
 - **GPU busy** and **ms a step**: the GPU time of every 25th step, timed on the GPU itself
   (its median), and that time times the number of steps as a share of the training time. Near
-  100 % the GPU sets the pace, and more workers would not help.
+  100 % the GPU sets the pace, and more workers would not help. The share is capped at 100 %:
+  a step's timing on the GPU also counts the time its work waits queued behind the previous
+  step's, so the product can exceed the training time.
 - **spectra made**: the epoch's spectra by the kind of core they were made on (performance,
   efficient; one count where the cores are alike), how many a worker made per second while it
   was busy, on which processors, and how busy the workers were. A busy worker making far fewer

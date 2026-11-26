@@ -215,20 +215,35 @@ def pick_candidates(
 
 
 def dedupe_adduct_candidates(
-    candidates: list[Candidate], deltas: dict[str, float], max_n: int = 3, tol_da: float = 0.5
+    candidates: list[Candidate], deltas: dict[str, float], max_n: int = 3, tol_da: float = 0.5,
+    hold: int = 0, hold_ratio: float = 0.5,
 ) -> list[Candidate]:
     """Drop candidates that are an adduct of an already-kept (more intense) candidate.
 
     Their signal is captured by the kept candidate's adduct columns during fitting, so fitting
     them separately would double-count the same ions and leave a shifted, degenerate mass.
+
+    A weaker candidate one adduct ladder below a kept one is taken for its base form, and the
+    kept candidate moves down to its mass. The ``hold`` strongest candidates kept do not move
+    onto a partner with less than ``hold_ratio`` of their score: under any realistic adduct
+    load the base form is the strongest member of its ladder (``refine._recenter_base``), and
+    such a partner is a species of its own whose mass difference to it happens to match adducts
+    (an impurity within 0.5 Da of one amine adduct below the main species), which stays a
+    candidate. The pipeline holds the candidates whose adduct forms decide which adduct types a
+    region evidences (``pipeline.evidenced_adducts``): moved onto such a partner, the strongest
+    candidate's trial no longer lies on its adduct forms, the region fits no adduct columns,
+    and its species' adduct ladders are reported as species. Other candidates still move:
+    whether a weak partner is a base form or another species is left to the fit.
     """
     kept: list[Candidate] = []
     for c in sorted(candidates, key=lambda x: -x.score):
         merged = False
-        for base in kept:
+        for i, base in enumerate(kept):
             dm = c.mass - base.mass
             if abs(dm) <= tol_da:
                 continue
+            if dm < 0 and i < hold and c.score < hold_ratio * base.score:
+                continue  # a species of its own below a held candidate
             for d in deltas.values():
                 for n in range(1, max_n + 1):
                     if abs(abs(dm) - n * d) > tol_da:

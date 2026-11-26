@@ -163,7 +163,17 @@ that fails both leaves the cluster, which must still hold two charge states. The
 the strongest state carries signal in fewer than four scans. The charge states of one molecule are
 the same molecules at different m/z; a ladder of unrelated ions follows as many elution profiles as
 it has members. A further step drops candidates separated from a stronger one by an adduct delta,
-because the stronger candidate's adduct columns will account for them.
+because the stronger candidate's adduct columns will account for them; a weaker candidate one adduct
+ladder below a stronger one is taken for its base form, and the stronger candidate moves down to its
+mass. The first pass's two strongest candidates, whose adduct forms decide the region's adduct types
+(section 4), keep their mass against a partner with less than half their score: under any realistic
+adduct load the base form is the strongest member of its ladder, and moved onto an impurity whose
+mass lies within the dedupe's 0.5 Da of one adduct below (`tests/test_harmonic_readings.py`: 3 % of
+a synthetic oligonucleotide, 0.4 Da off one tripropylamine N-oxide below it), the strongest
+candidate's adduct trials read that impurity's forms, find none, and the region fits no adduct
+columns: its species' adduct ladders are then reported as species. Other candidates still move
+(requiring half the score of every partner loses a 2.9 % EIC-confirmed species of the IP-RPLC NC
+run on a knife-edge of the shared-evidence test).
 
 On isotope-resolved data (Orbitrap and FT-ICR methods, or `isotope_charges: true`) the comb
 estimator also reads charges from isotope spacing: for each bin, the largest charge whose
@@ -350,7 +360,30 @@ strongest over the region's scans. Where that cannot be judged - no frames, fewe
 no profile in the monomer's trace, or no base-form state to read - it is kept: regions may be two
 scans long (`regions.min_frames` is 2 in every bundled method), and a species at n x M eluting apart
 from its monomer would otherwise go without evidence (with `coelution_r: 0` only harmonic readings
-go). Then a component is dropped when at least 80 % of its fitted intensity lies within two envelope
+go). Readings of other ratios go next (`refine.drop_harmonic_readings`). Where a species'
+isotopologues are barely resolved at the instrument's resolving power, as a large oligonucleotide's
+can be on a time-of-flight instrument, the comb also reads its ions at higher charges, and the fit
+makes heavier species of them: rational multiples (p/q M, its z = q read as z = p), multiples of
+one of its adduct forms or of a co-eluting impurity, multiples whose base mass its own
+adduct columns shift (3 M - 2 (Na - H), fitted as +2Na forms on its ions), which can hold a large
+share of a region's fit. Neither the exact-multiple tests nor the shared-evidence test below
+catches them: their columns sit on the stronger species' ions at other charges. A component at
+least 1.25 times heavier than a stronger one (or at most 0.8 times as heavy) with less than 0.6 of
+its amount is judged one fitted column at a time on the raw spectrum: where the profile shows a
+resolved isotope ladder there (`decode.isotope_ladder_spacing`), the column is its own when the
+ladder reads the column's charge (within max(1.5, 10 %)) - a species' ions read at three times
+their charge show the ladder of their own charge. Without a readable ladder, where the
+instrument would not resolve the column's isotopes, it is not its own when it lies within three
+envelope sigmas (at least one peak width) of an ion a stronger component fitted; where it would,
+the column holds overlapping ions no ladder attributes, three envelope sigmas span several
+isotope spacings, and it is not judged (an Orbitrap's singly charged ion beside a stronger
+species' weak adduct column at z = 3 stays a species where singly charged species count). With
+less than a quarter of the judged fit on its own columns a component goes. A genuine heavier or
+lighter species has envelopes of its own between the stronger ones' ions, and a non-covalent dimer
+its odd charge states. The passes after the first drop candidates at n x M and M / n of the
+species found so far, the readings among them excepted: a reading at three times a co-eluting
+impurity's mass would otherwise remove the impurity, found again on the residual, as its third.
+Then a component is dropped when at least 80 % of its fitted intensity lies within two envelope
 widths of a stronger column of a stronger component (explaining away by shared evidence).
 An adduct column of a weaker component whose mass (species plus adduct) lies within 0.5 Da of a
 stronger component plus any adduct state of the method's list, evidenced or not, is removed from it:
@@ -378,6 +411,26 @@ weights points by count, which pulls a mean shift towards the side more scans co
 
 ## 5. Across retention time
 
+Two settings act on the run before anything else. With `acquisition.lock_mass_mz` set, every scan's
+m/z is divided by one ratio, the lockspray reference's observed over its true m/z, read in the run's
+lockspray scans (a Waters function of its own, which the reader keeps apart; a reading more than 100
+ppm off is another ion and is skipped, and readings at one time are taken at their median) and
+interpolated over time to the TIC-weighted mean retention time of the run's MS scans (those
+within the analysis window, where one is set; `io/lockmass.py`); processing applies it once and
+leaves the run read as it was. One ratio for the whole run, because a region's scans are summed point by point where they share one m/z axis (the
+region sums below): scaled each by the ratio at its own time, they no longer share one, and their
+sum spreads every peak over the scans' several axes. On eleven RDa runs the comb then left a median
+of 16 % of a run's deconvolved signal in species at 1.25 times or more (or 0.8 times or less) the
+mass of a stronger co-eluting species that is not itself one (judged strongest first), re-readings
+of its ions, against 12 % with no correction and 12 % with one ratio. The drift between the
+readings is left in the masses: a scan keeps the drift between its time and the ratio's, at most
+the record's `drift_ppm`. With `regions.rt_window` set, the run is cut to that window:
+regions are found within it (their relative floors taken within it, the noise their `min_snr`
+multiplies on the whole run's trace, as a window crowded with peaks reads a higher noise on its
+own), the TIC and UV traces integrated within it, and purity, content and saturation judged on what
+lies in it, which leaves out an injection front and a column wash; the whole traces are kept for
+display.
+
 Deconvolution runs on the summed spectrum of each chromatographic region, where the signal-to-noise
 ratio is highest. Regions are built around peaks of the TIC that stand ten times above the trace's
 noise - three times with the oligonucleotide methods, as a 2 % impurity eluting on its own makes a
@@ -397,36 +450,37 @@ frame.
 
 Components are then linked across frames by mass, giving species. A species whose trace stays within
 a third of its maximum at both ends - judged with one region width of quantified frames on either
-side, since a broad band can fill its own region - is chemical background and is dropped, and so is
-a species whose profile peaks in the outer tenth of its region (unless it is the region's
-strongest): a region is built around an elution band, so such a trace is a template absorbing a
-neighbour's tail. That last test is not made at a boundary the region shares with the next one: a
-boundary drawn at the valley between two bands is where a species eluting between them peaks, and
-the neighbouring region holds the rest of it. A species found in adjacent regions of one broad band
-is merged into one; the scan on their shared boundary is counted once, with the larger of its two
-readings, and the merge is repeated until nothing more joins (pieces are taken strongest first, and
-the last piece of a tail over three regions was left apart: 2653.32 and 2998.45 Da of the IP-RPLC
-conjugate run). Pieces of comparable height (each at least a tenth of the other) whose joined trace
-falls below half the lower apex between them are two bands of one mass - isomers either side of a
-boundary - and stay apart; a scan where neither piece has a reading (a gap the linking bridged, a
-frame whose fit gave the species nothing; three scans at most) is read across from its neighbours,
-not as a valley, while a longer stretch without a reading is a valley. A piece that a shared
-boundary cut off and its region read up to 1.5 Da off its band, beyond the linking tolerance, is
-joined to the band where both read the same tooth of the isotope comb in the scans themselves
-(`features.link.merge_boundary_pieces`, `refine.tooth_position`: the class pattern matched against
-each scan's own points), and the joined species keeps the mass its own isotopes support (n-1 of the
-IP-HILIC NC run: one report at 2.35 % instead of 1.9 % and 0.5 %); a deaminated form lies one tooth
-away and stays apart. With `linking.set_aside_later_elutions` (on in the two oligonucleotide
-methods, off by default) the run's main species' later elutions - its tail past its band and its
-column-wash peak: the same molecule by its isotopes, at most a twentieth of it, starting more than
-0.2 min after its band ends - are named in its flags instead of being reported, and a species
-peaking within 0.1 min of such a wash peak (a later elution that rises and falls, its highest
-reading twice its first and last) is set aside the same way under an earlier species of its own mass
-at least twenty times stronger (NC's +201.4 Da form at 25.4 min). An isomer eluting later at under a
-twentieth of the main species is set aside as well, since its isotopes cannot tell it apart - an
-isoAsp or disulfide-scrambled protein variant, a branched polymer beside a linear one - which is why
-the other methods leave the step off. In a polarity-switching run each polarity is processed
-separately and species are matched by neutral mass and apex (within 0.2 min) afterwards.
+side, since a broad band can fill its own region, from the whole run's scans (beyond an analysis
+window too) - is chemical background and is dropped, and so is a species whose profile peaks in the
+outer tenth of its region (unless it is the region's strongest): a region is built around an elution
+band, so such a trace is a template absorbing a neighbour's tail. That last test is not made at a
+boundary the region shares with the next one: a boundary drawn at the valley between two bands is
+where a species eluting between them peaks, and the neighbouring region holds the rest of it. A
+species found in adjacent regions of one broad band is merged into one; the scan on their shared
+boundary is counted once, with the larger of its two readings, and the merge is repeated until
+nothing more joins (pieces are taken strongest first, and the last piece of a tail over three
+regions was left apart: 2653.32 and 2998.45 Da of the IP-RPLC conjugate run). Pieces of comparable
+height (each at least a tenth of the other) whose joined trace falls below half the lower apex
+between them are two bands of one mass - isomers either side of a boundary - and stay apart; a scan
+where neither piece has a reading (a gap the linking bridged, a frame whose fit gave the species
+nothing; three scans at most) is read across from its neighbours, not as a valley, while a longer
+stretch without a reading is a valley. A piece that a shared boundary cut off and its region read up
+to 1.5 Da off its band, beyond the linking tolerance, is joined to the band where both read the same
+tooth of the isotope comb in the scans themselves (`features.link.merge_boundary_pieces`,
+`refine.tooth_position`: the class pattern matched against each scan's own points), and the joined
+species keeps the mass its own isotopes support (n-1 of the IP-HILIC NC run: one report at 2.35 %
+instead of 1.9 % and 0.5 %); a deaminated form lies one tooth away and stays apart. With
+`linking.set_aside_later_elutions` (on in the two oligonucleotide methods, off by default) the run's
+main species' later elutions - its tail past its band and its column-wash peak: the same molecule by
+its isotopes, at most a twentieth of it, starting more than 0.2 min after its band ends - are named
+in its flags instead of being reported, and a species peaking within 0.1 min of such a wash peak (a
+later elution that rises and falls, its highest reading twice its first and last) is set aside the
+same way under an earlier species of its own mass at least twenty times stronger (NC's +201.4 Da
+form at 25.4 min). An isomer eluting later at under a twentieth of the main species is set aside as
+well, since its isotopes cannot tell it apart - an isoAsp or disulfide-scrambled protein variant, a
+branched polymer beside a linear one - which is why the other methods leave the step off. In a
+polarity-switching run each polarity is processed separately and species are matched by neutral mass
+and apex (within 0.2 min) afterwards.
 
 A species' amount is its base form, integrated over its trace (`Species.base_intensity`); its total
 over every adduct form resolved (`total_intensity`) is reported beside it. Which adduct forms are
@@ -447,6 +501,45 @@ merged, so that a form is judged against its parent's piece from the same region
 measured for every species alike, and the retention-time apex is read on the base trace for the
 same reason, unless the base form is less than a tenth of the species (an adducted form reported
 apart).
+
+What the fold leaves - forms of an adduct no region evidenced, a ladder longer than the decoder's
+`max_per_type`, a pair whose traces correlate less - is marked rather than folded
+(`features.annotate.mark_adduct_forms`, after the merges): a species one to four adducts of one
+kind of the method's whole library (the mode's adducts and `include`, evidenced or not) above a
+stronger species (base form) of its polarity, within the tolerance of a mass difference below,
+co-eluting with it (apexes within 0.05 min, or in one region each apex inside the other's band at
+half height; overlapping bands alone admitted a 4522 Da species peaking 0.26 min before a 4264 Da
+one of the IP-RPLC NC run, two DIPEA above it), is that species' adduct form unless a modification
+of its class explains the difference as well (under tripropylamine-HFIP ion pairing a species can
+carry a ladder of tripropylamine N-oxides, 159.27 Da each, longer than the two of a kind the
+oligonucleotide methods fit). A form stays in the species list with its parent's id
+(`Species.adduct_form_of`) and annotation; the impurity table and the MS purity give it no row and
+no share of the base-form signal and count its amount in its parent's all-forms total and adduct
+fractions. The step marks nothing on the four Orbitrap runs. Its tolerance is the annotation's (0.15
+Da or 15 ppm), tighter than the fold's, and so is the modification check it makes: under
+tripropylamine-HFIP ion pairing a species' tripropylamine N-oxide (TPAO) form is folded where a
+region evidenced TPAO and the traces correlate, marked otherwise where it lies within 0.15 Da of one
+to four TPAO above a stronger co-eluting species, and reported apart only where neither applies. The
+fold declines a form two TPAO above a species (318.54 Da) wherever an n+1 (2'-OMe C, 319.21 Da) lies
+within its tolerance - from 4 kDa on at the RDa's resolving power - and the marking takes it.
+
+Species are annotated against the main species by their mass difference, like with like: the
+modifications' average-mass deltas for the average masses reported (a residue of an oligonucleotide
+weighs 0.13-0.25 Da more on average masses than monoisotopically, and PS to PO is -16.07 against
+-15.98 Da), within 0.15 Da or 15 ppm of the main species' mass, whichever is larger. The difference
+of two species of one run carries little of its calibration error, and the floor keeps the
+deaminated form of the IP-HILIC conjugate run, read 0.12 Da light; a species whose charge states
+disagree gets the two species' combined mass spread, up to the 40 ppm of before (a PS-to-PO
+impurity overlapping its parent at time-of-flight resolving power can read a few tenths of a dalton
+off, its charge states disagreeing as much). Twice and three times a modification are read only for
+those one molecule carries at several sites (`chem.modifications.REPEATING`), within half the
+tolerance (the adduct fold and the adduct-form check, which ask whether a modification could
+explain a difference, take the whole tolerance): with every modification's multiples and 40 ppm, a
+tripropylamine N-oxide adduct of an oligonucleotide (159.27 Da) read as three cyanoethyl groups
+(159.19 Da), and the fold kept it apart. Where several modifications match, each is named, the
+closest first. On the Orbitrap runs n+1 and n-1 of the conjugate read as an A phosphorothioate or a
+G phosphodiester residue (345.27 and 345.21 Da on average masses; the truth's difference is 345.27
+Da), and n-1 of NC as an A (or dG) phosphodiester, which the monoisotopic comparison missed.
 
 Base-form shares are exact only where co-eluting species carry the same adduct load: under ion
 pairing with acetate the main species' load falls at its own apex, and base-form shares there
@@ -477,5 +570,6 @@ analyte than the source can ionise. Both raise warnings that name the affected p
 | `diagnostics.py` | charge oracles, one-to-one scoring, loss and false-species attribution |
 | `features/` | regions, per-frame quantification, retention-time linking, annotation |
 | `chrom/` | integration events and the integrator |
+| `io/` | mzML, mzMLb and Thermo readers (Waters functions, the lockspray kept apart), the lock-mass correction (`lockmass.py`), result files |
 | `quant/` | purity, calibration, potency, saturation |
 | `report/`, `gui/`, `cli.py` | HTML reports, desktop application, command line |

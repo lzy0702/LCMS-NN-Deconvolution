@@ -199,9 +199,10 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
     stronger one's adduct. A mass
     difference that a known modification of the species' class explains as well (peptide
     oxidation, +15.99 Da, lies 1.04 Da from an ammonium adduct; an oligonucleotide's n+1 can lie
-    within a dalton of amine and HFIP clusters) is not folded: the species may be an impurity,
-    and a report too many is the lesser error. Modifications listed for any class only (a PEG
-    unit, 0.07 Da from two sodium ions) do not count.
+    within a dalton of amine and HFIP clusters; average-mass deltas, multiples only of the
+    modifications one molecule carries at several sites) is not folded: the species may be an
+    impurity, and a report too many is the lesser error. Modifications listed for any class only
+    (a PEG unit, 0.07 Da from two sodium ions) do not count.
     ``libraries`` is an :class:`~lcmsdeconv.chem.adducts.AdductLibrary` or a dict of them by
     polarity.
     """
@@ -233,7 +234,9 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
             if abs(shifts[j] - d) > tol:
                 continue
             cls = s.compound_class or k.compound_class
-            if any(cls in m.classes for m in annotate_delta(d, cls, tolerance=tol)):
+            if any(cls in m.classes for m in annotate_delta(d, cls, tolerance=tol,
+                                                            mass_type="average",
+                                                            multiple_tolerance=1.0)):
                 continue
             if _coelute(k, s, min_r, max_apex_min):
                 parent, state = k, st[j]

@@ -91,11 +91,18 @@ def test_singly_charged_ions_alone_are_no_oligonucleotide(monkeypatch):
     def single(found):
         return any(abs(m - SINGLE) < 2.0 for m in found)
 
+    from lcmsdeconv.deconv import pipeline
+
     found = _deconvolve(spec, _params())
     assert any(abs(m - NC) < 0.3 for m in found)
     assert not single(found) and not dimer_read_at_z1(found)
-    # where singly charged species count, the ion alone is one (read 0.8 Da light), and so is the
-    # dimer's z = 5 read at z = 1
+    # where singly charged species count, the ion alone is one (read 0.8 Da light); the dimer's
+    # z = 5 read at z = 1 is a harmonic reading, whose ions show the isotope ladder of z = 5
+    # (refine.drop_harmonic_readings)
+    old = _deconvolve(spec, _params(singly_charged_species=True))
+    assert single(old) and not dimer_read_at_z1(old)
+    # without that test it is a species too
+    monkeypatch.setattr(pipeline, "drop_harmonic_readings", lambda components, *a, **k: components)
     old = _deconvolve(spec, _params(singly_charged_species=True))
     assert single(old) and dimer_read_at_z1(old)
     # and so it is, beside NC's z = 5 read at z = 2, without the test of what lies between the

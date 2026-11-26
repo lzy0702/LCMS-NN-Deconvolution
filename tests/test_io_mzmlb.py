@@ -99,7 +99,11 @@ def test_mzmlb_and_mzml_read_function_1_alike(waters):
         assert run.polarities == [-1]
         assert all(s.is_profile and s.ms_level == 1 for s in run.spectra)
         assert np.array_equal(run.spectra[0].mz, np.linspace(*FULL, 600))
+        lock = run.meta.pop("lockspray")  # the scans of function 2, kept apart
         assert run.meta == {"waters_functions": {1: 20, 2: 3}, "function": 1}
+        assert [round(rt, 4) for rt, _mz, _it in lock] == [0.27, 0.57, 0.87]
+        assert all(np.array_equal(mz, np.linspace(*LOCK, 80)) and it.size == 80
+                   for _rt, mz, it in lock)
     for a, b in zip(*(run.spectra for run in runs)):
         assert np.array_equal(a.mz, b.mz) and np.array_equal(a.intensity, b.intensity)
 

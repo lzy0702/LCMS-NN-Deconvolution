@@ -570,13 +570,16 @@ def test_on_the_processor_speedups_are_ignored_and_the_pace_is_recorded(tmp_path
     assert "GPU speedups ignored (tf32, index_select): this run trains on cpu" in text
     assert model.head_gather == "index"
     assert "of the training time" in text and "% waiting for data" in text
+    # on the processor: the wait for data and the epoch's steps and their time, no GPU figures
+    cpu_pace = {"data_wait_share", "train_steps", "train_seconds"}
     for h in history:
-        assert set(h["pace"]) == {"data_wait_share"} and 0.0 <= h["pace"]["data_wait_share"] <= 1
+        assert set(h["pace"]) == cpu_pace and 0.0 <= h["pace"]["data_wait_share"] <= 1
+        assert h["pace"]["train_steps"] > 0 and h["pace"]["train_seconds"] > 0
     records = [json.loads(line) for line in out.with_suffix(".log.jsonl").open()]
     epochs = [r for r in records if "epoch" in r]
-    assert [set(r["pace"]) for r in epochs] == [{"data_wait_share"}] * 2
+    assert [set(r["pace"]) for r in epochs] == [cpu_pace] * 2
     st = json.loads(out.with_suffix(".status.json").read_text())
-    assert st["gpu_speedups"] == [] and set(st["pace"]) == {"data_wait_share"}
+    assert st["gpu_speedups"] == [] and set(st["pace"]) == cpu_pace
     assert (st["epoch"], st["stop_reason"]) == (2, "finished")
     ckpt = torch.load(out, weights_only=False)
     assert ckpt["gpu_speedups"] == [] and ckpt["config"]["gpu_speedups"] == ("tf32", "index_select")
@@ -747,15 +750,27 @@ def test_the_epoch_watch_times_every_25th_step_on_the_gpu(monkeypatch):
     retries[0] = 5
     assert len(created) == 6  # steps 0, 25 and 50: a start and an end each
     rec = watch.summary(2.0, 60)
-    assert rec == {"data_wait_share": 0.0, "gpu_step_ms": 10.0, "gpu_steps_timed": 3,
-                   "gpu_busy_share": 0.3, "gpu_reserved_gb": 3.5, "gpu_allocated_gb": 3.0,
-                   "alloc_retries": 3}
+    assert rec == {"data_wait_share": 0.0, "train_steps": 60, "train_seconds": 2.0,
+                   "gpu_step_ms": 10.0, "gpu_steps_timed": 3, "gpu_busy_share": 0.3,
+                   "gpu_reserved_gb": 3.5, "gpu_allocated_gb": 3.0, "alloc_retries": 3}
     ram = _RamWatch(None)
     ram.proc = None
     line = _pace_line({"steps": 60, "seconds": 2.0}, 0, 0.0, TrainConfig(epochs=1, batch_size=4),
                       60, ram, "cuda", rec)
     assert "of the training time 0 % waiting for data, 30 % GPU busy (10 ms a step)" in line
     assert "GPU 3.5 GB reserved, 3.0 GB allocated at most, 3 allocator retries" in line
+    # 60 steps of 10 ms in 0.4 s read as 150 % busy: the events also time what a step waits
+    # behind on the GPU, so the share is capped, in the record and in the line
+    rec = watch.summary(0.4, 60)
+    assert rec["gpu_busy_share"] == 1.0 and rec["gpu_step_ms"] == 10.0
+    assert (rec["train_steps"], rec["train_seconds"]) == (60, 0.4)
+    line = _pace_line({"steps": 60, "seconds": 0.4}, 0, 0.0, TrainConfig(epochs=1, batch_size=4),
+                      60, ram, "cuda", rec)
+    assert "100 % GPU busy (10 ms a step)" in line
+    # a record written before the cap still prints at most 100 %
+    line = _pace_line({"steps": 60, "seconds": 0.4}, 0, 0.0, TrainConfig(epochs=1, batch_size=4),
+                      60, ram, "cuda", {**rec, "gpu_busy_share": 1.5})
+    assert "100 % GPU busy (10 ms a step)" in line and "150 %" not in line
 
 
 def test_the_epoch_watch_measures_the_wait_for_data():
@@ -775,7 +790,8 @@ def test_the_epoch_watch_measures_the_wait_for_data():
         _time.sleep(0.02)  # a step
     assert got == [0, 1, 2] and 0.14 <= watch.wait < 2.0  # not the steps' 0.06 s
     rec = watch.summary(0.25, 3)
-    assert rec == {"data_wait_share": round(watch.wait / 0.25, 4)}
+    assert rec == {"data_wait_share": round(watch.wait / 0.25, 4), "train_steps": 3,
+                   "train_seconds": 0.25}
 
 
 # ------------------------------------------------------------------ the crawl guard

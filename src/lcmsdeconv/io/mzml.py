@@ -13,6 +13,11 @@ from ..core.model import Chromatogram, Run, Spectrum
 # a Waters native ID: "function=N process=P scan=S"
 _WATERS_FUNCTION = re.compile(r"(?:^|\s)function=(\d+)(?=\s|$)")
 
+#: a Waters function not read is the lockspray when its scans span at most this many m/z (their
+#: declared scan window, else their data): the RDa scans 10 m/z round the lock mass, an MS function
+#: hundreds or thousands
+LOCKSPRAY_MAX_SPAN = 100.0
+
 # the chromatogram types of the PSI-MS CV (MS:1000626 and its children) and the kind each is read
 # as: the LC's own sensors, which are not detector traces, then optical detectors (uv), then ion
 # currents
@@ -149,6 +154,42 @@ def _waters_function(native_id) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _declared_span(sc: dict) -> float | None:
+    """The m/z span of a scan's declared scan window, None when it declares none."""
+    try:
+        window = sc["scanList"]["scan"][0]["scanWindowList"]["scanWindow"][0]
+        span = float(window["scan window upper limit"]) - float(window["scan window lower limit"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return span if span >= 0 else None
+
+
+def _lockspray(found: list, chosen: int) -> list[tuple[float, np.ndarray, np.ndarray]]:
+    """The scans of the Waters functions other than ``chosen`` that span at most
+    LOCKSPRAY_MAX_SPAN m/z, as (rt in minutes, m/z, intensity) in time order. A function's span
+    is the median of its scans' declared windows, else the data of its first scan, so a wide
+    function (MSE's high-energy scans) is never decoded here."""
+    by_function: dict[int, list] = {}
+    for fn, i, span, item in found:
+        if fn is not None and fn != chosen:
+            by_function.setdefault(fn, []).append((i, span, item))
+    kept: list[Spectrum] = []
+    for scans in by_function.values():
+        spans = [s for _i, s, _item in scans if s is not None]
+        if spans:
+            span = float(np.median(spans))
+        else:
+            i, _s, item = scans[0]
+            first = item if isinstance(item, Spectrum) else _spectrum(item, i)
+            span = float(first.mz[-1] - first.mz[0]) if first.mz.size else 0.0
+        if span > LOCKSPRAY_MAX_SPAN:
+            continue
+        kept.extend(item if isinstance(item, Spectrum) else _spectrum(item, i)
+                    for i, _s, item in scans)
+    kept.sort(key=lambda s: s.rt)
+    return [(float(s.rt), s.mz, s.intensity) for s in kept]
+
+
 def _spectrum(sc: dict, position: int) -> Spectrum:
     mz = np.asarray(_decoded(sc["m/z array"]), dtype=np.float64)
     it = np.asarray(_decoded(sc["intensity array"]), dtype=np.float64)
@@ -201,30 +242,38 @@ def read_mzml(path: str | Path, ms_level: int = 1, load_chromatograms: bool = Tr
     low-energy function), and ``run.meta`` records ``{"waters_functions": {N: scans of ms_level,
     ...}, "function": N}``. A ``function`` the run has no scans of raises ValueError. Scans
     without a function number are kept as before. ``Spectrum.index`` counts the scans kept from
-    0; ``scan_id`` is the native ID.
+    0; ``scan_id`` is the native ID. The scans of the functions not read whose scan window is
+    narrow (at most LOCKSPRAY_MAX_SPAN m/z: the lockspray, a few scans) are kept apart in
+    ``run.meta["lockspray"]`` as (rt in minutes, m/z array, intensity array) in time order, for
+    the lock-mass correction (:mod:`lcmsdeconv.io.lockmass`); the key is absent when there are
+    none.
 
     UV/PDA traces stored as chromatograms are picked up; UV stored as spectra with a
     non-MS spectrum type is ignored here (rare in practice).
     """
     path = Path(path)
     lazy = _is_mzmlb(path)
-    found: list[tuple[int | None, int, Spectrum | dict]] = []
+    found: list[tuple[int | None, int, float | None, Spectrum | dict]] = []
     with _open_reader(path) as reader:
         for i, sc in enumerate(reader):
             if "m/z array" not in sc or sc.get("ms level", 1) != ms_level:
                 continue
             # an mzMLb scan is decoded once it is known to be kept
-            found.append((_waters_function(sc.get("id")), i, sc if lazy else _spectrum(sc, i)))
-        counts = dict(sorted(Counter(fn for fn, _i, _s in found if fn is not None).items()))
+            found.append((_waters_function(sc.get("id")), i, _declared_span(sc),
+                          sc if lazy else _spectrum(sc, i)))
+        counts = dict(sorted(Counter(fn for fn, _i, _w, _s in found if fn is not None).items()))
         chosen = _choose_function(counts, function, path.name, ms_level)
         spectra: list[Spectrum] = []
-        for fn, i, item in found:
+        for fn, i, _w, item in found:
             if fn is not None and fn != chosen:
                 continue
             s = item if isinstance(item, Spectrum) else _spectrum(item, i)
             s.index = len(spectra)
             spectra.append(s)
+        lockspray = _lockspray(found, chosen) if counts else []
     meta = {"waters_functions": counts, "function": chosen} if counts else {}
+    if lockspray:
+        meta["lockspray"] = lockspray
     chroms: dict[str, Chromatogram] = {}
     if load_chromatograms:
         chroms = _read_chromatograms(path)

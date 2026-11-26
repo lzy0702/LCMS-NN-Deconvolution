@@ -80,6 +80,13 @@ class Run:
     def polarities(self) -> list[int]:
         return sorted({s.polarity for s in self.spectra})
 
+    def windowed(self, start: float, end: float) -> Run:
+        """The run within [start, end] minutes: the scans in it (the same Spectrum objects) and
+        every chromatogram cut to it; ``meta`` is shared."""
+        return Run([s for s in self.spectra if start <= s.rt <= end],
+                   {k: c.sliced(start, end) for k, c in self.chromatograms.items()},
+                   self.name, self.source, self.meta)
+
     def frames(self, polarity: int | None = None, rt_range: tuple[float, float] | None = None) -> list[Spectrum]:
         out = self.spectra
         if polarity is not None:
@@ -250,6 +257,11 @@ class Species:
     region_id: int = -1
     annotations: list[str] = field(default_factory=list)
     name: str = ""
+    #: the id of the stronger co-eluting species this one is an adduct form of, and the adduct
+    #: state that separates them ("+2TPAO")
+    #: (:func:`lcmsdeconv.features.annotate.mark_adduct_forms`)
+    adduct_form_of: int | None = None
+    adduct_form: str = ""
 
     @property
     def total_intensity(self) -> float:
@@ -314,6 +326,8 @@ class Species:
             "flags": list(self.flags),
             "annotations": list(self.annotations),
             "region_id": self.region_id,
+            "adduct_form_of": self.adduct_form_of,
+            "adduct_form": self.adduct_form,
         }
 
 

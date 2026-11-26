@@ -95,8 +95,8 @@ every other report with extracted-ion chromatograms. Of 20 known species the ori
 among 87 reports; before the resampling fix the code found 13 among 39 (15 of 20 with
 `deconvolution.single_charge`), after it 15, and 15 of 29 SI-listed impurities, among 198 reports,
 and the current code finds all 20, and all 29 SI-listed impurity elutions (five IP-RPLC shortmers
-among them read 0.52-0.75 Da light of their own isotopologues), among 250 reports, 127 of them
-EIC-confirmed and 58 unconfirmed, with base-form amounts within 0.88-1.19 of their references for 19
+among them read 0.52-0.75 Da light of their own isotopologues), among 252 reports, 127 of them
+EIC-confirmed and 60 unconfirmed, with base-form amounts within 0.88-1.19 of their references for 19
 of the 24 impurities in the amounts table (extracted-ion references, two of them read on the
 species' own isotopologues: n-2 under IP-RPLC and 1883.3 under IP-HILIC). Details, mass errors and
 what is still wrong are in `benchmarks.md`; the defects these runs exposed, and what the truth table

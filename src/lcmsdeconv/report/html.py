@@ -86,7 +86,7 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
                  f'<div><b>Species found</b>{len(result.species)}</div>'
                  f'<div><b>Regions</b>{len(result.regions)}</div>'
                  f'<div><b>Processing</b>{result.timings.get("total_s", 0):.1f} s</div>'
-                 "</div>")
+                 + _window_and_lock(result) + "</div>")
 
     for w in result.warnings:
         parts.append(f'<div class="warn"><b>Warning.</b> {w}</div>')
@@ -163,6 +163,22 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
     return path
 
 
+def _window_and_lock(result) -> str:
+    """Header entries for the analysis window and the lock-mass correction, where set."""
+    from ..core.method import rt_window_text
+
+    out = ""
+    window = getattr(result, "rt_window", None)
+    if window:
+        out += f"<div><b>Analysis window</b>{rt_window_text(window)}</div>"
+    lock = getattr(result, "lock_mass", None)
+    if lock:
+        from ..io.lockmass import lock_mass_text
+
+        out += f"<div><b>Lock mass {lock['reference_mz']:.4f}</b>{lock_mass_text(lock)}</div>"
+    return out
+
+
 def _plot_chromatograms(result) -> str:
     import matplotlib
 
@@ -172,9 +188,17 @@ def _plot_chromatograms(result) -> str:
     chroms = [(k, v) for k, v in result.chromatograms.items() if v.kind in ("tic", "uv", "bpc")]
     if not chroms:
         return ""
+    window = getattr(result, "rt_window", None)
     fig, axes = plt.subplots(len(chroms), 1, figsize=(9, 2.3 * len(chroms)), sharex=True, squeeze=False)
     for ax, (name, ch) in zip(axes[:, 0], chroms):
         ax.plot(ch.time, ch.intensity, lw=0.9, color="#1b6ec2")
+        if window and ch.time.size:
+            # the parts of the run left out of the analysis
+            t0, t1 = float(np.min(ch.time)), float(np.max(ch.time))
+            if window[0] is not None and window[0] > t0:
+                ax.axvspan(t0, window[0], color="#888888", alpha=0.15, lw=0)
+            if window[1] is not None and window[1] < t1:
+                ax.axvspan(window[1], t1, color="#888888", alpha=0.15, lw=0)
         table = result.peak_tables.get(name)
         if table:
             for p in table.peaks:

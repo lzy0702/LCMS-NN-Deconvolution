@@ -36,6 +36,18 @@ STEP = re.compile(r"^\s*epoch (\d+) step (\d+)/(\d+) loss")
 PRIMED = 2
 
 
+def epoch_rate(pace: dict, batch: int = BATCH) -> float | None:
+    """Spectra per second of one epoch's training steps, from its pace record: its steps over
+    their time (``train_steps``, ``train_seconds``). A record without them (training before they
+    were recorded) gives it through its GPU busy share, steps x gpu_step_ms / gpu_busy_share
+    being the steps' time - which holds only while the share is below its cap of 1.0."""
+    if pace.get("train_steps") and pace.get("train_seconds"):
+        return round(batch * float(pace["train_steps"]) / float(pace["train_seconds"]), 1)
+    if pace.get("gpu_step_ms") and pace.get("gpu_busy_share"):
+        return round(batch * 1000.0 * float(pace["gpu_busy_share"]) / float(pace["gpu_step_ms"]), 1)
+    return None
+
+
 def run_args(view: str = "window", size: str = "full", epochs: int = 2, train_len: int = 1600,
              val_len: int = 8) -> list:
     """train_all's training arguments for its run of ``view`` with isotope-charge channels
@@ -186,11 +198,9 @@ def train_check(ctx, view: str = "window", workers: int | None = None, epochs: i
     skip = PRIMED * int(workers)
     steady = steady_pace(step_times, skip)
     for rec in records:
-        # this epoch alone: its steps took gpu_step_ms * steps / gpu_busy_share in all
-        p = rec["pace"]
-        if p.get("gpu_step_ms") and p.get("gpu_busy_share"):
-            rec["spectra_per_second_epoch"] = round(
-                BATCH * 1000.0 * float(p["gpu_busy_share"]) / float(p["gpu_step_ms"]), 1)
+        rate = epoch_rate(rec["pace"])
+        if rate is not None:
+            rec["spectra_per_second_epoch"] = rate
         rec["steady"] = steady.get(rec["epoch"])
     for f in out_dir.iterdir():  # the throwaway model and state: never uploaded
         if f.suffix in (".pt", ".onnx") or f.name.endswith(".tmp"):

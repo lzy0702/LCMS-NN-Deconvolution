@@ -359,10 +359,13 @@ def _plan(pm, *specs):
 
 
 def test_each_experiment_runs_in_a_process_of_its_own_and_failures_do_not_stop_the_others(
-        tmp_path):
+        tmp_path, monkeypatch):
     import psutil
 
     pm = _runner()
+    # the runner sets a thread count of one only where the environment sets none
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMBA_NUM_THREADS"):
+        monkeypatch.delenv(var, raising=False)
     run = tmp_path / "run"
     runner = pm.Runner(run, pm.Console(tmp_path / "runner.log"), True, 600.0,
                        {"started": "now"})
@@ -1362,6 +1365,19 @@ def test_the_end_to_end_check_records_each_epochs_pace_and_its_steady_pace(tmp_p
         assert ep["steady"]["spectra_per_second"] > 0 and ep["line"].startswith("epoch took")
     assert len(rec["step_lines"]) == 12
     assert not list((ctx.run_dir / "e2e").glob("*.pt"))  # the throwaway model and state
+
+
+def test_an_epochs_speed_comes_from_its_steps_and_their_time():
+    """Training records an epoch's steps and their time, and caps its GPU busy share at 1.0:
+    at the cap the share no longer gives the steps' time, the steps and seconds do. A record
+    without them (training before they were recorded) still gives it through the share."""
+    from profkit import e2e
+
+    capped = {"gpu_step_ms": 10.0, "gpu_busy_share": 1.0, "train_steps": 60,
+              "train_seconds": 0.4}
+    assert e2e.epoch_rate(capped, batch=4) == 600.0  # not 4 x 1.0 / 10 ms = 400
+    assert e2e.epoch_rate({"gpu_step_ms": 10.0, "gpu_busy_share": 0.8}, batch=4) == 320.0
+    assert e2e.epoch_rate({"data_wait_share": 0.1}) is None
 
 
 #: setup's record of the profile's computer, as a setup at HEAD writes it, with the ordered

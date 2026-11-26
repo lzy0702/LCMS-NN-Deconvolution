@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from ..core.method import IntegrationEvent, Method, bundled_methods
 from ..core.model import Run
-from ..process import ProcessResult, process_run
+from ..process import ProcessResult, process_run, reintegrate
 from .models import DictTableModel, EventTableModel
 
 pg.setConfigOptions(antialias=True)
@@ -372,16 +372,12 @@ class MainWindow(QMainWindow):
     def on_reintegrate(self):
         if not self.result:
             return
-        from ..chrom.integrate import integrate_chromatogram
-
         self._save_integration_settings()
         name = self.signal_box.currentText()
-        ch = self.result.chromatograms.get(name)
-        if ch is None:
+        # within the analysis window the result was processed with; the purity follows the table
+        table = reintegrate(self.result, name, self.method)
+        if table is None:
             return
-        kind = "uv" if ch.kind == "uv" else ("deic" if ch.kind == "deic" else "tic")
-        table = integrate_chromatogram(ch, self.method.integration_for(kind), name=name)
-        self.result.peak_tables[name] = table
         self.on_signal_changed(name)
         self._plot_result()
         self.statusBar().showMessage(f"re-integrated {name}: {len(table)} peaks")

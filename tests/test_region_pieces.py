@@ -243,7 +243,7 @@ def test_a_slice_of_the_main_species_tail_carries_nothing_off_the_column():
 
 
 def test_only_the_oligonucleotide_methods_set_later_elutions_aside():
-    on = {"iprp_neg_oligo", "orbitrap_iprp_neg_oligo"}
+    on = {"iprp_neg_oligo", "orbitrap_iprp_neg_oligo", "rda_iprp_neg_oligo"}
     names = bundled_methods()
     assert on < set(names)
     for name in names:

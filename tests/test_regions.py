@@ -42,7 +42,7 @@ def test_noise_floor_still_decides_below_relative_floor():
 
 
 def test_method_relative_height_floor():
-    for name in ("orbitrap_iprp_neg_oligo", "iprp_neg_oligo"):
+    for name in ("orbitrap_iprp_neg_oligo", "iprp_neg_oligo", "rda_iprp_neg_oligo"):
         assert Method.load(name).regions.min_rel_height == pytest.approx(0.001)
     for name in ("rplc_pos_protein", "polymer_pos", "hilic_glycan"):
         assert Method.load(name).regions.min_rel_height == pytest.approx(0.002)

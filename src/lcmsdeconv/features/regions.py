@@ -37,18 +37,23 @@ def find_regions(
     min_rel_area: float = 0.0005,
     min_rel_tic: float = 0.001,
     min_snr: float = 10.0,
+    noise: float | None = None,
 ) -> list[Region]:
     """Split a run into regions around detected chromatographic peaks.
 
     Uses the integrator when an :class:`IntegrationSettings` is supplied (peaks on the TIC or
     UV), otherwise falls back to fixed windows covering the whole run.
 
-    A peak is kept when it stands ``min_snr`` times above the trace's noise. A 2 % impurity
-    eluting on its own (the non-conjugated product in the IP-HILIC conjugate run) makes a TIC
-    peak four times the noise, which ten times drops; the oligonucleotide methods use three,
-    where the decoder's own tests judge what such a region holds (on synthetic protein runs
-    three added false species, so the default stays ten). The relative
-    floors (``min_rel_height`` of the tallest peak, ``min_rel_area`` of the total) are kept low
+    A peak is kept when it stands ``min_snr`` times above the trace's noise: ``noise`` where
+    given, else the noise read on ``run``'s own trace (:func:`source_noise`). An analysis window
+    passes the whole run's, as a window crowded with peaks reads a higher noise on its own trace
+    and would lose weak bands near the floor, while the relative floors below are taken on
+    ``run``, the window. A 2 % impurity eluting on its own (the non-conjugated product in the
+    IP-HILIC conjugate run) makes a TIC peak four times the noise, which ten times drops; the
+    oligonucleotide methods use three, where the decoder's own tests judge what such a region
+    holds (on synthetic protein runs three added false species, so the default stays ten). The
+    relative floors (``min_rel_height`` of the tallest peak, ``min_rel_area`` of the total, and
+    ``min_rel_tic`` of the strongest region's ion current) are kept low
     on purpose: a second component at a few percent of the main one is an ordinary sample, and a
     floor tied to the tallest peak silently deletes it before deconvolution has a chance to
     look. The oligonucleotide methods lower the height floor to 0.1 %: at 0.2 % it took the region
@@ -74,7 +79,9 @@ def find_regions(
             if peaks:
                 top = max(p.height for p in peaks)
                 total = sum(p.area for p in peaks)
-                floor = max(min_rel_height * top, min_snr * _trace_noise(chrom.intensity))
+                if noise is None:
+                    noise = _trace_noise(chrom.intensity)
+                floor = max(min_rel_height * top, min_snr * noise)
                 peaks = [p for p in peaks
                          if p.height >= floor and (total <= 0 or p.area >= min_rel_area * total)]
             windows = _peak_windows(peaks, margin_min)
@@ -102,6 +109,13 @@ def find_regions(
     for i, r in enumerate(regions):
         r.id = i
     return regions
+
+
+def source_noise(run: Run, source: str = "tic", polarity: int | None = None) -> float | None:
+    """The noise of the trace :func:`find_regions` reads for ``source`` on ``run``
+    (:func:`_trace_noise`); None where there is no such trace."""
+    chrom = _source_chromatogram(run, source, polarity)
+    return None if chrom is None else _trace_noise(chrom.intensity)
 
 
 def _trace_noise(y: np.ndarray) -> float:

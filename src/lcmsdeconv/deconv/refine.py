@@ -1267,6 +1267,104 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
     return kept
 
 
+def drop_harmonic_readings(components: list[Component], raw_mz: np.ndarray | None,
+                           raw_int: np.ndarray | None, polarity: int,
+                           instrument: InstrumentModel, library: AdductLibrary,
+                           min_ratio: float = 1.25, ratio: float = 0.6, own_share: float = 0.25,
+                           sigmas: float = 3.0, trace: list | None = None) -> list[Component]:
+    """Remove components that are a stronger component's ions read at other charges.
+
+    Where a species' isotopologues are barely resolved at the instrument's resolving power, as a
+    large oligonucleotide's can be on a time-of-flight instrument, the charge estimator also
+    reads its ions at higher charges, and the fit makes heavier species of them: rational
+    multiples of its mass (p/q M, its z = q read as z = p), multiples of one of its adduct forms
+    or of a co-eluting impurity (3 (M + 2 A)), or a multiple whose base mass its own adduct
+    columns shift (3 M - 2 (Na - H), fitted as +2Na forms on the species' ions).
+    :func:`drop_multimers` and the candidate-stage tests
+    (:func:`~lcmsdeconv.deconv.decode.suppress_harmonics`,
+    :func:`~lcmsdeconv.deconv.decode.drop_harmonics_of`) judge exact multiples of a base mass,
+    and :func:`drop_shared_evidence` asks for 80 % of a fit within two envelope sigmas of
+    stronger columns; such readings pass all three.
+
+    A component at least ``min_ratio`` times heavier than a stronger component, or at most
+    1 / ``min_ratio`` of its mass (with under ``ratio`` of its intensity, as drop_multimers pairs
+    them), is judged one fitted (charge, adduct) column at a time on the raw spectrum. Where the
+    profile shows a resolved isotope ladder at the column
+    (:func:`~lcmsdeconv.deconv.decode.isotope_ladder_spacing`), the ladder decides: the column is
+    the component's own when the ladder reads its charge (within max(1.5, 10 %)), another ion's
+    otherwise - a species' ions read at three times their charge show the ladder of their own
+    charge. Without a readable ladder, where the instrument would not resolve the
+    column's isotopes (1.00336 / z under two peak widths), a column within ``sigmas`` envelope
+    sigmas (at least one peak width) of an ion a stronger component fitted is not its own: the
+    z % n rule of drop_multimers for any ratio of masses and any adduct form. Where it would
+    resolve them, the column holds overlapping ions that no ladder attributes, and three
+    envelope sigmas span several spacings there, so it is not judged: an Orbitrap's singly
+    charged ion beside a stronger species' weak adduct column three charges up, its ladder
+    interleaved with that column's ions, is its own species. A component with less than
+    ``own_share`` of its fit on the columns judged its own (drop_multimers' bar for a harmonic)
+    goes. A genuine heavier or lighter species has envelopes of its own between the stronger
+    one's ions, and a non-covalent dimer its odd charge states: both stay, the dimer for
+    drop_multimers' co-elution test. Methods that turn ``suppress_multimers`` off, where
+    oligomers are the point, do not run this either.
+    """
+    from .decode import ISOTOPE_SPACING, envelope_geometry, isotope_ladder_spacing
+
+    if len(components) < 2 or raw_mz is None or raw_int is None or raw_mz.size < 5:
+        return components
+    carrier = carrier_mass(polarity)
+    shift = {s.label: s.mass for s in library.states()}
+
+    def adduct_mass(label: str) -> float:
+        label = "" if label == "base" else (label or "")
+        if label in shift:
+            return shift[label]
+        st = library.state_of(label)  # a combined label beyond the library's limits
+        return st.mass if st is not None else 0.0
+
+    def columns(c: Component) -> tuple[float, list[tuple[float, int, float]]]:
+        """(envelope sigma in Da, [(m/z, z, coefficient)] of every fitted column of ``c``):
+        where its templates put each ion's envelope."""
+        sig, offset = envelope_geometry(c.mass, c.compound_class)
+        tmass = c.mass * float(np.exp(c.template_shift)) + offset
+        return sig, [((tmass + adduct_mass(lab) + z * carrier) / z, int(z), float(v))
+                     for (z, lab), v in c.columns.items() if v > 0]
+
+    kept: list[Component] = []
+    kept_ions: list[np.ndarray] = []  # (m/z, half-width) of each kept component's fitted ions
+    for c in sorted(components, key=lambda c: -c.intensity):
+        partner = next((k for k in kept if c.intensity < ratio * k.intensity
+                        and (c.mass >= min_ratio * k.mass or c.mass * min_ratio <= k.mass)),
+                       None)
+        sig, cols = columns(c)
+        if partner is not None and cols:
+            theirs = [ions for k, ions in zip(kept, kept_ions) if k.intensity > c.intensity]
+            theirs = np.vstack(theirs) if theirs else np.zeros((0, 2))
+            total = own = 0.0
+            for mz, z, v in cols:
+                fwhm = float(instrument.fwhm(mz))
+                d = isotope_ladder_spacing(mz, max(2.0 * sig / z, 0.6), raw_mz, raw_int, 0.0,
+                                           fwhm)
+                if d is not None:  # resolved isotopes say whose ions these are
+                    total += v
+                    if abs(ISOTOPE_SPACING / d - z) <= max(1.5, 0.1 * z):
+                        own += v
+                    continue
+                if ISOTOPE_SPACING / z >= 2.0 * fwhm:
+                    continue  # resolved, yet no clean ladder: overlapping ions, not judged
+                total += v
+                if not np.any(np.abs(theirs[:, 0] - mz) <= theirs[:, 1]):
+                    own += v
+            if total > 0 and own < own_share * total:
+                if trace is not None:
+                    trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
+                                  "outcome": "harmonic_reading", "mass": float(partner.mass)})
+                continue
+        kept.append(c)
+        kept_ions.append(np.array([(mz, max(sigmas * sig / z, float(instrument.fwhm(mz))))
+                                   for mz, z, _v in cols]).reshape(-1, 2))
+    return kept
+
+
 def observed_charges(mass: float, charges, raw_mz: np.ndarray, raw_int: np.ndarray, thr: float,
                      polarity: int, compound_class: str, resolution: float,
                      mz_range: tuple[float, float] | None = None, max_gap: int = 1,

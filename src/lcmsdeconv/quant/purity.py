@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..core.model import Peak, PeakTable, Species
+from ..features.annotate import listed_species
 
 
 @dataclass
@@ -99,16 +100,18 @@ def area_percent_purity(table: PeakTable, main_peak: Peak | None = None,
 
 def ms_purity(species: list[Species], main: Species | None = None) -> dict:
     """Share of deconvolved ion signal belonging to the main species, base forms compared
-    (:func:`lcmsdeconv.features.annotate.impurity_table` says why)."""
+    (:func:`lcmsdeconv.features.annotate.impurity_table` says why). A species marked as another's
+    adduct form is no species of its own here: its signal counts in the all-forms total only."""
     if not species:
         return {"main_percent": 0.0, "n_species": 0}
-    total = sum(s.base_intensity for s in species)
+    listed = listed_species(species)
+    total = sum(s.base_intensity for s in listed)
     if main is None:
-        main = max(species, key=lambda s: s.base_intensity)
+        main = max(listed, key=lambda s: s.base_intensity)
     return {
         "main_percent": 100.0 * main.base_intensity / total if total > 0 else 0.0,
         "main_mass": main.mass,
-        "n_species": len(species),
+        "n_species": len(listed),
         "base_intensity": total,
         "total_intensity": sum(s.total_intensity for s in species),
     }

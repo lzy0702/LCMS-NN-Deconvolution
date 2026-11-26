@@ -8,6 +8,7 @@ quantitation and reporting options.
 from __future__ import annotations
 
 import dataclasses
+import numbers
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,56 @@ class RegionSettings:
     #: noise floor of 3 lies higher (0.17-0.49 % of the tallest peak) and decides; on the IP-RPLC
     #: conjugate run it lies at 0.076 %, and the 0.1 % floor binds
     min_rel_height: float = 0.002
+    #: the analysis window, [start, end] in minutes (either may be null: from the run's start, to
+    #: its end); null analyses the whole run. Regions are found and deconvolved only within it, and
+    #: the TIC and UV traces are integrated, and purity and content computed, only within it: the
+    #: way to leave out an injection front and a column wash (e.g. [2, 30])
+    rt_window: list[float | None] | None = None
+
+
+def rt_window_setting(value: Any) -> list[float | None] | None:
+    """``regions.rt_window`` checked: None, or [start, end] in minutes where either may be None
+    (open) and start < end. Raises ValueError otherwise."""
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"regions.rt_window must be [start, end] in minutes (either may be "
+                         f"null) or null for the whole run, not {value!r}")
+    out: list[float | None] = []
+    for v in value:
+        if v is None:
+            out.append(None)
+            continue
+        if isinstance(v, bool) or not isinstance(v, numbers.Real) or v != v:
+            raise ValueError(f"regions.rt_window: {v!r} is no time in minutes")
+        out.append(float(v))
+    if out[0] is not None and out[1] is not None and not out[0] < out[1]:
+        raise ValueError(f"regions.rt_window: the start ({out[0]:g} min) must come before the "
+                         f"end ({out[1]:g} min)")
+    return out
+
+
+def rt_window_text(window) -> str:
+    """An analysis window [start, end] (minutes, None for an open end) as text."""
+    start, end = window
+    return (("from the start" if start is None else f"from {start:g} min") + " "
+            + ("to the end" if end is None else f"to {end:g} min"))
+
+
+def window_bounds(window) -> tuple[float, float] | None:
+    """An analysis window [start, end] (minutes, None for an open end; checked as
+    :func:`rt_window_setting` checks it) as (start, end), open ends at -inf and +inf; None for no
+    window, or one open at both ends."""
+    w = rt_window_setting(window)
+    if w is None or w == [None, None]:
+        return None
+    return (-float("inf") if w[0] is None else w[0], float("inf") if w[1] is None else w[1])
+
+
+def analysis_window(method: Method) -> tuple[float, float] | None:
+    """The method's analysis window as (start, end) minutes, open ends at -inf and +inf; None
+    when it analyses the whole run."""
+    return window_bounds(getattr(method.regions, "rt_window", None))
 
 
 @dataclass
@@ -187,6 +238,13 @@ class ReportSettings:
 class AcquisitionSettings:
     polarity: str = "auto"  # auto | positive | negative | both
     uv_channel: str | None = None  # name of UV chromatogram to use; None = first
+    #: the lockspray reference's m/z (Waters runs; e.g. 554.2615, Leu-enkephalin [M-H]-). Set,
+    #: every MS scan's m/z is divided by one ratio, observed / reference, the reference read in
+    #: the run's lockspray scans and interpolated to the TIC-weighted mean retention time of its
+    #: MS scans (within the analysis window, where one is set), so that the scans keep one shared
+    #: m/z axis
+    #: (:func:`lcmsdeconv.io.lockmass.lock_mass_corrected`); null: no correction
+    lock_mass_mz: float | None = None
 
 
 @dataclass
@@ -310,6 +368,15 @@ def _convert_field(cls: type, f: dataclasses.Field, v: Any) -> Any:
             return _from_plain(mapping[name], v)
         if name == "integration":
             return {k: _from_plain(IntegrationSettings, sv) for k, sv in (v or {}).items()}
+    if cls is RegionSettings and name == "rt_window":
+        return rt_window_setting(v)
+    if cls is AcquisitionSettings and name == "lock_mass_mz":
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, numbers.Real) or not v > 0:
+            raise ValueError(f"acquisition.lock_mass_mz must be an m/z (e.g. 554.2615) or null, "
+                             f"not {v!r}")
+        return float(v)
     if cls is DeconvSettings and name == "adducts":
         return _from_plain(AdductSettings, v)
     if cls is QuantSettings and name == "calibration":

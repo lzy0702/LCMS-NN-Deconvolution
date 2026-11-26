@@ -398,7 +398,8 @@ strongest charge states share their m/z windows with other signal can fail it.
 | after the resampling fix, comb, `single_charge: true` | 15 / 20 | 16 / 29 | 328 | 33 | 7 | 119 | 137 |
 | amounts made comparable, three reviews, comb | 18 / 20 | 23 / 29 | 227 | 13 | 5 | 114 | 54 |
 | section 16, comb | 20 / 20 | 23 / 29 | 228 | 13 | 5 | 115 | 51 |
-| **now, comb** | **20 / 20** | **29 / 29** | **250** | **13** | **3** | **127** | **58** |
+| section 17, comb | 20 / 20 | 29 / 29 | 250 | 13 | 3 | 127 | 58 |
+| **now, comb** | **20 / 20** | **29 / 29** | **252** | **13** | **3** | **127** | **60** |
 
 (Every row but the first two uses the extracted-ion check described above; those two were scored
 with its first version. The resampling fix and the recalibration it needed are `lessons.md`,
@@ -407,10 +408,12 @@ that no longer cut species and a region threshold of three times the TIC's noise
 section's review fixes (section 15); "section 16" templates placed by the candidate's own isotope
 comb, template placement and the adduct walk read on its own charge states, a comb of half the
 charge no longer counted as support and deep sodium and potassium forms recognised by their comb
-(its one charge harmonic is counted in no column); and "now" the known-issue fixes of section 17,
-with no charge harmonic reported. "Same molecule, other time" falls from 5 to 3 because NC's tail
-and column-wash elutions in the IP-RPLC NC run are now named in NC's flags. The LadderNets were
-trained before the resampling fix and are not re-measured.)
+(its one charge harmonic is counted in no column); "section 17" the known-issue fixes of that
+section, with no charge harmonic reported; and "now" harmonic readings of any ratio dropped and the
+first pass's two strongest candidates held at their mass by the adduct dedupe (below). "Same
+molecule, other time" falls from 5 to 3 because NC's tail and column-wash elutions in the IP-RPLC
+NC run are now named in NC's flags. The LadderNets were trained before the resampling fix and are
+not re-measured.)
 
 The 29 SI-listed species found need a qualifier: 1908.3, 2887.4 and 3206.4 of the IP-RPLC NC run are
 reported 0.52-0.60 Da light (1909.10, 2887.83 and 3207.18 Da, against 1909.65, 2888.43 and
@@ -459,9 +462,19 @@ further unconfirmed reports are all below 0.02 % of the main species. The alignm
 four more SI-listed impurities and quantifies small shortmers whose templates 1.5 bins could not
 reach (the 1235 Da one from 0.01 % to 4.2 %); 23 of its 35 further reports are EIC-confirmed.
 
-What "now" changed against "section 16", one fix at a time (`lessons.md`, section 17; the paper's
-species 20/20 throughout; SI-listed / reported / EIC-confirmed / unconfirmed): the merge of a
-species' region pieces repeated until nothing more joins, 23/29, 226, 115, 49; NC's tail and
+What "now" changed against "section 17": the harmonic-reading rule changes no report of the four
+runs, and the IP-RPLC NC run and both IP-HILIC runs report exactly what they did. In the IP-RPLC
+conjugate run the adduct dedupe no longer moves FLP's candidate onto the 6750.58 Da envelope with
+9 % of its score (two sodium below it, to 0.46 Da), nor 3527.9's onto a 3268.96 Da envelope with
+1 % of its score (two DIPEA below, to 0.48 Da). The 6750 Da species the move hid is reported
+(6750.55 Da, 2.20 %, unconfirmed), and so are 6474.81 Da (0.040 %, EIC-confirmed) and a
+3587.35 Da sliver (0.000 %); PO moves from 3.96 to 3.80 % (all forms 4.86 to 4.56 %). 3527.9's
+region (14.97-15.69 min) now evidences sodium, and the 3729.15 Da species' new sodium column, 1.4 Da
+from 3749.72 Da (0.004 %, EIC-confirmed), removes that report through the shared-evidence test.
+
+What "section 17" changed against "section 16", one fix at a time (`lessons.md`, section 17; the
+paper's species 20/20 throughout; SI-listed / reported / EIC-confirmed / unconfirmed): the merge of
+a species' region pieces repeated until nothing more joins, 23/29, 226, 115, 49; NC's tail and
 column-wash elutions named in its flags, 223, 114, 49; pieces a region boundary cut off joined to
 their band by their isotope tooth, 220, 112, 48; the oligonucleotide methods' region floor at
 0.1 % of the tallest TIC peak, 24/29, 224, 114, 49; charge states that fail co-elution on their
@@ -817,12 +830,19 @@ What is still wrong on these runs:
   the off-comb frequencies it is compared with, it loses weak states of the species' own (1883.3's
   z = 3 among them); it is not used.
 - The adduct dedupe renames a stronger candidate to a lighter partner one adduct ladder below it
-  whatever the partner's strength: under IP-RPLC FLP's candidate becomes a 6750.58 Da envelope
-  with 9 % of its score (43.50 Da, two sodium to 0.46 Da), and FLP survives because its +DIPEA
-  candidate is re-centred onto it; the rename also hides the 6750.03 Da species of 1.66 % in that
-  region. Requiring the partner to have half the stronger one's score keeps FLP's candidate, but
-  loses a 2.9 % EIC-confirmed species of the IP-RPLC NC run on a knife-edge of the shared-evidence
-  test; it waits for the adduct module.
+  whatever the partner's strength, except the first pass's two strongest candidates, whose adduct
+  forms decide the region's adduct types: they keep their mass against a partner with less than
+  half their score (moved onto such a partner, the strongest candidate's adduct trials read the
+  partner's forms and the region fitted no adduct columns). FLP's candidate under IP-RPLC is held
+  that way (it used to become a 6750.58 Da envelope with 9 % of its score, 43.50 Da below it, two
+  sodium to 0.46 Da), and the 6750 Da species the rename hid is reported. Weaker candidates still
+  move: requiring half the score of every partner loses a 2.9 % EIC-confirmed species of the
+  IP-RPLC NC run on a knife-edge of the shared-evidence test (a PS-to-PO candidate, held at its
+  mass, is fitted before it); whether a weak partner is a base form or a species of its own waits
+  for the adduct module. A held candidate's weak partner, kept as a candidate, is fitted with the
+  region's adduct columns, and those of its adduct forms that coincide with the held species' own
+  ions can carry most of its fit, so that the shared-evidence test drops it (a 3 % impurity
+  0.4 Da off one C9H21NO below a synthetic oligonucleotide, which the rename reported).
 - A +201.4 Da form co-elutes with every major species, strongest under IP-RPLC (8 % of NC by
   extracted-ion chromatogram); the paper does not mention it. It is reported as separate species
   (its column-wash elution in the IP-RPLC NC run, 5363.31 Da at 25.42 min, is now named in the
@@ -845,6 +865,36 @@ What is still wrong on these runs:
   be judged (no frames, fewer than four scans, or no profile in the monomer's trace) a component
   that is not a harmonic is kept, so a genuine dimer co-eluting with its monomer in a region of two
   or three scans is reported. Neither case occurs on the four runs or in the benchmarks.
+- The harmonic-reading rule (`refine.drop_harmonic_readings`) judges a column without a readable
+  isotope ladder, where the instrument would not resolve its isotopes, by its position: within
+  three envelope sigmas of any ion a stronger component fitted, of any size, it is not the judged
+  component's own. That suits time-of-flight data, where the envelopes of large species are humps
+  and the readings' columns lie on the stronger species' ions and adduct forms (judged against the
+  ions of stronger components it pairs with by mass alone, the rule keeps a good part of the
+  readings there), but a genuine species whose envelopes all fall that close to stronger ones goes
+  with them. Where the isotopes would be resolved and no ladder is readable it does not judge: so
+  judged, 3749.72 Da of the IP-RPLC conjugate run (0.004 %, EIC-confirmed), 1.25 times a stronger
+  2998.30 Da species, went, its main column 3 Da from 3714.98 Da's potassium form and interleaved
+  with another envelope 1.4 Da away, and with `singly_charged_species` on, so did a singly charged
+  ion beside a stronger species' weak adduct column three charges up. A reading stronger than every
+  species it reads is never judged. And the stronger species' adduct forms that readings used to
+  explain away through the shared-evidence test stay once the readings are gone, as species of their
+  own: a main species' tripropylamine N-oxide (TPAO, C9H21NO) form, fitted again as a species in a
+  later pass after an adduct walk. Such a form is folded into the main species where a region of the
+  run evidenced TPAO and the two traces correlate (`fold_adduct_forms`); otherwise
+  `mark_adduct_forms` marks it as the main species' adduct form where it lies within 0.15 Da (or 15
+  ppm, whichever is larger) of one to four TPAO above it and co-elutes with it; it is reported apart
+  only where neither applies. The fold declines a form two TPAO above a species (318.54 Da) where an
+  n+1 (2'-OMe C, 319.21 Da) lies within its tolerance (0.6 Da or 2.5 peak widths, whichever is
+  larger: from 4 kDa on at the RDa's resolving power), and the marking, within 0.15 Da, then takes
+  it.
+- On a set of eleven IP-RP runs from a Waters RDa time-of-flight instrument (given here only in
+  aggregate), with the bundled `rda_iprp_neg_oligo` and the lock mass applied as one ratio,
+  the comb leaves a median of about 12 % (2-19 %) of a run's deconvolved signal in species at 1.25
+  times or more, or 0.8 times or less, the mass of a stronger co-eluting species that is not itself
+  one (judged strongest first), the kind the harmonic-reading rule above judges; the GPU-trained v5
+  charge networks leave a median of under 1 % (at most 3-4 % in a run; `training.md`, recipe v5).
+  With the lock mass applied scan by scan the comb left 16 % (`architecture.md`, section 5).
 - Knife edges of the region builder: the merge of two IP-RPLC conjugate peaks into one region hangs
   on a float comparison of their apex gap with their width (0.6693310 against 0.6693330 min; a pair
   at 17.65-18.21 min of that run splits by 2e-6 min), and through that region a weak, separate

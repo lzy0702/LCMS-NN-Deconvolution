@@ -1,0 +1,166 @@
+name: rda_iprp_neg_oligo
+description: Ion-pairing reversed-phase LC with tripropylamine/HFIP (TPAO adducts; for TEA/HFIP
+  remove TPAO from deconvolution.adducts.include), negative ESI on a Waters RDa (BioAccord) ToF
+  with lockspray, oligonucleotides and conjugates
+# The RDa resolves about 15 000 (FWHM), nearly flat with m/z: its peaks widen in proportion to m/z,
+# so the resolution is kept flat (mz_exponent 0). The lockspray function reads lower; it is a
+# function of its own, and its peaks do not set the analytical function's
+instrument:
+  kind: tof
+  resolution: 15000.0
+  mz_ref: 800.0
+  mz_exponent: 0.0
+  shape: gaussian
+  eta: 0.0
+  saturation_level: null
+  saturation_kind: clip
+  points_per_fwhm: 5.0
+acquisition:
+  polarity: negative
+  uv_channel: null
+  # The lockspray reference: Leu-enkephalin [M-H]- (554.2615). Every MS scan's m/z is divided by
+  # one ratio, observed / reference, read in the run's lockspray scans (a Waters function of its
+  # own) and interpolated to the TIC-weighted mean retention time of the MS scans analysed (within
+  # the analysis window, where one is set): one ratio for the whole run, as the scans of a region
+  # must share one m/z axis to be summed. Change it for another lock mass, or for positive mode
+  # (Leu-enkephalin [M+H]+ 556.2766); null turns the correction off
+  lock_mass_mz: 554.2615
+deconvolution:
+  mass_range:
+  - 1000.0
+  - 60000.0
+  charge_range:
+  - 2
+  - 40
+  mz_range:
+  - null
+  - null
+  compound_class: ps_rna
+  class_candidates:
+  - ps_rna
+  - rna
+  - ps_dna
+  - dna
+  mass_type: auto
+  adducts:
+    mode: iprp
+    # Tripropylamine N-oxide (TPAO, C9H21NO): a tripropylamine (TPA) mobile phase gives every
+    # species a ladder of N-oxide adducts (n x TPAO); a species 1-4 TPAO above a stronger one it
+    # co-elutes with is reported as its adduct form. The amine's own adducts (TPA, C9H21N) are
+    # weak and left out: listed, they let the fit explain a species 2 Da away as a neighbour's TPA
+    # form, which this resolving power cannot tell apart; add TPA where its forms are seen.
+    # Remove TPAO for TEA/HFIP or other mobile phases without TPA
+    include:
+    - TPAO
+    exclude: []
+    max_per_type: 2
+    max_total: 3
+    max_types_mixed: 2
+    min_fraction_report: 0.005
+  min_relative_abundance: 0.0001
+  snr_threshold: 3.0
+  model: null
+  providers:
+  - CPUExecutionProvider
+  per_frame_nn: false
+  refine_iterations: 2
+  nn_probability_min: 0.05
+  min_charge_support: 2
+  suppress_multimers: true
+  grid_step: 2.0e-05
+  max_components: 200
+  quantify_frames: true
+regions:
+  source: tic
+  window_min: 0.5
+  margin_min: 0.05
+  min_frames: 2
+  min_snr: 3.0
+  min_rel_height: 0.001
+  # The analysis window, [start, end] in minutes: regions, TIC and UV peaks, purity and content
+  # only within it. Set it to leave out the injection front and the column wash, e.g. [2, 30]
+  # (either end may be null); null analyses the whole run
+  rt_window: null
+linking:
+  mass_tolerance_ppm: 30.0
+  mass_tolerance_da: 0.5
+  min_frames: 2
+  max_gap_frames: 2
+  noise_peak_ratio: 3.0
+  set_aside_later_elutions: true
+integration:
+  tic:
+    slope_sensitivity: 1.0
+    peak_width: 0.2
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+  uv:
+    slope_sensitivity: 1.0
+    peak_width: 0.2
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+  deic:
+    slope_sensitivity: 1.0
+    peak_width: 0.2
+    area_reject: 0.0
+    height_reject: 0.0
+    area_pct_reject: 0.0
+    shoulders: 'off'
+    tangent_skim_mode: standard
+    tail_skim_height_ratio: 0.0
+    front_skim_height_ratio: 0.0
+    skim_valley_ratio: 20.0
+    baseline_all_valleys: false
+    detect_negative_peaks: false
+    fixed_peak_width: false
+    max_area: 0.0
+    max_height: 0.0
+    area_unit: signal*s
+    timed_events: []
+quant:
+  purity_signal: uv
+  impurity_floor_pct: 0.01
+  main_species: largest
+  calibration:
+    mode: none
+    levels: []
+    weighting: none
+    force_zero: false
+    response_factor: 1.0
+    amount_unit: mg/mL
+  sample_amount: null
+saturation:
+  esi_ratio_drop: 0.25
+  flat_top_fraction: 0.2
+  detector_level: null
+  uv_delay_min: null
+report:
+  title: null
+  plots: true
+  max_species_plots: 12

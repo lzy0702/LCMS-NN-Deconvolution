@@ -23,6 +23,7 @@ from .decode import (
 from .nnls_solve import fit_weights
 from .refine import (
     drop_coincident_adducts,
+    drop_harmonic_readings,
     drop_multimers,
     drop_shared_evidence,
     refine_frame,
@@ -66,6 +67,11 @@ class DeconvParams:
     # a summed spectrum's charge states must co-elute over its scans (Pearson r of their
     # scan-by-scan traces at least this; 0 turns the test off); see deconv.coelution
     coelution_r: float = 0.5
+
+
+#: the strongest candidates of a region's first pass whose adduct forms decide which adduct
+#: types the region evidences (:func:`evidenced_adducts`)
+ADDUCT_EVIDENCE_SPECIES = 2
 
 
 def choose_class_auto(mass: float, candidates) -> str:
@@ -155,7 +161,10 @@ def deconvolve_spectrum(
         cands = _dedupe_by_mass(cands)
         cands = suppress_harmonics(cands, suppress_multimers=params.suppress_multimers)
         snap("harmonics", cands, it)
-        cands = dedupe_adduct_candidates(cands, library.avg_deltas())
+        # the first pass's strongest candidates decide the region's adduct types
+        # (evidenced_adducts): they keep their mass against a much weaker lighter partner
+        cands = dedupe_adduct_candidates(cands, library.avg_deltas(),
+                                         hold=ADDUCT_EVIDENCE_SPECIES if it == 0 else 0)
         snap("adduct_dedupe", cands, it)
         if cands:
             floor = params.min_relative_abundance * max(c.score for c in cands)
@@ -204,7 +213,14 @@ def deconvolve_spectrum(
             found_masses = [e.mass for e in components]
             candidates = [c for c in detect(residual, iteration)
                           if all(abs(c.mass - e) > max(e * 1e-4, 0.5) for e in found_masses)]
-            candidates = drop_harmonics_of(candidates, found_masses,
+            # harmonics of the species found so far, not of the harmonic readings among them
+            # (refine.drop_harmonic_readings, which drops them after the passes): a reading at
+            # three times an impurity's mass would otherwise remove the impurity as its third
+            bases = found_masses
+            if params.suppress_multimers:
+                bases = [e.mass for e in drop_harmonic_readings(components, raw_mz, raw_int,
+                                                                polarity, instrument, library)]
+            candidates = drop_harmonics_of(candidates, bases,
                                            suppress_multimers=params.suppress_multimers)
             snap("not_yet_found", candidates, iteration)
             if not candidates:
@@ -232,6 +248,10 @@ def deconvolve_spectrum(
         components = drop_multimers(components, polarity,
                                     resolution=float(instrument.resolving_power(1000.0)),
                                     frames=frames, coelution_r=params.coelution_r, trace=trace)
+        # and the stronger species' ions read at other charges: rational multiples, multiples of
+        # adduct forms and of impurities, which no exact-multiple test sees
+        components = drop_harmonic_readings(components, raw_mz, raw_int, polarity, instrument,
+                                            library, trace=trace)
     components = drop_shared_evidence(components, library, polarity,
                                       resolution=float(instrument.resolving_power(1000.0)),
                                       trace=trace)
@@ -319,7 +339,8 @@ def _auto_class(candidates, grid, observed, noise_sigma, instrument, library, cl
 
 def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polarity: int,
                       noise_sigma: float, params: DeconvParams, compound_class: str,
-                      instrument, profile: bool, n_species: int = 2, frames=None) -> set[str]:
+                      instrument, profile: bool, n_species: int = ADDUCT_EVIDENCE_SPECIES,
+                      frames=None) -> set[str]:
     """Adduct types whose envelopes the spectrum actually shows next to its strongest species.
 
     An adduct library describes what a mobile phase *could* contribute. Fitting every
@@ -342,7 +363,10 @@ def evidenced_adducts(candidates, library: AdductLibrary, raw_mz, raw_int, polar
     the gate returns a trial whose candidate carries z = 1 alone unmeasured, at the candidate's
     mass plus the adduct's monoisotopic shift, which lies within 0.3 Da of the average-mass
     shift: every adduct type is then evidenced without any envelope at its mass. That is left
-    to the adduct module.
+    to the adduct module. The candidates read are the first pass's after the adduct dedupe,
+    which holds them at their mass against a much weaker lighter partner
+    (:func:`~lcmsdeconv.deconv.decode.dedupe_adduct_candidates`): moved down onto an impurity
+    one adduct mass below, a candidate's trials would read that impurity's forms.
     """
     from .decode import Candidate
 
