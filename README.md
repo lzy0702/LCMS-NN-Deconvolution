@@ -96,6 +96,11 @@ LadderNets read charges better per bin on synthetic spectra but report more junk
 (`docs/benchmarks.md`). It makes the package usable immediately and is the baseline any model
 should beat.
 
+To score trained networks against that baseline on your own computer, follow
+**`bench/README.md`**: one setup and one command run the four Thermo runs of the validation
+(`docs/validation.md`) and the network bars of `docs/training.md` for the comb and every network
+found (DirectML on a Windows GPU, else the processor), and write a summary and a zip to send back.
+
 ## Diagnostics
 
 Before improving a model, find the stage that loses species. `lcmsdeconv.diagnostics` provides a

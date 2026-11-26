@@ -1,0 +1,14 @@
+{
+ "_about": "Settings of run_bench.py; null means automatic. Put your own in config.local.json (same keys); options on the command line override both.",
+ "suites": null,
+ "smoke": false,
+ "providers": "auto",
+ "threads_total": null,
+ "mem_budget_gb": null,
+ "threads_per_job": 4,
+ "thermo_dir": null,
+ "rda_dir": null,
+ "models": [],
+ "default_models": true,
+ "results_id": null
+}

@@ -20,3 +20,7 @@ src/lcmsdeconv/models/*.pt
 /models/
 gpu_training/machine.json
 gpu_training/setup_done.json
+# the offline benchmark (bench/): its environment and the Thermo raw files it reads
+.venv-bench/
+/data/thermo_raw/
+*.raw

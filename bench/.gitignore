@@ -1,0 +1,10 @@
+# Only in the package or on the computer that runs the benchmark, never committed
+private/
+models/
+wheels/
+results/
+machine.json
+machine.json.tmp
+config.local.json
+package.json
+setup_bench.log
