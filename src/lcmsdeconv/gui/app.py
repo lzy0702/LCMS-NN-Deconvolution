@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 import traceback
 from html import escape
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..aliases import Aliases
 from ..core.method import IntegrationEvent, Method, bundled_methods
 from ..core.model import Run
 from ..process import ProcessResult, process_run, reintegrate
@@ -77,14 +79,25 @@ class ProcessWorker(QObject):
 
 
 class MainWindow(QMainWindow):
+    """The application's window. ``aliases`` (:class:`lcmsdeconv.aliases.Aliases`; default: the
+    pairs of the file $LCMSDECONV_ALIAS_FILE names) are applied to every run and method as it is
+    read or loaded, and to the paths and error texts the window shows, so that its tables,
+    legends, dialogs and the reports it exports show NEW in place of OLD. The method's trace
+    references are resolved against the run as read when it is processed
+    (:meth:`_method_for_run`)."""
+
     def __init__(self, run_file: str | None = None, method_name: str | None = None,
-                 waters_function: int | None = None):
+                 waters_function: int | None = None, aliases: Aliases | None = None):
         super().__init__()
         self.setWindowTitle("lcmsdeconv")
         self.resize(1280, 860)
+        self.aliases = Aliases.from_env() if aliases is None else aliases
         self.run: Run | None = None
+        self._run_read: Run | None = None  # the run as read, before aliasing
         self.result: ProcessResult | None = None
-        self.method: Method = Method.load(method_name) if method_name else Method.load("rplc_pos_protein")
+        self._method_read: Method = (Method.load(method_name) if method_name
+                                     else Method.load("rplc_pos_protein"))
+        self.method: Method = self.aliases.alias_method(self._method_read)
         self._thread: QThread | None = None
         self._worker: ProcessWorker | None = None
 
@@ -266,31 +279,50 @@ class MainWindow(QMainWindow):
             self.load_run(path)
 
     def load_run(self, path: str, function: int | None = None):
-        """Read a run; ``function`` picks a Waters function (default: as read_mzml chooses)."""
+        """Read a run; ``function`` picks a Waters function (default: as read_mzml chooses). The
+        run is kept aliased (``self.aliases``), and the path and errors are shown aliased."""
         from ..io.mzml import read_mzml
 
-        self.statusBar().showMessage(f"reading {path}…")
+        shown = self.aliases.apply
+        self.statusBar().showMessage(f"reading {shown(str(path))}…")
         QApplication.processEvents()
         try:
-            self.run = read_mzml(path, function=function)
+            run = read_mzml(path, function=function)
         except Exception as exc:
-            _message(self, QMessageBox.Icon.Critical, "Could not read run", str(exc))
+            _message(self, QMessageBox.Icon.Critical, "Could not read run", shown(str(exc)))
             return
+        self._run_read, self.run = run, self.aliases.alias_run(run)
         self.process_btn.setEnabled(True)
         waters = (f", Waters function {self.run.meta['function']}"
                   if "waters_functions" in self.run.meta else "")
         self.statusBar().showMessage(
-            f"{Path(path).name}: {len(self.run.spectra)} frames{waters}, "
+            f"{shown(Path(path).name)}: {len(self.run.spectra)} frames{waters}, "
             f"polarities {self.run.polarities}")
         self._plot_raw_chromatograms()
 
     def on_method_changed(self, name: str):
         try:
-            self.method = Method.load(name)
+            method = Method.load(name)
         except Exception as exc:
-            _message(self, QMessageBox.Icon.Warning, "Method", str(exc))
+            _message(self, QMessageBox.Icon.Warning, "Method", self.aliases.apply(str(exc)))
             return
+        self._method_read, self.method = method, self.aliases.alias_method(method)
         self._load_integration_settings()
+
+    def _method_for_run(self) -> Method:
+        """The method to process the run with: ``self.method`` (aliased, with the integration
+        settings edited here), its trace references (``acquisition.uv_channel``,
+        ``quant.purity_signal``; neither is edited here) naming the traces of the aliased run that
+        the method as loaded named in the run as read
+        (:meth:`lcmsdeconv.aliases.Aliases.alias_method` with the run). Without aliases,
+        ``self.method``."""
+        if not self.aliases or self._run_read is None:
+            return self.method
+        resolved = self.aliases.alias_method(self._method_read, self._run_read)
+        method = copy.deepcopy(self.method)
+        method.acquisition.uv_channel = resolved.acquisition.uv_channel
+        method.quant.purity_signal = resolved.quant.purity_signal
+        return method
 
     def on_process(self):
         if self.run is None:
@@ -299,7 +331,7 @@ class MainWindow(QMainWindow):
         self.process_btn.setEnabled(False)
         self.statusBar().showMessage("processing…")
         self._thread = QThread()
-        self._worker = ProcessWorker(self.run, self.method)
+        self._worker = ProcessWorker(self.run, self._method_for_run())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run_processing)
         self._worker.finished.connect(self.on_processed)
@@ -334,7 +366,7 @@ class MainWindow(QMainWindow):
     def on_failed(self, message: str):
         self._stop_worker()
         self.process_btn.setEnabled(True)
-        _message(self, QMessageBox.Icon.Critical, "Processing failed", message)
+        _message(self, QMessageBox.Icon.Critical, "Processing failed", self.aliases.apply(message))
         self.statusBar().showMessage("processing failed")
 
     def on_signal_changed(self, name: str):
@@ -399,8 +431,9 @@ class MainWindow(QMainWindow):
             return
         from ..report.html import build_report
 
+        # the result holds the aliased run and method: the report shows their aliased names
         build_report(self.result, path)
-        self.statusBar().showMessage(f"report written to {path}")
+        self.statusBar().showMessage(f"report written to {self.aliases.apply(str(path))}")
 
     # ------------------------------------------------------------------ plots
     def _plot_raw_chromatograms(self):
@@ -442,9 +475,15 @@ class MainWindow(QMainWindow):
 
 
 def launch(run_file: str | None = None, method: str | None = None,
-           waters_function: int | None = None) -> int:
+           waters_function: int | None = None, aliases: Aliases | None = None) -> int:
+    """Run the application; ``aliases`` as for :class:`MainWindow` (default: those of
+    $LCMSDECONV_ALIAS_FILE), also applied to the warnings, log records and tracebacks printed
+    while it runs, that of an error leaving it included
+    (:meth:`lcmsdeconv.aliases.Aliases.console`)."""
     app = QApplication.instance() or QApplication(sys.argv)
     _apply_theme(app)
-    win = MainWindow(run_file, method, waters_function=waters_function)
-    win.show()
-    return app.exec()
+    aliases = Aliases.from_env() if aliases is None else aliases
+    with aliases.console():
+        win = MainWindow(run_file, method, waters_function=waters_function, aliases=aliases)
+        win.show()
+        return app.exec()

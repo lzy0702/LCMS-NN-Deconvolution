@@ -18,7 +18,8 @@ short and ended with 8 hex digits of its hash; where two signals' names come out
 The report escapes run, method and trace names, so characters such as `&`, `<`, quotes and `$`
 show as written in its text and are drawn as written in its plots (where a trace or species name
 holds characters the plot fonts lack, Chinese say, the plots fall back to a CJK font if one is
-installed: Microsoft YaHei or SimHei on Windows).
+installed: Microsoft YaHei or SimHei on Windows). Names that hold a project number can be shown
+as another text everywhere, `--alias 123456=保密项目1` (see "Name aliases" below).
 
 Runs can be mzML or mzMLb (mzML in HDF5, `msconvert --mzMLb`). They are read, and `lcmsdeconv
 synth` writes mzML, with the PSI-MS and Units of Measurement Ontology vocabularies saved in the
@@ -281,6 +282,147 @@ Two independent checks run on every processed file:
 
 Both name the affected peaks in the report. Quantify flagged peaks from UV, or dilute and
 re-inject.
+
+## Name aliases
+
+Run files, traces and methods are often named after a project number that must not leave the lab.
+A pair OLD=NEW makes lcmsdeconv show NEW wherever such a name holds OLD, in everything it writes
+and prints, while the files keep their names on disk:
+
+```bash
+lcmsdeconv process LC-123456-S.mzMLb -m rplc_pos_protein -o results/ --alias 123456=保密项目1
+lcmsdeconv process run.mzML -o results/ --alias-file aliases.txt
+LCMSDECONV_ALIAS_FILE=~/aliases.txt lcmsdeconv gui
+```
+
+**Giving pairs.** `--alias OLD=NEW` and `--alias-file FILE` (both repeatable) are taken by
+`process`, `gui`, `report`, `evaluate` and `synth`, and the environment variable
+`LCMSDECONV_ALIAS_FILE` names a file every one of them reads, as does the desktop application
+however it is started. The pairs of `LCMSDECONV_ALIAS_FILE` come first, then those of each
+`--alias-file` in turn, then each `--alias`; a later pair for one OLD replaces an earlier one. No
+pair is built into lcmsdeconv, and no output records an OLD or a pair: `results.json` records only
+how many pairs were in effect (`alias_pairs`, absent without any). Keep the alias file itself
+where the outputs do not go. `train`, `export-onnx` and `methods` handle no run, trace or method
+names: they take no pairs, ignore `LCMSDECONV_ALIAS_FILE` and print their paths as given.
+
+**The file.** UTF-8 (a byte order mark is accepted, also at the start of a line, as where two files
+were joined with `cat`), LF, CRLF or CR line ends, one pair per line:
+
+```text
+# project numbers: OLD=NEW
+123456=保密项目1
+PRJ-7 = Project seven
+```
+
+Each line is split at its first `=` (so NEW may hold `=`, OLD cannot), and the whitespace around OLD
+and NEW is stripped. Blank lines and lines whose first non-blank character is `#` are skipped (an
+OLD starting with `#` is given with `--alias`); there are no comments at the end of a line. A
+file that is missing or cannot be read, is not UTF-8 (a file saved as UTF-16 included), or has a
+line without `=`, with an empty OLD or NEW, or with an invisible or control character in either (a
+zero-width space or direction mark pasted with the number, a tab, NUL; such an OLD would match
+nothing) stops the command with an error naming the file and the line, never quoting the line,
+which holds the text being hidden: `Error: alias file aliases.txt, line 3: no '=' (expected
+OLD=NEW)`, `Error: alias file aliases.txt, line 2: OLD holds U+200B, an invisible or control
+character`. The `--alias` pairs are checked the same way (`Error: --alias #1: ...`). The file's
+path in such an error is shown with the pairs read before it and those of `--alias`.
+
+**Matching.** Case-sensitive, with the pairs and the names compared in Unicode's composed form
+(NFC). At each position the longest OLD wins, in a single pass, so a NEW is never matched again. An
+OLD that begins with a digit does not match where a digit comes right before it, and one that ends
+with a digit does not match where a digit comes right after it: 123456 matches in `LC-123456-S`,
+`LC123456`, `123456_2` and `123456.2`, but not in `1234567` or `0123456`.
+
+**Where they apply.** To every name, path and text lcmsdeconv takes from the run, the method or the
+command line and then writes or prints: the run's name and source path; the traces' names (the
+UV trace of `--uv-csv` too), units and metadata; the run's metadata strings (Waters function
+information, source files, instrument text, the lock-mass record); the method's name and
+description, `report.title`, `instrument.kind`, `quant.calibration.amount_unit` and `weighting`,
+each integration setting's `area_unit`, and the names and text values of its timed events; the
+input and output paths in the console messages; the warnings and errors printed (Python warnings,
+log records, the traceback of an unexpected error). So the report's text, titles, tables and
+plots, `results.json`'s keys and values, the CSV files' names, headers and cells, and the desktop
+application's status bar, legends, tables (the integration events' too), dialogs and the reports
+it exports all show NEW. The aliases are applied at the source, to the run as it is read and the
+method as it is loaded, never to formatted output: an area of 1234560 or a mass of 123456.7 stays
+as it is. Text that only exists as text, a warning or an error quoting a file's path, is aliased
+as text; a number in such a message that equals an OLD in full (a count of 123456 scans) is
+replaced with it. Where aliasing makes two names equal (two traces named `UV 123456` and
+`UV 654321` with both numbers aliased to one NEW, or a trace named `UV 保密项目1` already), no data
+is lost: the later ones get ` (2)`, ` (3)`, ... (the peak-table CSV files' names are made unique
+besides, as always). The method's references to the run's traces (`acquisition.uv_channel`, a
+`quant.purity_signal` naming a trace) are resolved against the run as read, so they name the same
+trace as without the pairs (`UV 保密项目1 (2)`, say), and one naming no trace still names none:
+the numbers are those of a run processed without pairs.
+
+**What is not renamed.** The files and directories you name (the run, `--out`, `--uv-csv`, the
+method file) keep their names on disk; lcmsdeconv only shows them aliased. The method's settings
+(keywords, adduct names and formulas, numbers, the model's path) are left as they are; so is a
+setting that takes keywords (`instrument.kind`, `weighting`, a timed event's name or switch) where
+its value is one (`tof`, `1/x`, `baseline_now`, `on`) or would become one, and a timed event's value
+that is a number. Outputs written without the pairs are not rewritten: `lcmsdeconv report DIR`
+shows the report's path aliased and warns where the report still holds an OLD, and processing again
+with the pairs writes it aliased. The operating system's own file dialogs in the desktop
+application show your folders as they are.
+
+**The leak check.** After `process` has written its outputs with pairs set, it reads every file it
+wrote, its name relative to `--out` and its text (`results.json`'s strings decoded, the report's
+text with its entities decoded and its embedded images left out), for each OLD. An occurrence that
+is part of a number, with a digit, or a `.` or `,` and a digit, right before or after it
+(`0.123456`, `123456.7`), is not counted. For each file holding any, it prints one warning on
+stderr naming the file, each OLD in the name shown as `***`, and the count, never the text found
+(`WARNING: report.html still holds 2 occurrences of an alias's OLD text`). It then checks what else
+`--out` holds, an earlier run's outputs say, which it does not rewrite or delete: the name of every
+file and folder there, and the text of those named as outputs are (`results.json`, `species.csv`,
+`report.html`, `peaks_*.csv`): `WARNING: peaks_UV_***.csv, which this run did not write, holds 2
+occurrences of an alias's OLD text`. Give `--out` a fresh folder, or delete such files, before
+handing it on. The check never fails the command. A NEW that holds its OLD always trips it.
+
+**Chinese names in the plots.** A NEW in Chinese (`保密项目1`) is drawn in the report's plots
+through the same CJK font fallback as any trace or species name in Chinese: Microsoft YaHei or
+SimHei on Windows, PingFang SC or Hiragino Sans GB on macOS, Noto Sans CJK (any of its SC, TC, HK,
+JP or KR faces, each of which holds simplified Chinese), Source Han Sans SC or WenQuanYi Zen Hei on
+Linux. A Linux machine with none of these draws each Chinese character in the plots as an empty
+box (`UV □□□□1`), and matplotlib warns
+`Glyph 20445 (\N{CJK UNIFIED IDEOGRAPH-4FDD}) missing from font(s) DejaVu Sans`; the report's text
+is unaffected (the browser draws it with its own fonts). Install a CJK font (`sudo apt install
+fonts-noto-cjk` or `fonts-wqy-zenhei` on Debian or Ubuntu, `sudo dnf install
+google-noto-sans-cjk-fonts` on Fedora), delete matplotlib's font cache (`rm -rf
+~/.cache/matplotlib`) so that it finds the new font, and process the run again. (matplotlib before
+3.11 reads only the first face of a font collection, Noto Sans CJK JP in Debian's and Ubuntu's
+`fonts-noto-cjk`; that face draws simplified Chinese too.)
+
+**Python.** `lcmsdeconv.aliases.Aliases` holds the pairs (without any it changes nothing), and
+`lcmsdeconv.io.results.write_outputs` writes what `process` writes:
+
+```python
+from lcmsdeconv.aliases import Aliases
+from lcmsdeconv.core.method import Method
+from lcmsdeconv.io.mzml import read_mzml, read_uv_csv
+from lcmsdeconv.io.results import write_outputs
+from lcmsdeconv.process import process_run
+
+aliases = Aliases.from_env() | Aliases.parse(["123456=保密项目1"])  # or Aliases.from_file(path)
+with aliases.console():  # warnings, log records and tracebacks printed aliased
+    run = read_mzml(path)
+    uv = read_uv_csv(uv_path)  # where the UV trace comes as a CSV file (--uv-csv)
+    run.chromatograms[uv.name] = uv
+    result = process_run(run, Method.load("rplc_pos_protein"), aliases=aliases)
+    written = write_outputs(result, "results")  # results.json, species.csv, peaks_*.csv, report
+print(aliases.apply("results/results.json"))
+for name, n in aliases.leaks(written, "results"):
+    print(f"WARNING: {name} still holds {n} occurrences of an alias's OLD text")
+```
+
+`Aliases.collect(files, pairs)` puts pairs together as the command line does (the file
+`LCMSDECONV_ALIAS_FILE` names, then `files`, then `pairs`), `merged` or `|` combine two sets (the
+later wins), `apply(text)` aliases a text, and `alias_run(run)` and `alias_method(method, run)`
+return aliased copies (the objects passed in are not changed), which is what `process_run(...,
+aliases=...)` processes; it records the number of pairs in `result.alias_pairs`. Give
+`alias_method` the run as read, before `alias_run`: it resolves the method's trace references
+against it (without it, they are aliased as text, which names another trace where aliasing made two
+trace names equal). Pass a run and a method aliased already to `process_run` without `aliases=`:
+aliasing twice can differ from aliasing once. Within `aliases.console()`, a traceback Python prints
+for an exception leaving the block, after it, where nothing catches it, is aliased too.
 
 ## Python
 

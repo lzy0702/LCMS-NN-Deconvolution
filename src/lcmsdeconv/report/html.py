@@ -46,8 +46,11 @@ def _e(text) -> str:
 
 
 #: fonts for the characters the plots' own fonts lack (names in Chinese, say), the first of them
-#: installed being added after those: Windows, macOS, then Linux fonts
+#: installed being added after those: Windows, macOS, then Linux fonts. Each Noto Sans CJK face
+#: covers simplified Chinese; matplotlib before 3.11 sees only the first face of a font
+#: collection, which is the JP one in the fonts-noto-cjk package of Debian and Ubuntu
 CJK_FONTS = ("Microsoft YaHei", "SimHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC",
+             "Noto Sans CJK TC", "Noto Sans CJK HK", "Noto Sans CJK JP", "Noto Sans CJK KR",
              "Source Han Sans SC", "WenQuanYi Zen Hei")
 
 

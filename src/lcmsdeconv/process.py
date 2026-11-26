@@ -63,15 +63,19 @@ class ProcessResult:
     rt_window: list[float | None] | None = None
     #: the lock-mass correction applied (:func:`lcmsdeconv.io.lockmass.lock_mass_corrected`)
     lock_mass: dict | None = None
+    #: how many name-alias pairs the run and the method were aliased with
+    #: (:mod:`lcmsdeconv.aliases`); recorded in the summary when there were any, never their text
+    alias_pairs: int = 0
 
     def species_eic(self, species: Species) -> Chromatogram:
         return Chromatogram(species.time, species.intensity,
                             f"m {species.mass:.2f}", "deic", "counts")
 
     def summary(self) -> dict:
-        return {
-            "run": self.run_name,
-            "method": self.method.name,
+        head = {"run": self.run_name, "method": self.method.name}
+        if self.alias_pairs:
+            head["alias_pairs"] = self.alias_pairs
+        return head | {
             "n_species": len(self.species),
             "n_regions": len(self.regions),
             "rt_window": self.rt_window,
@@ -135,12 +139,21 @@ def process_run(
     model_path: str | None = None,
     progress=None,
     trace: list | None = None,
+    aliases=None,
 ) -> ProcessResult:
     """Process one run end to end.
 
     ``trace``, when a list is passed, receives one record per deconvolved region holding the
     stage-by-stage candidate snapshots of :func:`deconvolve_spectrum` and the species linked
     from it. :mod:`lcmsdeconv.diagnostics` turns that into a per-species loss attribution.
+
+    ``aliases`` (:class:`lcmsdeconv.aliases.Aliases`), where given with pairs, makes the result
+    show NEW for OLD in every name: the run and the method are processed as aliased copies
+    (:meth:`~lcmsdeconv.aliases.Aliases.alias_run`, and
+    :meth:`~lcmsdeconv.aliases.Aliases.alias_method` with ``run``, so that the method's trace
+    references name the same traces as before; ``run`` and ``method`` themselves are left as
+    they were), and ``result.alias_pairs`` counts the pairs. A run and method aliased already
+    are passed without it (aliasing twice can differ from aliasing once).
 
     With ``acquisition.lock_mass_mz`` set, the scans' m/z are first corrected against the run's
     lockspray scans (:func:`lcmsdeconv.io.lockmass.lock_mass_corrected`; ``run`` itself is left
@@ -152,7 +165,10 @@ def process_run(
     """
     method = method or Method()
     t_start = time.perf_counter()
-    result = ProcessResult(run_name=run.name, method=method)
+    if aliases:  # the method with the run as read: its trace references follow the traces
+        run, method = aliases.alias_run(run), aliases.alias_method(method, run)
+    result = ProcessResult(run_name=run.name, method=method,
+                           alias_pairs=len(aliases) if aliases else 0)
     run = _lock_mass(run, method, result)
     window = analysis_window(method)
     result.rt_window = None if window is None else rt_window_setting(method.regions.rt_window)

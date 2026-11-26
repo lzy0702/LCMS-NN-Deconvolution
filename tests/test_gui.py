@@ -1,6 +1,7 @@
 """Offscreen smoke tests for the desktop application (QT_QPA_PLATFORM=offscreen)."""
 
 import os
+import re
 
 import numpy as np
 import pytest
@@ -148,3 +149,118 @@ def test_gui_displays_processed_result(qtbot):
     # selecting a species draws its deconvolved chromatogram
     win.on_species_clicked(win.species_model.index(0, 0))
     assert "Deconvolved EIC" in win.mass_plot.plotItem.titleLabel.text
+
+
+def test_aliases_show_in_the_window_and_its_exports(qtbot, tmp_path, monkeypatch):
+    """With alias pairs (here from $LCMSDECONV_ALIAS_FILE), the window shows NEW for OLD in its
+    status bar, legend, tables and dialogs, the method it loads is aliased, it quantifies the
+    trace the method names, and the report it exports holds no OLD (123456 and 654321 play
+    project numbers, both aliased to one NEW)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    from lcmsdeconv.aliases import ENV_VAR
+    from lcmsdeconv.core.method import Method
+    from lcmsdeconv.gui.app import MainWindow
+    from lcmsdeconv.io.mzml_writer import write_mzml
+    from lcmsdeconv.process import process_run
+    from lcmsdeconv.synth.chromatography import generate_run
+    from lcmsdeconv.synth.compounds import ClassConfig
+    from lcmsdeconv.synth.config import SynthConfig
+
+    cfg = SynthConfig(classes=[ClassConfig("peptide", (12000.0, 20000.0))], mode="rplc",
+                      polarity=1, adduct_max_lambda=0.03)
+    run, _ = generate_run(cfg, np.random.default_rng(5), n_peaks=1, rt_range=(0.5, 1.3),
+                          scan_rate_hz=1.0)
+    uv = run.chromatograms.pop("UV1")
+    run.chromatograms["UV 123456"] = Chromatogram(uv.time, uv.intensity, "UV 123456", "uv", "mAU")
+    run.chromatograms["UV 654321"] = Chromatogram(uv.time, 0.5 * uv.intensity, "UV 654321",
+                                                  "uv", "mAU")
+    path = write_mzml(run, tmp_path / "LC-123456-S.mzML")
+    method = Method.load("rplc_pos_protein")
+    method.name, method.description = "M-123456", "for project 123456"
+    method.instrument.kind = "tof 123456"
+    method.deconvolution.model, method.deconvolution.max_components = "comb", 8
+    method.acquisition.uv_channel = method.quant.purity_signal = "UV 654321"
+    method.integration["tic"].timed_events = [IntegrationEvent(0.2, "note 123456", "by 123456")]
+    method_file = tmp_path / "method-123456.yaml"
+    method.to_yaml(method_file)
+    pairs = tmp_path / "aliases.txt"
+    pairs.write_text("123456=保密项目1\n654321=保密项目1\n", encoding="utf-8")
+    monkeypatch.setenv(ENV_VAR, str(pairs))
+
+    win = MainWindow(method_name=str(method_file))
+    qtbot.addWidget(win)
+    assert len(win.aliases) == 2 and win.method.name == "M-保密项目1"
+    events = win.events_model
+    assert [events.data(events.index(0, c), Qt.DisplayRole) for c in (1, 2)] == [
+        "note 保密项目1", "by 保密项目1"]
+    win.load_run(str(path))
+    assert win.statusBar().currentMessage().startswith("LC-保密项目1-S.mzML: ")
+    legend = win.chrom_plot.plotItem.legend
+    assert [label.item.toPlainText() for _sample, label in legend.items] == [
+        "TIC", "UV 保密项目1", "UV 保密项目1 (2)"]
+
+    # processed as the Process button processes: the method names the second trace still
+    win.on_processed(process_run(win.run, win._method_for_run()))
+    assert win.result.purity["signal"] == "UV 保密项目1 (2)"
+    quantified = win.result.chromatograms["UV 保密项目1 (2)"]
+    assert quantified.intensity is win._run_read.chromatograms["UV 654321"].intensity
+    shown = [win.windowTitle(), win.statusBar().currentMessage(), win.warn_text.toPlainText()]
+    shown += [win.signal_box.itemText(i) for i in range(win.signal_box.count())]
+    for model in (win.species_model, win.peaks_model, win.events_model):
+        shown += [str(model.data(model.index(r, c), Qt.DisplayRole))
+                  for r in range(model.rowCount()) for c in range(model.columnCount())]
+    assert "UV 保密项目1 (2)" in shown and not [s for s in shown if "123456" in s]
+
+    out = tmp_path / "report-123456.html"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kw: (str(out), ""))
+    win.on_export_report()
+    assert win.statusBar().currentMessage() == (
+        "report written to " + str(out).replace("123456", "保密项目1"))
+    page = re.sub(r"data:image/png;base64,[A-Za-z0-9+/=]*", "", out.read_text(encoding="utf-8"))
+    for text in ("LC-保密项目1-S", "M-保密项目1", "for project 保密项目1", "TOF 保密项目1",
+                 "UV 保密项目1 (2)"):
+        assert text in page, text
+    assert "123456" not in page and "654321" not in page
+
+    boxes = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append(box) or 0)
+    win.load_run(str(tmp_path / "missing-123456.mzML"))
+    win.on_method_changed(str(tmp_path / "gone-123456.yaml"))
+    win.on_failed('Traceback (most recent call last):\n  File "run-123456.py"\nValueError: 123456')
+    assert [box.windowTitle() for box in boxes] == ["Could not read run", "Method",
+                                                    "Processing failed"]
+    assert "missing-保密项目1.mzML" in boxes[0].text() and "gone-保密项目1.yaml" in boxes[1].text()
+    assert 'File "run-保密项目1.py"' in boxes[2].text()
+    assert not [box.text() for box in boxes if "123456" in box.text()]
+    # a method chosen later is aliased as it is loaded too
+    win.on_method_changed(str(method_file))
+    assert (win.method.name, win.method.instrument.kind) == ("M-保密项目1", "tof 保密项目1")
+
+
+def test_gui_command_and_launch_take_the_aliases(qtbot, tmp_path, monkeypatch, capsys):
+    """`lcmsdeconv gui --alias ...` hands its pairs to the application, and launch() prints an
+    error that stops it from starting (a method that is not there) aliased."""
+    import sys
+
+    from click.testing import CliRunner
+
+    import lcmsdeconv.gui.app as app
+    from lcmsdeconv.aliases import ENV_VAR, Aliases
+    from lcmsdeconv.cli import main
+
+    given = {}
+    monkeypatch.setattr(app, "launch", lambda *args, **kw: given.update(kw) or 0)
+    res = CliRunner().invoke(main, ["gui", "--alias", "123456=保密项目1"], env={ENV_VAR: None})
+    assert res.exit_code == 0, res.output
+    assert given["aliases"].pairs == {"123456": "保密项目1"}
+    monkeypatch.undo()
+
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # restored after the test
+    missing = tmp_path / "nowhere-123456" / "method-123456.yaml"
+    with pytest.raises(FileNotFoundError) as err:
+        app.launch(None, str(missing), aliases=Aliases.parse("123456=保密项目1"))
+    sys.excepthook(err.type, err.value, err.tb)  # as Python does, where no one catches it
+    printed = capsys.readouterr().err
+    assert "nowhere-保密项目1/method-保密项目1.yaml" in printed and "123456" not in printed

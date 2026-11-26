@@ -2,15 +2,143 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
-import unicodedata
+import traceback
 from pathlib import Path
 
 import click
 
 from . import __version__
+
+# ------------------------------------------------------------------ name aliases
+#: where a command keeps its aliases (lcmsdeconv.aliases.Aliases) in the context's shared meta
+_ALIASES = "lcmsdeconv.aliases"
+_ALIAS_ARGS = "lcmsdeconv.alias_args"
+
+
+def _alias_callback(ctx, param, value):
+    """Both alias options are eager, so they are read before any other parameter (whose errors
+    can quote a path): once both are in, the command's aliases are put together,
+    $LCMSDECONV_ALIAS_FILE's pairs first, then --alias-file's, then --alias's."""
+    if ctx.resilient_parsing:
+        return value
+    given = ctx.meta.setdefault(_ALIAS_ARGS, {})
+    given[param.name] = value
+    if {"alias_file", "alias"} <= given.keys():
+        from .aliases import AliasError, Aliases
+
+        try:
+            ctx.meta[_ALIASES] = Aliases.collect(files=given["alias_file"], pairs=given["alias"])
+        except AliasError as exc:  # its message shows the paths aliased already
+            error = click.ClickException(str(exc))
+            error.lcmsdeconv_aliased = True
+            raise error from None
+    return value
+
+
+def _alias_options(f):
+    """--alias-file and --alias, for the commands that write or print names of runs, traces or
+    methods (with :class:`_AliasedCommand`)."""
+    f = click.option(
+        "--alias", "alias", multiple=True, metavar="OLD=NEW", is_eager=True, expose_value=False,
+        callback=_alias_callback,
+        help="Show NEW in place of OLD in the names, paths and texts taken from the run, the "
+             "method and the command line, in every output and message (repeatable; after "
+             "--alias-file: a later pair for one OLD wins). Taken by process, gui, report, "
+             "evaluate and synth.")(f)
+    return click.option(
+        "--alias-file", "alias_file", multiple=True, metavar="FILE", is_eager=True,
+        expose_value=False, callback=_alias_callback,
+        help="Read OLD=NEW pairs from FILE: UTF-8, one pair per line, '#' starts a comment line "
+             "(repeatable; after the file $LCMSDECONV_ALIAS_FILE names, before --alias).")(f)
+
+
+def _aliases():
+    """The current command's aliases (none where it takes no alias options)."""
+    from .aliases import Aliases
+
+    ctx = click.get_current_context(silent=True)
+    found = ctx.meta.get(_ALIASES) if ctx is not None else None
+    return found if found is not None else Aliases()
+
+
+class _AliasedCommand(click.Command):
+    """A command whose messages show its aliases (``--alias``, ``--alias-file``,
+    $LCMSDECONV_ALIAS_FILE): click's errors about its parameters (a path that does not exist),
+    its own errors, and, while it runs, Python warnings, log records and the traceback of an
+    unexpected error, each aliased as text. Without aliases, it is click's Command."""
+
+    def parse_args(self, ctx, args):
+        try:
+            return super().parse_args(ctx, args)
+        except click.ClickException as exc:
+            if getattr(exc, "lcmsdeconv_aliased", False):
+                raise
+            aliases = ctx.meta.get(_ALIASES)
+            if aliases is None:  # an error before the alias options were read
+                from .aliases import AliasError, Aliases
+
+                try:
+                    aliases = Aliases.from_env()
+                except AliasError:
+                    aliases = Aliases()
+            exc.message = aliases.apply(exc.message)
+            raise
+
+    def invoke(self, ctx):
+        aliases = ctx.meta.get(_ALIASES)
+        if not aliases:
+            return super().invoke(ctx)
+        with aliases.console():
+            try:
+                return super().invoke(ctx)
+            except click.ClickException as exc:
+                exc.message = aliases.apply(exc.message)
+                raise
+            except (click.exceptions.Exit, click.exceptions.Abort):
+                raise
+            except Exception:
+                click.echo(aliases.apply(traceback.format_exc()), err=True, nl=False)
+                ctx.exit(1)
+
+
+def _output_like(name: str) -> bool:
+    """Whether a file name is one `process` gives its outputs."""
+    return name in ("results.json", "species.csv", "report.html") or (
+        name.startswith("peaks_") and name.endswith(".csv"))
+
+
+def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
+    """Warn, on stderr, of each file written that still holds an alias's OLD outside a number
+    (in its name relative to ``outdir`` or its text), naming the file (each OLD masked) and the
+    count, never the text found. With ``others``, likewise of what else ``outdir`` holds (an
+    earlier run's outputs, say): the name of each file and folder in it, and the text of those
+    named as outputs are. Never fails."""
+    found: list[tuple[str, int]] = []
+    left: list[tuple[str, int]] = []
+    try:  # the check never fails the command
+        found = aliases.leaks(written, outdir)
+    except Exception:
+        pass
+    try:
+        if others:
+            mine = {Path(p) for p in written}
+            rest = sorted(p for p in outdir.iterdir() if p not in mine)
+            outputs = [p for p in rest if _output_like(p.name) and p.is_file()]
+            left = (aliases.leaks(outputs, outdir)
+                    + aliases.leaks([p for p in rest if p not in outputs], outdir, text=False))
+    except Exception:
+        pass
+
+    def times(n):
+        return f"{n} {'occurrence' if n == 1 else 'occurrences'}"
+
+    for name, n in found:
+        click.echo(f"WARNING: {name} still holds {times(n)} of an alias's OLD text", err=True)
+    for name, n in sorted(left):
+        click.echo(f"WARNING: {name}, which this run did not write, holds {times(n)} of an "
+                   "alias's OLD text", err=True)
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -19,7 +147,7 @@ def main():
     """Neural-network deconvolution and quantitation for LC-ESI-MS of macromolecules."""
 
 
-@main.command()
+@main.command(cls=_AliasedCommand)
 @click.argument("input_file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--method", "-m", default=None, help="Method YAML file or bundled method name.")
 @click.option("--out", "-o", default="results", type=click.Path(file_okay=False),
@@ -34,16 +162,28 @@ def main():
                    "lockspray function).")
 @click.option("--report/--no-report", default=True, help="Write an HTML report.")
 @click.option("--quiet", is_flag=True)
+@_alias_options
 def process(input_file, method, out, model, uv_csv, waters_function, report, quiet):
-    """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify."""
+    """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify.
+
+    With alias pairs (--alias, --alias-file, $LCMSDECONV_ALIAS_FILE), every output and message
+    shows NEW in place of OLD in the run's, its traces' and the method's names and in the paths
+    printed; the files written are then checked for any OLD left, and so is what else --out
+    holds (an earlier run's outputs: give a fresh --out). See docs/usage.md, "Name aliases".
+    """
     from .core.method import Method, rt_window_text
     from .io.mzml import read_mzml, read_uv_csv
-    from .io.results import save_json
+    from .io.results import write_outputs
     from .process import process_run
 
+    aliases = _aliases()
+    shown = aliases.apply  # a path or name as printed
+    # the method as loaded and the run as read are aliased together once the run is read (the
+    # method's trace references follow the traces' aliased names): everything after shows the
+    # aliased names only
     meth = Method.load(method)
     if not quiet:
-        click.echo(f"reading {input_file}")
+        click.echo(f"reading {shown(str(input_file))}")
     if str(input_file).lower().endswith(".raw"):
         if waters_function is not None:
             raise click.UsageError("--waters-function is for Waters runs in mzML or mzMLb")
@@ -61,6 +201,7 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
     if uv_csv:
         ch = read_uv_csv(uv_csv)
         run.chromatograms[ch.name] = ch
+    run, meth = aliases.alias_run(run), aliases.alias_method(meth, run)  # both with the run read
     if not quiet:
         click.echo(f"{len(run.spectra)} MS frames, polarities {run.polarities}")
         if "waters_functions" in run.meta:
@@ -77,6 +218,7 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
 
     # the lock-mass correction and the analysis window are applied here, once
     result = process_run(run, meth, model_path=model, progress=progress)
+    result.alias_pairs = len(aliases)
     if not quiet and result.lock_mass:
         from .io.lockmass import lock_mass_text
 
@@ -85,77 +227,33 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
     if not quiet and result.rt_window:
         click.echo(f"analysis window: {rt_window_text(result.rt_window)}")
     outdir = Path(out)
-    outdir.mkdir(parents=True, exist_ok=True)
-    save_json(result.summary(), outdir / "results.json")
-    _write_csvs(result, outdir)
-    if report:
-        from .report.html import build_report
-
-        p = build_report(result, outdir / "report.html", plots=meth.report.plots)
-        if not quiet:
-            click.echo(f"report: {p}")
+    written = write_outputs(result, outdir, report=report, plots=meth.report.plots)
+    if aliases:
+        _check_outputs(aliases, written, outdir)
+    if report and not quiet:
+        click.echo(f"report: {shown(str(outdir / 'report.html'))}")
     if not quiet:
         click.echo(f"{len(result.species)} species, {len(result.impurities)} rows in the impurity table")
         for w in result.warnings:
             click.echo(f"WARNING: {w}")
-    click.echo(str(outdir / "results.json"))
+    click.echo(shown(str(outdir / "results.json")))
 
 
-def _write_csvs(result, outdir: Path):
-    import pandas as pd
+def _write_csvs(result, outdir: Path) -> list[Path]:
+    """species.csv and the peak tables' CSVs (:func:`lcmsdeconv.io.results.write_csvs`)."""
+    from .io.results import write_csvs
 
-    if result.impurities:
-        rows = []
-        for r in result.impurities:
-            rows.append({k: v for k, v in r.items() if k not in ("adducts", "flags")}
-                        | {"adducts": "; ".join(f"{k} {v*100:.2f}%" for k, v in r["adducts"].items()),
-                           "flags": "; ".join(r["flags"])})
-        pd.DataFrame(rows).to_csv(outdir / "species.csv", index=False)
-    for name, safe in _csv_names(list(result.peak_tables)).items():
-        result.peak_tables[name].to_dataframe().to_csv(outdir / f"peaks_{safe}.csv", index=False)
-
-
-#: the longest name part of a peak table's CSV, in UTF-8 bytes (a file name may hold 255)
-_CSV_PART_BYTES = 100
+    return write_csvs(result, outdir)
 
 
 def _csv_names(names: list[str]) -> dict[str, str]:
-    """The file name part of each peak table's CSV (``peaks_<part>.csv``): the table's name in
-    Unicode's composed form (NFC) with any character but letters, digits, '-', '_' and '.' made
-    '_', a name longer than _CSV_PART_BYTES cut short and ended with 8 hex digits of its hash.
-    Where two names come out the same, also apart from case (one file on Windows and macOS), the
-    first keeps it and the others get '_2', '_3', ... added, so no table overwrites another."""
-    def key(part: str) -> str:
-        return unicodedata.normalize("NFC", part.casefold())
+    """The peak tables' CSV name parts (:func:`lcmsdeconv.io.results.csv_names`)."""
+    from .io.results import csv_names
 
-    safe = {n: _csv_part(n) for n in names}
-    taken = {key(s) for s in safe.values()}
-    out: dict[str, str] = {}
-    used: set[str] = set()
-    for n in names:
-        part = safe[n]
-        if key(part) in used:
-            k = 2
-            while key(f"{part}_{k}") in taken:
-                k += 1
-            part = f"{part}_{k}"
-            taken.add(key(part))
-        used.add(key(part))
-        out[n] = part
-    return out
+    return csv_names(names)
 
 
-def _csv_part(name: str) -> str:
-    part = "".join(c if c.isalnum() or c in "-_." else "_"
-                   for c in unicodedata.normalize("NFC", name))
-    data = part.encode("utf-8")
-    if len(data) <= _CSV_PART_BYTES:
-        return part
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-    return data[:_CSV_PART_BYTES - 9].decode("utf-8", "ignore") + "_" + digest
-
-
-@main.command()
+@main.command(cls=_AliasedCommand)
 @click.option("--preset", default="protein",
               type=click.Choice(["protein", "oligo", "polymer", "small_molecule", "mixture"]))
 @click.option("--out", "-o", default="runs/demo", type=click.Path(file_okay=False))
@@ -165,8 +263,12 @@ def _csv_part(name: str) -> str:
 @click.option("--saturate", is_flag=True, help="Include an ESI-saturated peak.")
 @click.option("--switch-polarity", is_flag=True, help="Alternate positive and negative frames.")
 @click.option("--seed", default=0)
+@_alias_options
 def synth(preset, out, peaks, minutes, rate, saturate, switch_polarity, seed):
-    """Generate a synthetic LC-MS run (mzML plus ground truth)."""
+    """Generate a synthetic LC-MS run (mzML plus ground truth).
+
+    Its names are lcmsdeconv's own; the aliases apply to the path it prints.
+    """
     import numpy as np
 
     from .io.mzml_writer import write_mzml
@@ -196,7 +298,7 @@ def synth(preset, out, peaks, minutes, rate, saturate, switch_polarity, seed):
     except VocabularyError as exc:
         raise click.ClickException(str(exc)) from exc
     save_json(truth.to_dict(), outdir / "truth.json")
-    click.echo(f"wrote {path} ({len(run.spectra)} frames) and truth.json")
+    click.echo(f"wrote {_aliases().apply(str(path))} ({len(run.spectra)} frames) and truth.json")
 
 
 @main.command()
@@ -263,49 +365,66 @@ def export_onnx_cmd(checkpoint, out, length, verify, strict):
             raise SystemExit(2)
 
 
-@main.command()
+@main.command(cls=_AliasedCommand)
 @click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--truth", default=None, type=click.Path(exists=True, dir_okay=False),
               help="truth.json from `lcmsdeconv synth` for scoring.")
 @click.option("--method", "-m", default=None)
 @click.option("--model", default=None, type=click.Path(dir_okay=False))
+@_alias_options
 def evaluate(run_dir, truth, method, model):
-    """Score processing output against synthetic ground truth."""
+    """Score processing output against synthetic ground truth.
+
+    Its scores hold no names; the aliases apply to the warnings and errors it prints.
+    """
     from .evaluate import evaluate_directory
 
     res = evaluate_directory(Path(run_dir), Path(truth) if truth else None, method, model)
     click.echo(json.dumps(res, indent=2))
 
 
-@main.command()
+@main.command(cls=_AliasedCommand)
 @click.argument("results_dir", type=click.Path(exists=True, file_okay=False))
 @click.option("--open", "open_it", is_flag=True, help="Open the report in a browser.")
+@_alias_options
 def report(results_dir, open_it):
-    """Show where the HTML report is (and optionally open it)."""
+    """Show where the HTML report is (and optionally open it).
+
+    With alias pairs, the path is shown aliased and the report is checked for any OLD left (a
+    report written without them is not rewritten).
+    """
+    aliases = _aliases()
     p = Path(results_dir) / "report.html"
     if not p.exists():
-        click.echo(f"no report at {p}", err=True)
+        click.echo(f"no report at {aliases.apply(str(p))}", err=True)
         sys.exit(1)
-    click.echo(str(p))
+    if aliases:
+        _check_outputs(aliases, [p], p.parent, others=False)
+    click.echo(aliases.apply(str(p)))
     if open_it:
         import webbrowser
 
         webbrowser.open(p.resolve().as_uri())
 
 
-@main.command()
+@main.command(cls=_AliasedCommand)
 @click.option("--run", "run_file", default=None, type=click.Path(exists=True, dir_okay=False),
               help="mzML or mzMLb run to open.")
 @click.option("--method", "-m", default=None)
 @click.option("--waters-function", default=None, type=click.IntRange(min=1),
               help="Waters MS function of the --run file to read (default: as for process).")
+@_alias_options
 def gui(run_file, method, waters_function):
-    """Launch the desktop application."""
+    """Launch the desktop application.
+
+    With alias pairs, the application shows NEW in place of OLD in every name, path, table,
+    legend and dialog, and in the reports it exports.
+    """
     if waters_function is not None and not run_file:
         raise click.UsageError("--waters-function applies to the --run file")
     from .gui.app import launch
 
-    launch(run_file, method, waters_function=waters_function)
+    launch(run_file, method, waters_function=waters_function, aliases=_aliases())
 
 
 @main.command("methods")
