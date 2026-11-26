@@ -84,11 +84,16 @@ def _aliases():
 
 def _env_aliases():
     """The pairs of the file LCMSDECONV_ALIAS_FILE names, for an error raised before a command's
-    alias options are read (none where they cannot be read: that error comes later)."""
-    from .aliases import AliasError, Aliases
+    alias options are read (none where they cannot be read: that error comes later, and so does
+    a note about them, which a command prints as it reads its alias options)."""
+    import warnings
+
+    from .aliases import AliasError, Aliases, AliasWarning
 
     try:
-        return Aliases.from_env()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", AliasWarning)
+            return Aliases.from_env()
     except AliasError:
         return Aliases()
 

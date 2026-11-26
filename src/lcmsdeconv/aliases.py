@@ -21,8 +21,10 @@ it, and one that ends with a digit does not match where a digit comes right afte
 matches in "LC-123456-S", "LC123456", "123456_2" and "123456.2" but not in "1234567" or
 "0123456". An OLD may not hold an invisible, control or format character (a zero-width space, a
 byte order mark, NUL, ...) nor a full-width or compatibility form of a character (the digits of
-"１２３４５６", a no-break or ideographic space): such an OLD would match nothing, and the pair
-is refused. A NEW may not hold a control character or a line break either.
+"１２３４５６", a no-break or ideographic space, a Roman numeral, a ligature): such an OLD would
+not match the plain characters, and the pair is refused. A NEW may not hold a control character,
+a line break or a byte order mark either, and neither may hold U+FFFD, which stands for a
+character lost in a change of encoding.
 """
 
 from __future__ import annotations
@@ -38,9 +40,11 @@ import linecache
 import logging
 import os
 import re
+import stat
 import sys
 import threading
 import traceback
+import types
 import unicodedata
 import warnings
 from collections.abc import Iterable, Iterator, Mapping
@@ -77,6 +81,9 @@ _LINE_END_BYTES = re.compile(rb"\r\n|\r|\n")
 #: what an error about a file that is not UTF-8 tells the user to do
 _SAVE_AS_UTF8 = "save it as UTF-8 (in Notepad: File > Save as, Encoding UTF-8)"
 
+#: what an error about U+FFFD (the replacement character) says of it
+_LOST = "which stands for a character lost in a change of encoding: type it again"
+
 #: a data URI (the report's embedded images): no text to check
 _DATA_URI = re.compile(r"data:[\w.+/-]+;base64,[A-Za-z0-9+/=\s]*")
 
@@ -112,12 +119,19 @@ def _invisible(text: str, categories: frozenset = _INVISIBLE) -> str | None:
 
 def _compatibility(text: str) -> str | None:
     """The first character of ``text`` that Unicode's compatibility form (NFKC) writes otherwise
-    than its composed form (NFC), a full-width digit, a no-break or ideographic space, ..., as
-    "U+XXXX"; None where it holds none."""
+    than its composed form (NFC), a full-width digit, a no-break or ideographic space, a Roman
+    numeral, ...; None where it holds none."""
     for ch in text:
         if unicodedata.normalize("NFKC", ch) != unicodedata.normalize("NFC", ch):
-            return f"U+{ord(ch):04X}"
+            return ch
     return None
+
+
+def _typed_full_width(ch: str) -> bool:
+    """Whether ``ch`` is a full-width form (as an input method types in full-width mode) or a
+    space other than the plain one (a no-break or ideographic space)."""
+    return "\uff01" <= ch <= "\uff60" or "\uffe0" <= ch <= "\uffe6" or (
+        unicodedata.category(ch) == "Zs")
 
 
 def _pair_problem(old: str, new: str, empty: tuple[str, str] = ("nothing before '='",
@@ -132,14 +146,25 @@ def _pair_problem(old: str, new: str, empty: tuple[str, str] = ("nothing before 
     code = _invisible(old)
     if code is not None:
         return f"OLD holds {code}, an invisible or control character"
-    code = _compatibility(old)
-    if code is not None:  # typed with an input method in full-width mode, pasted from Word, ...
-        return (f"OLD holds {code}, a full-width or compatibility form of a character, which "
-                "does not match the plain one: type it half-width (the input method in English "
-                "or half-width mode)")
+    ch = _compatibility(old)
+    if ch is not None and _typed_full_width(ch):  # an input method in full-width mode, Word, ...
+        return (f"OLD holds U+{ord(ch):04X}, a full-width or compatibility form of a character, "
+                "which does not match the plain one: type it half-width (the input method in "
+                "English or half-width mode)")
+    if ch is not None:  # pasted from a PDF file, picked among an input method's candidates, ...
+        return (f"OLD holds U+{ord(ch):04X}, a compatibility form of a character (a Roman "
+                "numeral, a circled or superscript digit, a ligature, a radical pasted for a "
+                "Chinese character, ...), which does not match the plain one: give an OLD without "
+                "it, in plain characters")
+    if "\ufffd" in old:
+        return f"OLD holds U+FFFD, {_LOST}"
     code = _invisible(new, _INVISIBLE_NEW)
+    if code is None and "\ufeff" in new:  # a byte order mark: where two files were joined
+        code = "U+FEFF"
     if code is not None:
         return f"NEW holds {code}, an invisible or control character"
+    if "\ufffd" in new:
+        return f"NEW holds U+FFFD, {_LOST}"
     return None
 
 
@@ -244,7 +269,8 @@ class Aliases:
         """Pairs given as "OLD=NEW" texts (split at the first '=', whitespace around OLD and NEW
         stripped) or (OLD, NEW) tuples. AliasError names ``source`` and the pair's number where a
         text has no '=', an empty OLD or NEW, an invisible or control character in either (a
-        NEW may hold format characters), or a full-width or compatibility character in OLD."""
+        NEW may hold format characters but a byte order mark), U+FFFD in either, or a full-width
+        or compatibility character in OLD."""
         if isinstance(pairs, str):
             pairs = [pairs]
         out = []
@@ -264,24 +290,27 @@ class Aliases:
 
     @classmethod
     def from_file(cls, path: str | os.PathLike, known: Aliases | None = None) -> Aliases:
-        """The pairs of an alias file: UTF-8 (a byte order mark is accepted, at the start of any
-        line too, as where two files were joined, and so are end-of-file marks, Ctrl-Z, at its
-        end, as cmd's ``copy a+b`` adds), LF, CRLF or CR line ends, one OLD=NEW per line split at
-        the first '=', whitespace around OLD and NEW stripped; blank lines and lines starting with
-        '#' are skipped. A file holding no pair gives none, with an AliasWarning.
+        """The pairs of an alias file: UTF-8 (a byte order mark is accepted, and one within a line
+        starts a pair there, as where two files were joined, and so are end-of-file marks,
+        Ctrl-Z, at its end, as cmd's ``copy a+b`` adds), LF, CRLF or CR line ends, one OLD=NEW per
+        line split at the first '=', whitespace around OLD and NEW stripped; blank lines and lines
+        starting with '#' are skipped. A file holding no pair gives none, with an AliasWarning,
+        and so does one with a NEW holding '=' (two pairs on one line, where a file that did not
+        end with a line end was joined to another or added to).
 
         AliasError for a file that is missing or cannot be read, is not UTF-8 (UTF-16 or an ANSI
-        code page: the message says to save it as UTF-8), or has a line without '=', with an
-        empty OLD or NEW, an invisible or control character in either (a NEW may hold format
-        characters), or a full-width or compatibility character in OLD: the message names the
-        file (shown with the pairs ``known`` and those read before the line applied) and the
-        line's number, never the line itself.
+        code page: the message says to save it as UTF-8; or lines added to it in another
+        encoding), or has a line without '=', with an empty OLD or NEW, an invisible or control
+        character in either (a NEW may hold format characters but a byte order mark), U+FFFD in
+        either, or a full-width or compatibility character in OLD: the message names the file
+        (shown with the pairs ``known`` and those read before the line applied) and the line's
+        number, never the line itself.
         """
         path = Path(path)
         pairs: list[tuple[str, str]] = []
 
-        def shown() -> str:
-            return (known or cls()).merged(cls(pairs)).apply(str(path))
+        def shown(text: str | None = None) -> str:
+            return (known or cls()).merged(cls(pairs)).apply(str(path) if text is None else text)
 
         def error(reason: str, line: int | None = None) -> AliasError:
             where = f"alias file {shown()}" + ("" if line is None else f", line {line}")
@@ -290,17 +319,29 @@ class Aliases:
         def line_of(data: bytes, offset: int) -> int:
             return len(_LINE_END_BYTES.split(data[:offset]))
 
+        def safely(test) -> bool:  # a test of a path that fails is a no
+            try:
+                return test()
+            except (OSError, ValueError):
+                return False
+
         try:
             data = path.read_bytes()
         except FileNotFoundError:
+            twin = path.name + ".txt"  # Explorer hides the extension .txt
+            if safely(lambda: path.with_name(twin).is_file()):
+                raise error(f"not found, but {shown(twin)} is (Explorer hides the extension "
+                            ".txt): give that name, or rename the file") from None
             raise error("not found") from None
-        except IsADirectoryError:
-            raise error("is a directory") from None
         except OSError as exc:  # its text would quote the path
+            if safely(path.is_dir):  # IsADirectoryError, PermissionError on Windows
+                raise error("is a folder: give the alias file's own path (the folder's path "
+                            "followed by the file's name)") from None
             raise error(f"cannot be read ({exc.strerror or type(exc).__name__})") from None
         if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
-            raise error("UTF-16 (Notepad's 'Unicode', the > and Out-File of Windows PowerShell "
-                        f"5.1), not UTF-8: {_SAVE_AS_UTF8}", 1)
+            raise error("UTF-16 (Notepad's 'UTF-16 LE' or 'UTF-16 BE', 'Unicode' in older "
+                        "Notepad; the > and Out-File of Windows PowerShell 5.1), not UTF-8: "
+                        f"{_SAVE_AS_UTF8}", 1)
         body = data[len(codecs.BOM_UTF8):] if data.startswith(codecs.BOM_UTF8) else data
         body = body.rstrip(b"\x1a")  # DOS end-of-file marks (cmd's copy a+b adds one)
         if b"\x00" in body:  # valid UTF-8, but text in UTF-16 holds them
@@ -309,27 +350,45 @@ class Aliases:
         try:
             text = body.decode("utf-8")
         except UnicodeDecodeError as exc:
+            if not body[:exc.start].isascii():  # UTF-8 text before it: lines added otherwise
+                raise error("not UTF-8, though the text before it is (a line added in code page "
+                            "936, with Windows PowerShell 5.1's Add-Content without -Encoding "
+                            "UTF8 or cmd's echo >>?): type the pairs into a new file in Notepad "
+                            "and save it as UTF-8", line_of(body, exc.start)) from None
             try:  # Chinese Windows' ANSI code page (Notepad's 'ANSI', PowerShell 5.1's Set-Content)
                 body.decode("cp936")
                 ansi = " (saved as ANSI, code page 936 or GBK?)"
             except UnicodeDecodeError:
                 ansi = ""
             raise error(f"not UTF-8{ansi}: {_SAVE_AS_UTF8}", line_of(body, exc.start)) from None
+        joined = []  # the lines with a NEW holding '='
         for n, line in enumerate(_LINE_END.split(text), 1):
-            line = line.strip().removeprefix("\ufeff").strip()
-            if not line or line.startswith("#"):
-                continue
-            old, sep, new = line.partition("=")
-            if not sep:
-                raise error(_no_equals(line), n)
-            old, new = old.strip(), new.strip()
-            problem = _pair_problem(old, new)
-            if problem is not None:
-                raise error(problem, n)
-            pairs.append((old, new))
+            # a byte order mark starts a file: within a line, a file that did not end with a
+            # line end was joined to another there (cat a b, copy a+b), and a pair starts there
+            for part in line.split("\ufeff"):
+                part = part.strip()
+                if not part or part.startswith("#"):
+                    continue
+                old, sep, new = part.partition("=")
+                if not sep:
+                    raise error(_no_equals(part), n)
+                old, new = old.strip(), new.strip()
+                problem = _pair_problem(old, new)
+                if problem is not None:
+                    raise error(problem, n)
+                if "=" in new:
+                    joined.append(n)
+                pairs.append((old, new))
         if not pairs:
             warnings.warn(f"alias file {shown()} holds no pair (its lines are blank or comments): "
                           "no name is aliased", AliasWarning, stacklevel=2)
+        if joined:
+            lines = list(dict.fromkeys(joined))
+            where = ", ".join(map(str, lines))
+            warnings.warn(f"alias file {shown()}, line{'s' if len(lines) > 1 else ''} {where}: "
+                          "NEW holds '=': where the line holds two pairs (a file without a line "
+                          "end after its last pair, joined to another or added to), put a line "
+                          "end between them", AliasWarning, stacklevel=2)
         return cls(pairs)
 
     @classmethod
@@ -338,11 +397,11 @@ class Aliases:
         """The pairs of the file LCMSDECONV_ALIAS_FILE names (in ``environ``, default
         ``os.environ``); none where it is unset or empty. The value may be in double quotes (as
         Windows' "Copy as path" gives a path) and start with ``~`` or hold environment variables
-        (``%USERPROFILE%``, ``$HOME``); a relative path is read from the current folder, and an
-        error then shows the folder it was looked for in. AliasError as for :meth:`from_file`
-        (``known``: pairs to show the file's path with there), and where LCMSDECONV_ALIAS_FILE is
-        not set but a variable whose name is it with spaces around is (as cmd's ``set NAME =
-        value`` makes)."""
+        (``%USERPROFILE%`` on Windows, ``$HOME`` elsewhere); a relative path is read from the
+        current folder, and an error then shows the folder it was looked for in. AliasError as
+        for :meth:`from_file` (``known``: pairs to show the file's path with there), and where
+        LCMSDECONV_ALIAS_FILE is not set but a variable whose name is it with spaces around is (as
+        cmd's ``set NAME = value`` makes)."""
         environ = os.environ if environ is None else environ
         value = environ.get(ENV_VAR)
         if value is None:
@@ -414,6 +473,11 @@ class Aliases:
         if self._pattern is None or not isinstance(text, str) or not text:
             return text
         nfc = _nfc(text)
+        for old in self._pairs:  # the pattern matches only where an OLD is (the quicker test)
+            if old in nfc:
+                break
+        else:
+            return text
         out = self._pattern.sub(self._new, nfc)
         return text if out == nfc else out
 
@@ -501,7 +565,8 @@ class Aliases:
                 if is_file and (name in _OUTPUT_NAMES
                                 or (name.startswith("peaks_") and name.endswith(".csv"))):
                     with contextlib.suppress(OSError):
-                        if p.stat().st_size <= _TEXT_LIMIT:
+                        st = p.stat()  # a regular file only: reading a FIFO or device blocks
+                        if stat.S_ISREG(st.st_mode) and st.st_size <= _TEXT_LIMIT:
                             n += self.count(_file_text(p))
                 if n:
                     out.append((self.mask(p.relative_to(root).as_posix()), n))
@@ -708,6 +773,18 @@ def _file_text(path: Path) -> str:
 # ---------------------------------------------------------------------- console
 #: guards the state below: console() contexts open and close in any thread
 _lock = threading.RLock()
+
+
+def _new_lock() -> None:
+    """A new lock in a process forked while another thread held this one (it would never be
+    released there)."""
+    global _lock
+    _lock = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_new_lock)
+
 #: the console() contexts open now, in the order they were entered: (token, pairs)
 _open: list[tuple[object, Aliases]] = []
 #: the pairs the hooks apply, those of the open contexts merged; None while none is open
@@ -897,11 +974,23 @@ def _escape(exc: BaseException, aliases: Aliases) -> None:
             _pending += 1
 
 
+def _mark(hook) -> tuple[object, Any] | None:
+    """(installation, hook replaced) of a console() hook; None for any other hook. Read from a
+    function's own attributes, never with getattr: a Mock makes up any attribute asked of it."""
+    if not isinstance(hook, types.FunctionType):
+        return None
+    own = hook.__dict__
+    if "_lcmsdeconv_token" not in own:
+        return None
+    return own["_lcmsdeconv_token"], own["_lcmsdeconv_previous"]
+
+
 def _restored(hook):
     """``hook`` without the console() hooks of closed contexts on top of it."""
-    while (getattr(hook, "_lcmsdeconv_token", None) is not None
-           and hook._lcmsdeconv_token is not _installed):
-        hook = hook._lcmsdeconv_previous
+    mark = _mark(hook)
+    while mark is not None and mark[0] is not _installed:
+        hook = mark[1]
+        mark = _mark(hook)
     return hook
 
 
@@ -959,6 +1048,11 @@ def _install() -> None:
     """Put the hooks in (the first context opening; _lock held). Each passes on what holds no
     OLD to the hook it replaced, as it was given."""
     global _installed
+    # the exception hooks kept for exceptions that left a closed context (_pending) are taken
+    # off, not wrapped: these hooks print those exceptions too (no installation is in effect
+    # here, so _restored takes off every one on top)
+    previous_except = _restored(sys.excepthook)
+    previous_thread = _restored(threading.excepthook)
     token = _installed = object()
 
     def pairs() -> Aliases | None:
@@ -972,8 +1066,6 @@ def _install() -> None:
             message, filename, line = _warning_shown(aliases, message, filename, lineno, line)
         return previous_warning(message, category, filename, lineno, file, line)
 
-    previous_except = sys.excepthook
-
     def except_hook(kind, value, tb):
         aliases = _pairs_for(_installed is token, value)
         if aliases is not None:
@@ -983,8 +1075,6 @@ def _install() -> None:
                 _write(shown)
                 return None
         return previous_except(kind, value, tb)
-
-    previous_thread = threading.excepthook
 
     def thread_hook(args):
         aliases = (None if args.exc_type is SystemExit
@@ -1060,12 +1150,12 @@ def _console(aliases: Aliases) -> Iterator[None]:
         yield
         return
     token = object()
-    with _lock:
-        if not _open:
-            _install()
-        _open.append((token, aliases))
-        _in_effect = _merge([a for _t, a in _open])
-    try:
+    try:  # registered within, so that an interrupt (Ctrl-C) arriving meanwhile unregisters it
+        with _lock:
+            if not _open:
+                _install()
+            _open.append((token, aliases))
+            _in_effect = _merge([a for _t, a in _open])
         yield
     except BaseException as exc:
         _escape(exc, aliases)

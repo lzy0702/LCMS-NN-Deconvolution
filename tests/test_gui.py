@@ -296,10 +296,11 @@ def test_an_alias_problem_is_shown_in_a_dialog(qtbot, tmp_path, monkeypatch):
     missing = tmp_path / "aliases.txt"
     monkeypatch.setenv(ENV_VAR, f'"{missing}"')  # quoted, as Explorer's "Copy as path" gives it
     assert app.launch() == 1 and not opened
+    remedy = ("\n\nThe application was not started: correct the alias pairs (--alias, "
+              f"--alias-file, or the {ENV_VAR} environment variable and the file it names) and "
+              "start it again.")
     assert boxes == [(QMessageBox.Icon.Critical, "lcmsdeconv: name aliases",
-                      f"{ENV_VAR}: alias file {missing}: not found\n\nThe application was not "
-                      f"started: correct the alias file, or the {ENV_VAR} environment variable, "
-                      "and start it again.")]
+                      f"{ENV_VAR}: alias file {missing}: not found{remedy}")]
     boxes.clear()
     monkeypatch.undo()
     monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append(
@@ -309,7 +310,12 @@ def test_an_alias_problem_is_shown_in_a_dialog(qtbot, tmp_path, monkeypatch):
     res = CliRunner().invoke(main, ["gui", "--alias-file", str(missing)], env={ENV_VAR: None})
     assert res.exit_code == 1 and not opened
     assert boxes[0][0] == QMessageBox.Icon.Critical
-    assert boxes[0][2].startswith(f"alias file {missing}: not found\n\nThe application was not")
+    assert boxes[0][2] == f"alias file {missing}: not found{remedy}"
+    boxes.clear()
+    res = CliRunner().invoke(main, ["gui", "--alias", "123456"], env={ENV_VAR: None})
+    assert res.exit_code == 1 and not opened  # a pair given with --alias: no file is to blame
+    assert boxes == [(QMessageBox.Icon.Critical, "lcmsdeconv: name aliases",
+                      f"--alias #1: no '=' (expected OLD=NEW){remedy}")]
     boxes.clear()
     missing.write_text("# 123456=保密项目1\n", encoding="utf-8")  # comments only
     monkeypatch.setenv(ENV_VAR, str(missing))

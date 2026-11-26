@@ -299,10 +299,11 @@ LCMSDECONV_ALIAS_FILE=~/aliases.txt lcmsdeconv gui
 `process`, `gui`, `report`, `evaluate` and `synth`, and the environment variable
 `LCMSDECONV_ALIAS_FILE` names a file every one of them reads, as does the desktop application
 however it is started. Its value may be in double quotes, as Windows' "Copy as path" gives a path,
-and may start with `~` or hold environment variables (`%USERPROFILE%`, `$HOME`); give an absolute
-path, as a relative one is read from whatever folder lcmsdeconv starts in (an error then shows the
-folder it was looked for in). A variable named `LCMSDECONV_ALIAS_FILE` with a space after the
-name, as cmd's `set LCMSDECONV_ALIAS_FILE = ...` makes, stops the command with an error. The pairs
+and may start with `~` or hold environment variables (`%USERPROFILE%` on Windows, which sets no
+`HOME`; `$HOME` elsewhere); give an absolute path, as a relative one is read from whatever folder
+lcmsdeconv starts in (an error then shows the folder it was looked for in). A variable named
+`LCMSDECONV_ALIAS_FILE` with a space after the name, as cmd's `set LCMSDECONV_ALIAS_FILE = ...`
+makes, stops the command with an error. The pairs
 of `LCMSDECONV_ALIAS_FILE` come first, then those of each `--alias-file` in turn, then each
 `--alias`; a later pair for one OLD replaces an earlier one. No pair is built into lcmsdeconv, and
 no output records an OLD or a pair: `results.json` records only how many pairs were in effect
@@ -314,9 +315,9 @@ alias file itself where the outputs do not go. `train`, `export-onnx` and `metho
 trace or method names: they take no pairs, ignore `LCMSDECONV_ALIAS_FILE` and print their paths as
 given.
 
-**The file.** UTF-8 (a byte order mark is accepted, also at the start of a line, as where two files
-were joined with `cat`, and so are end-of-file marks, Ctrl-Z, at its end, as where they were
-joined with cmd's `copy a.txt+b.txt`), LF, CRLF or CR line ends, one pair per line:
+**The file.** UTF-8 (a byte order mark is accepted, and one within a line starts a pair there, as
+where two files were joined with `cat` or cmd's `copy a.txt+b.txt`, and so are end-of-file marks,
+Ctrl-Z, at its end, as `copy` adds), LF, CRLF or CR line ends, one pair per line:
 
 ```text
 # project numbers: OLD=NEW
@@ -325,19 +326,28 @@ PRJ-7 = Project seven
 ```
 
 Each line is split at its first `=` (so NEW may hold `=`, OLD cannot), and the whitespace around OLD
-and NEW is stripped. Blank lines and lines whose first non-blank character is `#` are skipped (an
-OLD starting with `#` is given with `--alias`); there are no comments at the end of a line. A
+and NEW is stripped. Notepad puts no line end after the last line: press Enter at its end before
+you join the file to another or add a line to it otherwise, or the next pair lands on that line,
+in the NEW of its pair, which then shows the next OLD wherever the first OLD is. A NEW holding `=`
+is therefore warned of (`WARNING: alias file aliases.txt, line 3: NEW holds '=': where the line
+holds two pairs ...`), and `process` prints the number of pairs in effect, which should be that of
+the pairs in your files. Blank lines and lines whose first non-blank character is `#` are skipped
+(an OLD starting with `#` is given with `--alias`); there are no comments at the end of a line. A
 file that is missing or cannot be read, is not UTF-8 (a file saved as UTF-16 or in an ANSI code
-page included: the error says how to save it as UTF-8), or has a line without `=` (the error names
-a full-width `＝` typed with an input method), with an empty OLD or NEW, with an invisible or
-control character in OLD (a zero-width space or direction mark pasted with the number, a tab, NUL)
-or with a full-width or compatibility character in OLD (`１２３４５６` typed with an input method in
-full-width mode, a no-break or ideographic space pasted from a document) stops the command with an
-error naming the file and the line, never quoting the line, which holds the text being hidden;
-the desktop application shows the error in a dialog and does not start, as it may run without a
-console. Such an OLD would match nothing, as names are written in plain characters. A NEW may
-hold format characters (Persian's zero-width non-joiner, an emoji's zero-width joiner, a soft
-hyphen), but no control character or line break. The errors read `Error: alias file aliases.txt, line 3: no '='
+page included: the error says how to save it as UTF-8; for lines added to a UTF-8 file in another
+encoding, it says to type the pairs into a new file), or has a line without `=` (the error names a
+full-width `＝` typed with an input method), with an empty OLD or NEW, with an invisible or control
+character in OLD (a zero-width space or direction mark pasted with the number, a tab, NUL), with
+U+FFFD in OLD or NEW (which an editor puts for a character it could not read), or with a
+full-width or compatibility character in OLD (`１２３４５６` typed with an input method in
+full-width mode, a no-break or ideographic space pasted from a document, a Roman numeral, a radical
+pasted from a PDF file for the Chinese character it looks like) stops the command with an error
+naming the file and the line, never quoting the line, which holds the text being hidden; the
+desktop application shows the error in a dialog and does not start, as it may run without a
+console. Such an OLD would not match the plain characters names are written in (where the names
+hold such a character themselves, give an OLD without it). A NEW may hold format characters
+(Persian's zero-width non-joiner, an emoji's zero-width joiner, a soft hyphen), but no control
+character, line break or byte order mark. The errors read `Error: alias file aliases.txt, line 3: no '='
 (expected OLD=NEW)`, `Error: alias file aliases.txt, line 2: OLD holds U+200B, an invisible or
 control character` or `Error: alias file aliases.txt, line 1: OLD holds U+FF11, a full-width or
 compatibility form of a character, which does not match the plain one: type it half-width (the
@@ -413,23 +423,68 @@ google-noto-sans-cjk-fonts` on Fedora), delete matplotlib's font cache (`rm -rf
 3.11 reads only the first face of a font collection, Noto Sans CJK JP in Debian's and Ubuntu's
 `fonts-noto-cjk`; that face draws simplified Chinese too.)
 
-**On Windows.** Save the alias file as UTF-8: in Notepad, File > Save as with Encoding UTF-8; in
-Windows PowerShell 5.1, `Set-Content -Encoding UTF8 -Path "$env:USERPROFILE\lcmsdeconv\aliases.txt"
--Value '123456=保密项目1'`. Its `>`, `Out-File` and plain `Set-Content` write UTF-16 or the ANSI
-code page, and cmd's `echo` writes code page 936: such files are refused. Keep the file at an
-absolute path outside the folders you hand on or synchronise, `%USERPROFILE%\lcmsdeconv\aliases.txt`
-say (with file name extensions shown in Explorer, check that it is not `aliases.txt.txt`), or, for
-every user of the computer, `C:\ProgramData\lcmsdeconv\aliases.txt`, readable by them. Set the
-variable for your account with `setx LCMSDECONV_ALIAS_FILE "%USERPROFILE%\lcmsdeconv\aliases.txt"`,
-or in Advanced system settings > Environment Variables > User variables, with no quotes around the
-value; for every user, run `setx /M` as an administrator. It applies to the programs started after
-it is set: open a new console. cmd's `set` and PowerShell's `$env:` set it for that console only,
-and the desktop application started from the Start menu does not see it. The desktop application
-reads the file when it starts: restart it after editing the file. Then check that the pairs are in
-effect: `process` prints `name aliases: 1 pair` and paths showing NEW, `results.json` holds
-`alias_pairs`, and the desktop application's status bar shows `name aliases: 1 pair`. In a batch
-file, give a NEW in Chinese in an alias file rather than with `--alias`, as cmd reads a batch
-file in code page 936.
+**On Windows.** The commands below are for cmd or Windows PowerShell 5.1 (the PowerShell of
+Windows 10 and 11), as noted; type or paste each one as a single line.
+
+1. Make the alias file as UTF-8, at an absolute path outside the folders you hand on or
+   synchronise. In PowerShell (`Set-Content` does not make a missing folder, hence `New-Item`):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\lcmsdeconv" | Out-Null
+   Set-Content -Encoding UTF8 -Path "$env:USERPROFILE\lcmsdeconv\aliases.txt" -Value '123456=保密项目1'
+   ```
+
+   To add a pair later:
+
+   ```powershell
+   Add-Content -Encoding UTF8 -Path "$env:USERPROFILE\lcmsdeconv\aliases.txt" -Value '654321=保密项目2'
+   ```
+
+   Both end the line they write with a line end. In Notepad, use File > Save as (文件 > 另存为),
+   make the folder with New folder (新建文件夹) where it is not there yet, and pick Encoding UTF-8
+   (编码 UTF-8); Notepad puts no line end after the last line, so press Enter at its end before
+   you add a pair in any other way. With file name extensions shown in
+   Explorer, check that the file is not `aliases.txt.txt`. PowerShell's `>` and `Out-File`,
+   `Set-Content` and `Add-Content` without `-Encoding UTF8`, and cmd's `echo ... >>` write UTF-16
+   or code page 936: such a file is refused as a rule (one whose text also happens to be valid
+   UTF-8 is read with its Chinese garbled: check the names `process` prints), and so is a UTF-8
+   file a line was added to that way (type its pairs into a new file).
+2. Set the variable for your account, which needs no administrator: in cmd,
+   `setx LCMSDECONV_ALIAS_FILE "%USERPROFILE%\lcmsdeconv\aliases.txt"`; in PowerShell,
+   `setx LCMSDECONV_ALIAS_FILE "$env:USERPROFILE\lcmsdeconv\aliases.txt"`. Or search the Start menu
+   for 环境变量 (environment), open Edit environment variables for your account (编辑帐户的环境变量;
+   `rundll32 sysdm.cpl,EditEnvironmentVariables` opens it too), and under User variables (用户变量)
+   click New (新建): name `LCMSDECONV_ALIAS_FILE`, value the file's full path, without quotes. Not
+   through Advanced system settings > Environment Variables (高级系统设置 > 环境变量): on a
+   standard account it asks for an administrator's password and then edits that administrator's
+   variables, not yours.
+3. For every user of the computer, as an administrator (in a console opened with Run as
+   administrator, 以管理员身份运行): make the folder (`mkdir C:\ProgramData\lcmsdeconv` in cmd,
+   `New-Item -ItemType Directory -Force C:\ProgramData\lcmsdeconv` in PowerShell), save the file
+   there as in step 1 (users can read it there), and set the variable for the computer with
+   `setx /M LCMSDECONV_ALIAS_FILE "C:\ProgramData\lcmsdeconv\aliases.txt"` or under System
+   Properties > Advanced > Environment Variables > System variables (系统属性 > 高级 > 环境变量 >
+   系统变量). Give that path itself: `%USERPROFILE%` in an administrator's console is the
+   administrator's folder, which other users cannot read. A user variable of the same name (set
+   earlier without `/M`) takes precedence for that user: delete it, in Edit environment variables
+   for your account.
+4. Programs started afterwards from the Start menu, the taskbar or Explorer see the variable, and
+   so does a console opened from there. A console or terminal opened from a program that was
+   already running (an editor, an AI assistant, a terminal window opened earlier) does not:
+   restart that program, or sign out and in. To use the variable at once in one console, set it
+   there too, for that console and the programs started from it: in cmd,
+   `set "LCMSDECONV_ALIAS_FILE=%USERPROFILE%\lcmsdeconv\aliases.txt"`; in PowerShell,
+   `$env:LCMSDECONV_ALIAS_FILE = "$env:USERPROFILE\lcmsdeconv\aliases.txt"`. Check it with
+   `echo %LCMSDECONV_ALIAS_FILE%` (cmd) or `$env:LCMSDECONV_ALIAS_FILE` (PowerShell). The desktop
+   application reads the file when it starts: restart it after editing the file.
+5. Check that the pairs are in effect: `process` prints `name aliases: 1 pair`, the number of
+   pairs in your files, and paths showing NEW; `results.json` holds `alias_pairs`; the desktop
+   application's status bar shows the same count.
+6. In a batch file or a Windows PowerShell 5.1 script (`.ps1`), give a NEW in Chinese in the alias
+   file, made in Notepad or with the commands of step 1 typed or pasted in a console, rather than
+   in the script (`--alias`, `Set-Content -Value`): cmd and Windows PowerShell 5.1 read a script
+   saved without a byte order mark in code page 936, which garbles it. Alternatively, save the
+   `.ps1` as UTF-8 with BOM (Notepad's 带有 BOM 的 UTF-8).
 
 **Python.** `lcmsdeconv.aliases.Aliases` holds the pairs (without any it changes nothing), and
 `lcmsdeconv.io.results.write_outputs` writes what `process` writes:

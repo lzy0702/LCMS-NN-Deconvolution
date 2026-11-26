@@ -51,14 +51,15 @@ def _message(parent, icon, title: str, text: str) -> None:
 
 def alias_dialog(text: str, fatal: bool = False) -> None:
     """Show a note about the name aliases (an alias file holding no pair), or with ``fatal`` an
-    error that keeps the application from starting (an alias file that cannot be used), in a
+    error that keeps the application from starting (alias pairs that cannot be used), in a
     dialog: the application may run without a console (a shortcut to pythonw), where nothing
     printed is seen."""
     QApplication.instance() or QApplication(sys.argv)
     if fatal:
         _message(None, QMessageBox.Icon.Critical, "lcmsdeconv: name aliases",
-                 f"{text}\n\nThe application was not started: correct the alias file, or the "
-                 f"{ENV_VAR} environment variable, and start it again.")
+                 f"{text}\n\nThe application was not started: correct the alias pairs (--alias, "
+                 f"--alias-file, or the {ENV_VAR} environment variable and the file it names) "
+                 "and start it again.")
     else:
         _message(None, QMessageBox.Icon.Warning, "lcmsdeconv: name aliases", text)
 
