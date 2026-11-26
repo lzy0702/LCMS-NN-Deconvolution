@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,29 @@ class ChargePrediction:
     top2_p: np.ndarray  # float32 [B]
     apex: np.ndarray  # float32 [B] in [0, 1]
     noise_sigma: float
+
+
+#: the values of ORT_DISABLE_TELEMETRY that onnxruntime's Linux build takes as "off"
+_TELEMETRY_OFF = ("1", "true", "yes")
+
+
+def import_onnxruntime():
+    """onnxruntime, with its telemetry off unless the user has set ``ORT_DISABLE_TELEMETRY=0``.
+
+    The Linux build reads the variable when it is imported, so it is set to 1 first (as it is
+    when lcmsdeconv itself is imported), unless it is set: without it, that build writes a
+    device ID and an event database under ~/.cache/Microsoft/DeveloperTools on import and looks
+    up its telemetry server during a session. The Windows build does not read it; its telemetry,
+    an event trace (ETW), is switched off by ``onnxruntime.disable_telemetry_events()``, called
+    here whenever the variable says "off"."""
+    os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+    import onnxruntime
+
+    if os.environ["ORT_DISABLE_TELEMETRY"].strip().lower() in _TELEMETRY_OFF:
+        disable = getattr(onnxruntime, "disable_telemetry_events", None)
+        if callable(disable):
+            disable()
+    return onnxruntime
 
 
 def bundled_model_path() -> Path | None:
@@ -102,8 +126,7 @@ class ChargePredictor:
             )
 
     def _init_onnx(self, path: Path, providers):
-        import onnxruntime as ort
-
+        ort = import_onnxruntime()
         avail = ort.get_available_providers()
         req = providers or ["CPUExecutionProvider"]
         use = [p for p in req if p in avail] or ["CPUExecutionProvider"]

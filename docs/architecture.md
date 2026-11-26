@@ -571,6 +571,6 @@ analyte than the source can ionise. Both raise warnings that name the affected p
 | `diagnostics.py` | charge oracles, one-to-one scoring, loss and false-species attribution |
 | `features/` | regions, per-frame quantification, retention-time linking, annotation |
 | `chrom/` | integration events and the integrator |
-| `io/` | mzML, mzMLb and Thermo readers (Waters functions, the lockspray kept apart), the lock-mass correction (`lockmass.py`), result files |
+| `io/` | mzML, mzMLb and Thermo readers (Waters functions, the lockspray kept apart), the mzML writer, the PSI-MS and UO vocabularies they use, saved with the package and never fetched (`vocabularies.py`, `data/cv/`), the lock-mass correction (`lockmass.py`), result files |
 | `quant/` | purity, calibration, potency, saturation |
-| `report/`, `gui/`, `cli.py` | HTML reports, desktop application, command line |
+| `report/`, `gui/`, `cli.py` | HTML reports (every name and text from the run, method or processing escaped), desktop application, command line |

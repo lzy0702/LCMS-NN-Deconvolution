@@ -11,9 +11,21 @@ lcmsdeconv gui                           # desktop application
 
 `process` writes `results.json`, `species.csv`, one `peaks_<signal>.csv` per integrated signal,
 and `report.html`. Pass `--uv-csv trace.csv` when the UV trace is exported separately rather than
-stored in the mzML.
+stored in the mzML. A CSV file is named after its signal, in Unicode's composed form (NFC), with
+any character but letters, digits, `-`, `_` and `.` made `_`, and a name of over 100 bytes cut
+short and ended with 8 hex digits of its hash; where two signals' names come out the same that way
+(also apart from case), the later ones get `_2`, `_3`, ... added, so no table overwrites another.
+The report escapes run, method and trace names, so characters such as `&`, `<`, quotes and `$`
+show as written in its text and are drawn as written in its plots (where a trace or species name
+holds characters the plot fonts lack, Chinese say, the plots fall back to a CJK font if one is
+installed: Microsoft YaHei or SimHei on Windows).
 
-Runs can be mzML or mzMLb (mzML in HDF5, `msconvert --mzMLb`). A Waters run's scan IDs carry
+Runs can be mzML or mzMLb (mzML in HDF5, `msconvert --mzMLb`). They are read, and `lcmsdeconv
+synth` writes mzML, with the PSI-MS and Units of Measurement Ontology vocabularies saved in the
+package (`src/lcmsdeconv/data/cv/`), which pyteomics (5 and later) would otherwise fetch from
+purl.obolibrary.org for every file it reads, and psims for the first file a process writes. A
+term the saved PSI-MS lacks is read with a warning, as pyteomics reads any term it has no type
+for, instead of failing the file. A Waters run's scan IDs carry
 its function numbers (`function=N process=P scan=S`); one function is read, the one with the
 most MS1 scans (on a tie the lowest number, the low-energy function of MSE data), so the
 lockspray reference scans interleaved with it stay out, and `--waters-function N` reads another.

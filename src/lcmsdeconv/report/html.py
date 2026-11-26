@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +38,38 @@ footer {{ color:var(--mut); font-size:12px; margin-top:32px; border-top:1px soli
 """
 
 
+def _e(text) -> str:
+    """Text from the run, its file, the method or the processing (run, method and trace names,
+    warnings, annotations) escaped for HTML, so it shows as written: such names can hold ``&``,
+    ``<`` or quotes. Names without those characters come out unchanged."""
+    return escape(str(text), quote=True)
+
+
+#: fonts for the characters the plots' own fonts lack (names in Chinese, say), the first of them
+#: installed being added after those: Windows, macOS, then Linux fonts
+CJK_FONTS = ("Microsoft YaHei", "SimHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC",
+             "Source Han Sans SC", "WenQuanYi Zen Hei")
+
+
+def _plot_fonts(result):
+    """A context in which the plots fall back to the first CJK_FONTS font installed for the
+    characters their own fonts lack, which they draw as empty boxes otherwise. Only where a
+    trace or species name holds a character beyond ASCII; no change where no such font is
+    installed."""
+    import matplotlib
+    from matplotlib import font_manager
+
+    names = [*result.chromatograms, *(s.name or "" for s in result.species)]
+    if all(str(n).isascii() for n in names):
+        return matplotlib.rc_context()
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    extra = next((f for f in CJK_FONTS if f in installed), None)
+    family = list(matplotlib.rcParams["font.family"])
+    if extra is None or extra in family:
+        return matplotlib.rc_context()
+    return matplotlib.rc_context({"font.family": family + [extra]})
+
+
 def _fig_to_uri(fig) -> str:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
@@ -48,12 +81,12 @@ def _fig_to_uri(fig) -> str:
 
 def _table(headers, rows, row_classes=None) -> str:
     left = ' class="l"'
-    th = "".join("<th" + (left if i == 0 else "") + ">" + str(h) + "</th>"
+    th = "".join("<th" + (left if i == 0 else "") + ">" + _e(h) + "</th>"
                  for i, h in enumerate(headers))
     trs = []
     for i, r in enumerate(rows):
-        cls = ' class="' + row_classes[i] + '"' if row_classes and row_classes[i] else ""
-        tds = "".join("<td" + (left if j == 0 else "") + ">" + str(c) + "</td>"
+        cls = ' class="' + _e(row_classes[i]) + '"' if row_classes and row_classes[i] else ""
+        tds = "".join("<td" + (left if j == 0 else "") + ">" + _e(c) + "</td>"
                       for j, c in enumerate(r))
         trs.append("<tr" + cls + ">" + tds + "</tr>")
     body = "".join(trs)
@@ -80,29 +113,31 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
 
     m = result.method
     parts.append('<div class="kv">'
-                 f'<div><b>Run</b>{result.run_name}</div>'
-                 f'<div><b>Method</b>{m.name}</div>'
-                 f'<div><b>Instrument</b>{m.instrument.kind.upper()} R={m.instrument.resolution:,.0f}</div>'
+                 f'<div><b>Run</b>{_e(result.run_name)}</div>'
+                 f'<div><b>Method</b>{_e(m.name)}</div>'
+                 f'<div><b>Instrument</b>{_e(m.instrument.kind.upper())} '
+                 f'R={m.instrument.resolution:,.0f}</div>'
                  f'<div><b>Species found</b>{len(result.species)}</div>'
                  f'<div><b>Regions</b>{len(result.regions)}</div>'
                  f'<div><b>Processing</b>{result.timings.get("total_s", 0):.1f} s</div>'
                  + _window_and_lock(result) + "</div>")
 
     for w in result.warnings:
-        parts.append(f'<div class="warn"><b>Warning.</b> {w}</div>')
+        parts.append(f'<div class="warn"><b>Warning.</b> {_e(w)}</div>')
     if result.saturation and result.saturation.peak_flags:
         for pid, flags in result.saturation.peak_flags.items():
-            parts.append(f'<div class="warn"><b>Peak {pid}.</b> {"; ".join(flags)}</div>')
+            parts.append(f'<div class="warn"><b>Peak {_e(pid)}.</b> {_e("; ".join(flags))}</div>')
 
     if plots:
         parts.append("<h2>Chromatograms</h2>")
-        parts.append(_plot_chromatograms(result))
+        with _plot_fonts(result):
+            parts.append(_plot_chromatograms(result))
 
     # peak tables
     for name, table in result.peak_tables.items():
         if not len(table) or name.startswith("m "):
             continue
-        parts.append(f"<h2>Peak table: {name}</h2>")
+        parts.append(f"<h2>Peak table: {_e(name)}</h2>")
         rows = [[p.id, _fmt(p.rt, 3), _fmt(p.start, 3), _fmt(p.end, 3), _fmt(p.area, 1),
                  _fmt(p.height, 1), _fmt(p.width_half, 4), _fmt(p.area_pct, 3),
                  _fmt(p.tailing, 2), p.code] for p in table.peaks]
@@ -145,19 +180,22 @@ def build_report(result, path: str | Path, title: str | None = None, plots: bool
         cal = po.get("calibration", {})
         parts.append('<div class="kv">'
                      f'<div><b>Area</b>{_fmt(po.get("area"), 1)}</div>'
-                     f'<div><b>Amount</b>{_fmt(po.get("amount"), 4)} {po.get("unit", "")}</div>'
+                     f'<div><b>Amount</b>{_fmt(po.get("amount"), 4)} {_e(po.get("unit", ""))}</div>'
                      f'<div><b>% of nominal</b>{_fmt(po.get("percent_of_nominal"), 2)}</div>'
-                     f'<div><b>Calibration</b>{cal.get("mode", "-")} r²={_fmt(cal.get("r_squared"), 5)}</div>'
+                     f'<div><b>Calibration</b>{_e(cal.get("mode", "-"))} '
+                     f'r²={_fmt(cal.get("r_squared"), 5)}</div>'
                      "</div>")
 
     if plots and result.species:
         parts.append("<h2>Deconvolved ion chromatograms</h2>")
-        parts.append(_plot_species(result))
+        with _plot_fonts(result):
+            parts.append(_plot_species(result))
 
     html = _TEMPLATE.format(
-        title=title or f"LC-MS deconvolution report: {result.run_name}",
-        subtitle=f"Method {m.name} &middot; {m.description}" if m.description else f"Method {m.name}",
-        body="\n".join(parts), version=__version__,
+        title=_e(title or f"LC-MS deconvolution report: {result.run_name}"),
+        subtitle=(f"Method {_e(m.name)} &middot; {_e(m.description)}" if m.description
+                  else f"Method {_e(m.name)}"),
+        body="\n".join(parts), version=_e(__version__),
     )
     path.write_text(html, encoding="utf-8")
     return path
@@ -170,12 +208,12 @@ def _window_and_lock(result) -> str:
     out = ""
     window = getattr(result, "rt_window", None)
     if window:
-        out += f"<div><b>Analysis window</b>{rt_window_text(window)}</div>"
+        out += f"<div><b>Analysis window</b>{_e(rt_window_text(window))}</div>"
     lock = getattr(result, "lock_mass", None)
     if lock:
         from ..io.lockmass import lock_mass_text
 
-        out += f"<div><b>Lock mass {lock['reference_mz']:.4f}</b>{lock_mass_text(lock)}</div>"
+        out += f"<div><b>Lock mass {lock['reference_mz']:.4f}</b>{_e(lock_mass_text(lock))}</div>"
     return out
 
 
@@ -209,7 +247,8 @@ def _plot_chromatograms(result) -> str:
                     ax.plot([p.start, p.end], [p.baseline_start, p.baseline_end], lw=0.8, color="#b45309")
                     ax.annotate(f"{p.rt:.2f}", (p.rt, p.height + p.baseline_start),
                                 fontsize=7, ha="center", va="bottom")
-        ax.set_ylabel(name, fontsize=9)
+        # drawn as written: a name with two '$' would otherwise be read as mathtext
+        ax.set_ylabel(name, fontsize=9, parse_math=False)
         ax.tick_params(labelsize=8)
     axes[-1, 0].set_xlabel("Retention time (min)", fontsize=9)
     return f'<img src="{_fig_to_uri(fig)}" alt="chromatograms">'
@@ -230,7 +269,8 @@ def _plot_species(result) -> str:
     ax.set_xlabel("Retention time (min)", fontsize=9)
     ax.set_ylabel("Deconvolved intensity", fontsize=9)
     ax.tick_params(labelsize=8)
-    ax.legend(fontsize=7, ncol=2, frameon=False)
+    for text in ax.legend(fontsize=7, ncol=2, frameon=False).get_texts():
+        text.set_parse_math(False)  # species names drawn as written, as the axis labels
     img = f'<img src="{_fig_to_uri(fig)}" alt="deconvolved EICs">'
 
     masses = np.array([s.mass for s in result.species])

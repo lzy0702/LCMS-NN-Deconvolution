@@ -1,14 +1,16 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lcmsdeconv"
-version = "0.1.0"
+version = "0.1.1"
 description = "Neural-network deconvolution, EIC extraction, integration and quantitation for LC-ESI-MS of macromolecules"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+# the code is MIT; the PSI-MS and UO vocabularies in src/lcmsdeconv/data/cv are CC BY 4.0
+license = "MIT AND CC-BY-4.0"
+license-files = ["LICENSE", "src/lcmsdeconv/data/cv/README.md"]
 authors = [{name = "LCMS-NN-Deconvolution contributors"}]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -18,9 +20,9 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "pandas>=2.0",
-    "pyteomics>=4.6",
+    "pyteomics>=4.7.5",
     "lxml>=4.9",
-    "psims>=1.3",
+    "psims>=1.3.6",
     "h5py>=3.8",
     "pyyaml>=6.0",
     "click>=8.1",
@@ -50,7 +52,8 @@ lcmsdeconv = "lcmsdeconv.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-lcmsdeconv = ["models/*.onnx", "models/*.json", "report/templates/*.j2", "configs/*.yaml"]
+lcmsdeconv = ["models/*.onnx", "models/*.json", "report/templates/*.j2", "configs/*.yaml",
+              "data/cv/*.obo.gz", "data/cv/README.md"]
 
 [tool.ruff]
 line-length = 100

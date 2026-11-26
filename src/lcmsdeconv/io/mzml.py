@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -129,16 +130,24 @@ def _open_reader(path: Path):
     """pyteomics' reader of an mzML file, or of an mzMLb file once its XML has passed the check.
 
     The mzMLb reader leaves its data arrays as records that read and decode them when asked
-    (:func:`_decoded`), so only the arrays kept are read from the HDF5 file.
+    (:func:`_decoded`), so only the arrays kept are read from the HDF5 file. Each reader is
+    given the PSI-MS vocabulary saved with the package (:mod:`lcmsdeconv.io.vocabularies`),
+    through which a term the saved copy lacks is read rather than failing the file: without
+    one, pyteomics 5 has psims fetch it from purl.obolibrary.org.
     """
+    from .vocabularies import reader_vocabulary
+
     if _is_mzmlb(path):
         _check_mzmlb_xml(path)
         from pyteomics.mzmlb import MzMLb
 
-        return MzMLb(str(path), decode_binary=False)
+        # MzMLb passes cv on to the mzML parser it reads the document with
+        return MzMLb(str(path), decode_binary=False, cv=reader_vocabulary())
     from pyteomics import mzml
 
-    return mzml.read(str(path))
+    # what mzml.read(path) makes, with the vocabulary: read() takes a cv but does not pass it on
+    return mzml.MzML(str(path), read_schema=False, iterative=True, use_index=False, dtype=None,
+                     huge_tree=False, decode_binary=True, cv=reader_vocabulary())
 
 
 def _decoded(array) -> np.ndarray:
@@ -313,8 +322,8 @@ def _chromatogram_kind(ch: dict, name: str) -> str:
 def _read_chromatograms(path: Path) -> dict[str, Chromatogram]:
     """The chromatograms of an mzML or mzMLb file, times in minutes.
 
-    A chromatogram that cannot be read ends the reading with those read so far; an mzMLb file
-    whose XML is refused raises :class:`UnsafeXMLError`.
+    A chromatogram that cannot be read ends the reading with those read so far, and a warning
+    says so; an mzMLb file whose XML is refused raises :class:`UnsafeXMLError`.
     """
     path = Path(path)
     out: dict[str, Chromatogram] = {}
@@ -334,7 +343,9 @@ def _read_chromatograms(path: Path) -> dict[str, Chromatogram]:
                 )
     except UnsafeXMLError:
         raise
-    except Exception:
+    except Exception as exc:
+        warnings.warn(f"{path.name}: its chromatograms after the first {len(out)} were not read "
+                      f"({type(exc).__name__}: {exc})", stacklevel=2)
         return out
     return out
 

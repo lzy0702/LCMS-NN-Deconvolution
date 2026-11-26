@@ -65,6 +65,21 @@ def test_merging_repeats_until_a_chain_of_pieces_is_joined():
     assert np.isclose(out[0].time.max(), 2.4)
 
 
+def test_a_joined_species_lists_its_adduct_forms_in_the_order_met():
+    """The adduct forms of joined pieces keep the stronger piece's order, then the other's new
+    ones: the same in every run (they followed string hashing, so results.json and species.csv
+    listed them differently from run to run)."""
+    ta, tb = np.linspace(0.0, 1.0, 26), np.linspace(1.0, 1.3, 8)
+    a = _species(0, 2998.45, ta, 100 * np.exp(-0.5 * ((ta - 0.6) / 0.2) ** 2))
+    b = _species(1, 2998.40, tb, 100 * np.exp(-0.5 * ((tb - 0.6) / 0.2) ** 2))
+    for sp, names in ((a, ["+Na", "+K", "+TEA", "+HFIP"]), (b, ["+DIPEA", "+Na", "+NH4"])):
+        sp.adduct_intensity |= {n: 0.1 * sp.intensity for n in names}
+    out = merge_adjacent_species([a, b])
+    assert len(out) == 1
+    assert list(out[0].adduct_intensity) == ["base", "+Na", "+K", "+TEA", "+HFIP", "+DIPEA",
+                                             "+NH4"]
+
+
 def test_the_tooth_of_the_isotope_comb_tells_a_deaminated_form_from_its_parent():
     m = 4832.98
     one = [_scan(1.0 + 0.04 * i, [(m, (4, 5, 6), 1e6 * (1 + i))]) for i in range(3)]

@@ -693,8 +693,13 @@ supplies an execution provider. Install the extra providers with `pip install .[
 
 ## Offline installation
 
-Nothing is downloaded at run time: the model ships inside the package. To install on a machine
-without internet, build a wheelhouse on a connected machine and copy it across:
+Nothing is downloaded at run time: the model ships inside the package, as do the PSI-MS and Units
+of Measurement Ontology vocabularies used to read and write mzML (`src/lcmsdeconv/data/cv/README.md`), and
+ONNX Runtime's telemetry is off unless `ORT_DISABLE_TELEMETRY=0` is set: lcmsdeconv sets the
+variable to 1 when it is imported, unless it is set already, which switches off the Linux build's
+telemetry, and calls `onnxruntime.disable_telemetry_events()` when it loads ONNX Runtime, which
+switches off the Windows build's (that build does not read the variable). To install on a
+machine without internet, build a wheelhouse on a connected machine and copy it across:
 
 ```bash
 pip download lcmsdeconv -d wheelhouse            # on a connected machine

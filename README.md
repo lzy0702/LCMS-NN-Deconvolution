@@ -10,9 +10,10 @@ extracted-ion chromatograms, adduct forms are merged into their base species wit
 fractions reported, ionisation and detector saturation are flagged against the UV trace, and
 peaks are integrated with Agilent-CDS-style integration events for purity and potency.
 
-The model is trained entirely on synthesized data. Nothing is downloaded at run time and
-inference runs on ONNX Runtime, so the software runs offline on ordinary lab PCs with no
-discrete GPU.
+The model is trained entirely on synthesized data. Nothing is downloaded at run time: the model
+ships inside the package, as do the vocabularies used to read and write mzML (below), and
+inference runs on ONNX Runtime with its telemetry off, so the software runs offline on ordinary
+lab PCs with no discrete GPU.
 
 ## What it handles
 
@@ -41,6 +42,24 @@ python -m venv .venv
 For an offline machine, build a wheelhouse on a connected one (`pip download`) and install with
 `pip install --no-index --find-links wheelhouse lcmsdeconv`.
 
+Reading mzML and mzMLb needs the PSI-MS controlled vocabulary, and writing mzML the Units of
+Measurement Ontology as well: pyteomics (5 and later) otherwise fetches PSI-MS from
+purl.obolibrary.org for every file it reads, and psims both for the first file a process writes.
+The package carries copies, used for every read and write: PSI-MS 4.2.18 and UO
+releases/2026-10-12, both CC BY 4.0, in `src/lcmsdeconv/data/cv/` (its `README.md` gives their
+sources, checksums and attribution). A term a file uses that the saved PSI-MS lacks (one added
+to PSI-MS later) is read with a warning instead of failing the file, and
+`python scripts/refresh_vocabularies.py` replaces the copies with the current releases.
+
+ONNX Runtime's telemetry stays off unless you set `ORT_DISABLE_TELEMETRY=0`. Its Linux build
+records a device ID under `~/.cache/Microsoft` and can contact its telemetry server unless that
+variable is 1 when it loads: lcmsdeconv sets it when it is imported, unless it is set already.
+Its Windows build does not read the variable; its telemetry, an event trace, is switched off by
+`onnxruntime.disable_telemetry_events()`, which lcmsdeconv calls when it loads ONNX Runtime. A
+program that imports `onnxruntime` before `lcmsdeconv` must set the variable itself, and one that
+runs ONNX Runtime itself rather than through lcmsdeconv loads it with
+`lcmsdeconv.nn.infer.import_onnxruntime()`, which does both.
+
 Thermo `.raw` files are read directly with the `[thermo]` extra (the open-source `opentfraw`
 parser, no vendor libraries); other vendor formats need converting to mzML or mzMLb
 (`msconvert --mzMLb`) first. From a Waters run (scan IDs `function=N process=P scan=S`) one
@@ -59,7 +78,7 @@ lcmsdeconv gui                                         # desktop application
 ```
 
 `process` writes `results.json`, `species.csv`, a peak table per integrated signal, and a
-self-contained `report.html`.
+self-contained `report.html`, which escapes run, method and trace names, so they show as written.
 
 ```python
 from lcmsdeconv.core.method import Method
@@ -159,4 +178,6 @@ power, so such species are flagged rather than silently merged.
 
 ## Licence
 
-MIT.
+MIT (`LICENSE`). The PSI-MS and UO vocabularies in `src/lcmsdeconv/data/cv/` are CC BY 4.0
+(attribution, and the citation the PSI-MS maintainers ask for, in their `README.md`), so the
+package declares `MIT AND CC-BY-4.0`.

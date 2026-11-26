@@ -106,8 +106,11 @@ def verify_parity(checkpoint: str | Path, onnx_path: str | Path, length: int = 8
     LadderNet's sparse path, the reference for the dense export) on random inputs: at the
     window of a window-view LadderNet, at each of ``lengths`` (default
     :data:`COMB_PARITY_LENGTHS`) for a comb-view one, else at ``length``."""
-    import onnxruntime as ort
     import torch
+
+    from .infer import import_onnxruntime
+
+    ort = import_onnxruntime()
 
     model, ckpt = load_torch_model(checkpoint)
     if ckpt.get("arch", "unet") == "ladder":

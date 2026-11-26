@@ -359,7 +359,8 @@ def _absorb(hit: Species, s: Species) -> None:
     # per scan, one piece's reading: the only one, or on a shared scan the larger
     take = y_s > y_hit
     merged_adducts = {}
-    for name in set(hit.adduct_intensity) | set(s.adduct_intensity):
+    # in the order first met (hit's, then the piece's), so outputs list them the same every run
+    for name in dict.fromkeys([*hit.adduct_intensity, *s.adduct_intensity]):
         a = (_on(times, hit.time, hit.adduct_intensity[name])
              if name in hit.adduct_intensity else np.zeros(times.size))
         b = (_on(times, s.time, s.adduct_intensity[name])

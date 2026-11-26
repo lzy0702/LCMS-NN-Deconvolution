@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
 import click
@@ -49,9 +51,12 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
 
         run = read_thermo_raw(input_file)
     else:
+        from .io.vocabularies import VocabularyError
+
         try:
             run = read_mzml(input_file, function=waters_function)
-        except ValueError as exc:  # no scans of that function, or an mzMLb file refused
+        # no scans of that function, or an mzMLb file refused; or a saved vocabulary damaged
+        except (ValueError, VocabularyError) as exc:
             raise click.ClickException(str(exc)) from exc
     if uv_csv:
         ch = read_uv_csv(uv_csv)
@@ -106,9 +111,48 @@ def _write_csvs(result, outdir: Path):
                         | {"adducts": "; ".join(f"{k} {v*100:.2f}%" for k, v in r["adducts"].items()),
                            "flags": "; ".join(r["flags"])})
         pd.DataFrame(rows).to_csv(outdir / "species.csv", index=False)
-    for name, table in result.peak_tables.items():
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
-        table.to_dataframe().to_csv(outdir / f"peaks_{safe}.csv", index=False)
+    for name, safe in _csv_names(list(result.peak_tables)).items():
+        result.peak_tables[name].to_dataframe().to_csv(outdir / f"peaks_{safe}.csv", index=False)
+
+
+#: the longest name part of a peak table's CSV, in UTF-8 bytes (a file name may hold 255)
+_CSV_PART_BYTES = 100
+
+
+def _csv_names(names: list[str]) -> dict[str, str]:
+    """The file name part of each peak table's CSV (``peaks_<part>.csv``): the table's name in
+    Unicode's composed form (NFC) with any character but letters, digits, '-', '_' and '.' made
+    '_', a name longer than _CSV_PART_BYTES cut short and ended with 8 hex digits of its hash.
+    Where two names come out the same, also apart from case (one file on Windows and macOS), the
+    first keeps it and the others get '_2', '_3', ... added, so no table overwrites another."""
+    def key(part: str) -> str:
+        return unicodedata.normalize("NFC", part.casefold())
+
+    safe = {n: _csv_part(n) for n in names}
+    taken = {key(s) for s in safe.values()}
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for n in names:
+        part = safe[n]
+        if key(part) in used:
+            k = 2
+            while key(f"{part}_{k}") in taken:
+                k += 1
+            part = f"{part}_{k}"
+            taken.add(key(part))
+        used.add(key(part))
+        out[n] = part
+    return out
+
+
+def _csv_part(name: str) -> str:
+    part = "".join(c if c.isalnum() or c in "-_." else "_"
+                   for c in unicodedata.normalize("NFC", name))
+    data = part.encode("utf-8")
+    if len(data) <= _CSV_PART_BYTES:
+        return part
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    return data[:_CSV_PART_BYTES - 9].decode("utf-8", "ignore") + "_" + digest
 
 
 @main.command()
@@ -127,6 +171,7 @@ def synth(preset, out, peaks, minutes, rate, saturate, switch_polarity, seed):
 
     from .io.mzml_writer import write_mzml
     from .io.results import save_json
+    from .io.vocabularies import VocabularyError
     from .synth.chromatography import generate_run
     from .synth.compounds import DEFAULT_CLASSES, ClassConfig
     from .synth.config import SynthConfig
@@ -146,7 +191,10 @@ def synth(preset, out, peaks, minutes, rate, saturate, switch_polarity, seed):
                               esi_saturation=saturate)
     outdir = Path(out)
     outdir.mkdir(parents=True, exist_ok=True)
-    path = write_mzml(run, outdir / "run.mzML")
+    try:
+        path = write_mzml(run, outdir / "run.mzML")
+    except VocabularyError as exc:
+        raise click.ClickException(str(exc)) from exc
     save_json(truth.to_dict(), outdir / "truth.json")
     click.echo(f"wrote {path} ({len(run.spectra)} frames) and truth.json")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import traceback
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,14 @@ from ..process import ProcessResult, process_run, reintegrate
 from .models import DictTableModel, EventTableModel
 
 pg.setConfigOptions(antialias=True)
+
+
+def _message(parent, icon, title: str, text: str) -> None:
+    """A message box showing ``text`` as plain text: an error can quote a file, trace or method
+    name holding '<' or '&', which Qt would otherwise take for markup."""
+    box = QMessageBox(icon, title, text, QMessageBox.StandardButton.Ok, parent)
+    box.setTextFormat(Qt.TextFormat.PlainText)
+    box.exec()
 
 
 def _apply_theme(app) -> None:
@@ -265,7 +274,7 @@ class MainWindow(QMainWindow):
         try:
             self.run = read_mzml(path, function=function)
         except Exception as exc:
-            QMessageBox.critical(self, "Could not read run", str(exc))
+            _message(self, QMessageBox.Icon.Critical, "Could not read run", str(exc))
             return
         self.process_btn.setEnabled(True)
         waters = (f", Waters function {self.run.meta['function']}"
@@ -279,7 +288,7 @@ class MainWindow(QMainWindow):
         try:
             self.method = Method.load(name)
         except Exception as exc:
-            QMessageBox.warning(self, "Method", str(exc))
+            _message(self, QMessageBox.Icon.Warning, "Method", str(exc))
             return
         self._load_integration_settings()
 
@@ -325,7 +334,7 @@ class MainWindow(QMainWindow):
     def on_failed(self, message: str):
         self._stop_worker()
         self.process_btn.setEnabled(True)
-        QMessageBox.critical(self, "Processing failed", message)
+        _message(self, QMessageBox.Icon.Critical, "Processing failed", message)
         self.statusBar().showMessage("processing failed")
 
     def on_signal_changed(self, name: str):
@@ -404,8 +413,9 @@ class MainWindow(QMainWindow):
         self.chrom_plot.plot(tic.time, tic.intensity, pen=pg.mkPen("#1b6ec2", width=1),
                              name="TIC")
         for uv in self.run.uv_traces():
+            # the legend shows names as HTML: escaped, '<' and '&' in a name show as written
             self.chrom_plot.plot(uv.time, uv.intensity, pen=pg.mkPen("#b45309", width=1),
-                                 name=uv.name)
+                                 name=escape(uv.name, quote=False))
         if tic.time.size:
             self.rt_line.setValue(float(tic.time[int(np.argmax(tic.intensity))]))
             self.region.setRegion((float(tic.time.min()), float(tic.time.max())))

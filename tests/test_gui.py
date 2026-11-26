@@ -50,6 +50,32 @@ def test_load_run_and_plot(qtbot, demo_run):
     assert "Raw spectrum" in win.spectrum_plot.plotItem.titleLabel.text
 
 
+def test_names_show_as_written_in_the_legend_and_error_boxes(qtbot, demo_run, monkeypatch,
+                                                            tmp_path):
+    """pyqtgraph's legend and Qt's message boxes take text for markup: names holding '<' or '&'
+    are escaped for the one and shown as plain text in the other."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMessageBox
+
+    from lcmsdeconv.gui.app import MainWindow
+
+    win = MainWindow()
+    qtbot.addWidget(win)
+    names = ["UV <260> PRJ#1 & Co", "UV <b>x</b> \"q\""]
+    t = np.linspace(0, 1.9, 40)
+    win.run = Run(demo_run.spectra, {n: Chromatogram(t, np.ones(40), n, "uv") for n in names},
+                  name="r")
+    win._plot_raw_chromatograms()
+    legend = win.chrom_plot.plotItem.legend
+    assert [label.item.toPlainText() for _sample, label in legend.items] == ["TIC", *names]
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: shown.append(box) or 0)
+    win.load_run(str(tmp_path / "no <b>such</b> & run.mzML"))
+    assert len(shown) == 1 and shown[0].textFormat() == Qt.TextFormat.PlainText
+    assert "no <b>such</b> & run.mzML" in shown[0].text()
+
+
 def test_event_table_edits(qtbot):
     from lcmsdeconv.gui.app import MainWindow
 

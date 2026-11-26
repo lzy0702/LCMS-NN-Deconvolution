@@ -21,12 +21,27 @@ _CHROMATOGRAM_TYPES = {
 
 
 def write_mzml(run: Run, path: str | Path, include_chromatograms: bool = True) -> Path:
-    from psims.mzml import MzMLWriter
-
+    """Write ``run`` as mzML with psims, its vocabularies (PSI-MS, UO) the copies saved with
+    the package (:func:`lcmsdeconv.io.vocabularies.make_mzml_writer`), whose versions the file's
+    ``<cvList>`` names: psims would otherwise fetch both from purl.obolibrary.org. A file that
+    could not be written whole is removed."""
     path = Path(path)
+    fh = open(path, "wb")
+    try:
+        _write(run, fh, include_chromatograms)
+    except BaseException:
+        fh.close()
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _write(run: Run, fh, include_chromatograms: bool) -> None:
+    from .vocabularies import make_mzml_writer
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        with MzMLWriter(open(path, "wb"), close=True) as out:
+        with make_mzml_writer(fh, close=True) as out:
             out.controlled_vocabularies()
             out.file_description(file_contents=["MS1 spectrum"])
             out.software_list([{"id": "lcmsdeconv", "params": ["lcmsdeconv"]}])
@@ -60,4 +75,3 @@ def write_mzml(run: Run, path: str | Path, include_chromatograms: bool = True) -
                                 chromatogram_type=ctype,
                                 time_unit="minute",
                             )
-    return path
