@@ -321,7 +321,7 @@ envelopes read right:
 | of those the comb does not make, singly charged background | <= 3 | 1 | 2 | 3 |
 
 v5 reads lone envelopes and rungless species better and keeps the laddered ones; it pays on the
-few singly charged envelopes (at the bar). None of the three finds 3206.4 of the IP-RPLC NC run,
+few singly charged envelopes (at the bar). None of the three finds 3206.4 of the IP-HILIC NC run,
 whose envelope stands nearly alone (the comb finds it): in the lone-envelope test A1V5 reads it
 z = 1 at every charge, while it follows 4512.8 from z = 2 to 5. The synthetic Orbitrap
 validation share falls (A1 0.853, A1V5 0.760) because v5's validation spectra hold the hard lone
@@ -363,8 +363,80 @@ v5 9 and 5), so the proof arms cannot rank v4 against v5 on the laddered envelop
 6011.5 Da envelope does not predict the loss either: the two networks above that read it as
 z = 1 at every charge lose the most (11 and 9), but the full-size v3 networks also read it as
 z = 1 at every charge and read none of those z = 3 states as z = 1 (0.99-1.00 of the species of
-5 kDa or more, above). What they miss are the lone envelopes, which v5 is for; the v5 networks
-trained on the GPU are to be scored on the four runs themselves.
+5 kDa or more, above). What they miss are the lone envelopes, which v5 is for.
+
+The full-size v5 networks trained on the GPU read them. The window view (GW5) and the comb view
+(GC5), 20 epochs each, the best from the 15th and the last (charge accuracy 0.969 and 0.967 on
+v5's validation spectra, which hold the hard lone envelopes and so do not compare with v3's),
+beside the v3 pair (GW3, GC3), the proof-size A1G5 and the comb, all scored by the same code:
+
+| check | bar | comb | GW3 (v3) | GC3 (v3) | A1G5 (v5, proof size) | GW5 (v5) | GC5 (v5) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| lone multiply charged envelopes (15 cases) | - | 15/15 | 5/15 | 4/15 | 15/15 | 14/15 | 11/15 |
+| a lone 4512.8 Da envelope at z = 2, 3, 4, 5, 6 read as | - | 2, 3, 4, 5, 6 | 1, 1, 1, 1, 1 | 1, 1, 1, 1, 1 | 2, 3, 4, 5, 6 | 2, 3, 4, 5, 4 | 2, 3, 4, 5, 1 |
+| a lone 6011.5 Da envelope at z = 3, 4, 5, 6 read as | - | 3, 4, 6, 7 | 1, 1, 1, 1 | 1, 1, 1, 1 | 1, 1, 1, 1 | 3, 4, 4, 4 | 3, 1, 3, 1 |
+| all envelopes of z >= 2 (120) | >= 0.88 | 0.90 | 0.96 | 0.96 | 0.88 | 0.98 | 0.98 |
+| with a ladder rung at S/N >= 100 (67) | >= 0.90 | 0.87 | 0.96 | 0.99 | 0.84 | 0.99 | 0.98 |
+| without rungs in any run (3) | - | 0.93 | 0.83 | 0.39 | 0.93 | 0.93 | 0.64 |
+| species of 5 kDa or more, z >= 2 (46) | - | 0.84 | 0.99 | 1.00 | 0.73 | 1.00 | 0.99 |
+| envelopes of z = 1 (8) | >= 0.80 | 0.71 | 0.89 | 1.00 | 0.83 | 0.86 | 0.82 |
+| envelopes of z >= 2 read mostly as z = 1 (of 120) | - | 0 | 3 | 4 | 9 | 2 | 2 |
+| species: paper / SI / traced | 20/20, >= 28/29, 8/8 | 20/20, 29/29, 8/8 | 20/20, 28/29, 7/8 | the same | the same | the same | the same |
+| reports not confirmed | <= 64 | 58 | 92 | 91 | 81 | 102 | 98 |
+| of those the comb does not make, singly charged background | <= 3 | - | 4 | 4 | 3 | 9 | 6 |
+| real-like synthetic envelopes of z >= 2 (default spectra, the runs' charges) | >= 0.85 | 0.54 | 0.83 | 0.82 | 0.71 | 0.82 | 0.87 |
+| synthetic envelopes of z >= 2 (default spectra and charges) | - | 0.39 | 0.92 | 0.93 | 0.83 | 0.92 | 0.92 |
+
+At full size v5 reads the lone envelopes the v3 networks lost (14 and 11 of 15 against 5 and 4)
+and keeps the laddered ones (0.98 of the envelopes of z >= 2, 0.99-1.00 of the species of 5 kDa
+or more): taught the exception, the full-size networks learn it, the window view nearly fully,
+the comb view in part (it reads 4512.8 Da at z = 6, alone and with z = 7 beside it, and 1884.5 Da
+at z = 3 and 4 as z = 1). The comb view reads the real-like synthetic envelopes best (0.87
+against 0.82-0.83, the only network at the bar, on 203 envelopes in 29 spectra: a narrow
+margin). The cost is in the singly charged envelopes and the reports: 0.86 and 0.82 of the
+envelopes of z = 1 (v3 0.89 and 1.00), 102 and 98 reports not confirmed (v3 92 and 91), among
+the network-only ones 9 and 6 made of singly charged background (v3 4 and 4), all small: the same
+column-wash species of 0.4 % of the run's largest in both, the rest 0.03 % or less. 3206.4 Da of
+the IP-HILIC NC run stays missed.
+
+The networks were also run on a set of eleven ion-pairing reversed-phase runs of oligonucleotides
+from a Waters RDa time-of-flight instrument (resolving power about 15 000), cut to the
+gradient (injection front and column wash left out) and processed with the time-of-flight
+oligonucleotide method at that resolving power, the ion-pairing amine's N-oxide adduct included.
+There is no truth for them. The yardsticks are a non-negative fit of the raw spectra over a 0.2 Da
+grid of mass offsets around the runs' main compound (its isotope pattern at each offset, at the
+runs' main charges, which hold about 80 % of the forms' signal), read at each known form's offset
+in its retention window; and the share of the signal in re-readings, species at 1.25 times or
+more, or 0.8 times or less, the mass of a stronger co-eluting species that is not itself one
+(judged strongest first; a lower bound: re-readings between 0.8 and 1.25 times are not counted).
+Medians over the runs (the deviations: over the 23 forms):
+
+| time-of-flight runs (11) | comb | A1G5 (v5, proof size) | GW5 (v5) | GC5 (v5) |
+| --- | --- | --- | --- | --- |
+| re-read share of the signal (range over the runs) | 28 % (16-40) | 1.8 % (0-9) | 0.9 % (0-8) | 0.9 % (0-7) |
+| species per run | 139 | 19 | 15 | 14 |
+| the known forms' share of the signal | 55 % | 68 % | 70 % | 73 % |
+| known forms against the fit: median deviation (points of the run's largest; 23 forms) | 2.7 | 1.4 | 1.7 | 2.3 |
+| of the 23, closer to the fit than the comb | - | 11 | 16 | 14 |
+| with this version's pipeline: re-read share | 12 % (2-19) | - | 0.4 % (0-3) | 0.4 % (0-4) |
+| with this version's pipeline: species per run | 124 | - | 13 | 11 |
+| with this version's pipeline: the known forms' share | 68 % | - | 72 % | 75 % |
+| with this version's pipeline: median deviation from the fit | 0.95 | - | 2.0 | 1.7 |
+| with this version's pipeline: of the 23, closer to the fit than the comb | - | - | 8 | 9 |
+
+("This version's pipeline": harmonic readings of any ratio dropped, the adduct dedupe's hold and
+the bundled RDa method with its lock-mass correction and an analysis window, `docs/usage.md`; the
+other rows are the pipeline before them.) On time-of-flight data the networks' charge readings
+leave almost no re-readings, and their reports hold a seventh to a tenth of the comb's species,
+before this version's rule against re-readings and after it (which takes the comb's share from 28
+to 12 %). Before it, their amounts of the known forms also agreed with the fit better than the
+comb's by the median (GW5 and GC5 closer on 16 and 14 of the 23 forms, A1G5 on 11); the largest
+deviation then was the pipeline's in every predictor, a major form read as the +DIPEA adduct of a
+spurious lighter species. The adduct dedupe's hold cures that misreading: with it the comb reads
+that form as the fit does and agrees with the fit best overall (median 0.95 points, worst 5). The networks, within a median of 1.7-2.0 points, read the same form 16-18
+points high and the run's next form 9-12 points high, because they put about a third of the run's
+largest form into TPAO adduct forms (their base fraction 0.60-0.63 against the comb's 0.96), which
+lifts every other form of that run.
 
 `gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
 `runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures
