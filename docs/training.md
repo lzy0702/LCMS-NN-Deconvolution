@@ -399,6 +399,16 @@ the network-only ones 9 and 6 made of singly charged background (v3 4 and 4), al
 column-wash species of 0.4 % of the run's largest in both, the rest 0.03 % or less. 3206.4 Da of
 the IP-HILIC NC run stays missed.
 
+The offline benchmark (`bench/README.md`) scored the comb, GW5 and GC5 again on a Windows laptop,
+the networks on its GPU through DirectML, with this version's pipeline (the Confidential sample 1
+rows below say what changed in it). Every row of the table came out the same except the reports
+not confirmed, which that pipeline changes: 60 for the comb, 98 for GW5 and 94 for GC5 against a
+bar of 66 (the comb's 60 plus a tenth). The comb's and GW5's are what this computer measures
+with it, and GC5's four runs repeated here on the processor give the same 94. On a test spectrum
+DirectML read the processor's top charge on every ion bin, its probabilities within 0.0002, and
+the four runs' reports were the same species on both computers, but for one trace of GC5's (under
+0.01 % of the run's largest) found at another retention time.
+
 The networks were also run on Confidential sample 1: eleven ion-pairing reversed-phase runs from a
 Waters RDa time-of-flight instrument (resolving power about 15 000) of a fully phosphorothioated
 DNA (C252H328N72O138P24S24, base composition T13 C4 G6) and forms of it, cut to the gradient
@@ -438,6 +448,18 @@ that form as the fit does and agrees with the fit best overall (median 0.95 poin
 points high and the run's next form 9-12 points high, because they put about a third of the run's
 largest form into TPAO adduct forms (their base fraction 0.60-0.63 against the comb's 0.96), which
 lifts every other form of that run.
+
+On the laptop of the offline benchmark the rows of this version's pipeline came out the same but
+three: the comb's species per run (125 against 124 by the median), GW5's median deviation from
+the fit (2.2 against 2.0 points) and the forms GW5 reads closer to the fit than the comb (6
+against 8 of the 23). One run repeated here with the comb at two and at four threads gives this
+computer's result to the bit, and the laptop's has one species fewer: the differences are the
+two computers' arithmetic (for the networks DirectML's too), not the code or the number of
+threads. For the comb they are species near the reporting threshold (1-5 in 8 of the 11 runs,
+none above 0.08 % of the run's largest). GC5 reports the same species in every run. GW5 does in
+nine; in the tenth the laptop has one of 0.005 % fewer, and in the eleventh GW5 divides a cluster
+of co-eluting forms differently (a form of 7 % of the run's largest joined to its neighbour, the
+run's largest 6.5 % lower): its reading of that cluster is the least stable result of the three.
 
 `gpu_training` trains v5 (`train_all.RECIPE`): `runs/ladder_v5_window.pt` and
 `runs/ladder_v5_comb.pt`, checked by `check_model.py` on a v5 Orbitrap spectrum. Setup measures

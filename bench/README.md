@@ -136,19 +136,24 @@ real-envelope parts of bars are skipped.
 On the development machine: 4 cores, the processor only (no GPU), each job on 2 threads, one
 job at a time. The full run was not timed there: its time is the sum of its jobs as measured
 there (the smoke run's jobs, and the same work at full size in the evaluations this benchmark
-ports).
+ports). On a laptop: an Intel Core Ultra 9 185H (16 cores, 22 threads), 32 GB, an RTX 4090
+Laptop GPU, Windows 11, the networks on DirectML, five jobs at a time on 4 threads each (the
+defaults setup chose there).
 
-| run | there |
-| --- | --- |
-| `setup_bench`, first time | half a minute to install from the wheels, then the check |
-| `run_bench --smoke`, one network | 7.5-8 minutes (21 jobs) |
-| `run_bench --smoke`, two networks | 12 minutes (26 jobs) |
-| `run_bench`, two networks | about 80 minutes (89 jobs, estimated; two thirds of it the runs of Confidential sample 1) |
-| each further network | about 35 minutes more (estimated) |
+| run | development machine | laptop |
+| --- | --- | --- |
+| `setup_bench`, first time | half a minute to install from the wheels, then the check | - |
+| `run_bench --smoke`, one network | 7.5-8 minutes (21 jobs) | - |
+| `run_bench --smoke`, two networks | 12 minutes (26 jobs) | - |
+| `run_bench`, two networks | about 80 minutes (89 jobs, estimated; two thirds of it the runs of Confidential sample 1) | 19 minutes (89 jobs, none failed) |
+| each further network | about 35 minutes more (estimated) | - |
 
-A 16-24 core laptop runs several jobs at once and DirectML runs the networks, so expect a
-fraction of these times. What each job took on your computer is in `timing.json` and in the job
-table at the end of `summary.md`.
+On the laptop a job with a network took 1.6-2.7 times as long as the same job with the comb
+alone (a Thermo run 33-95 s against 13-47 s); DirectML read a spectrum two to three times
+faster than the laptop's processor (0.7 s against 2.1 s with the comb view, 1.3 s against
+2.8 s with the window view, building the network's input and decoding its output included).
+What each job took on your computer is in `timing.json` and in the job table at the end of
+`summary.md`.
 
 ## What to upload
 
