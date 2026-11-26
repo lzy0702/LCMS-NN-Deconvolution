@@ -190,6 +190,8 @@ def test_other_compatibility_characters_are_refused_without_half_width_advice(ol
 @pytest.mark.parametrize("content, line, reason", [
     (f"{SECRET}={NEW}\r\n".encode("cp936"), 1,  # Notepad's 'ANSI', PowerShell 5.1's Set-Content
      f"not UTF-8 (saved as ANSI, code page 936 or GBK?): {SAVE_AS_UTF8}"),
+    (f"{SECRET}=路线1\r\n654321={NEW}\r\n".encode("cp936"), 1,  # 路 is C2 B7, valid UTF-8
+     f"not UTF-8 (saved as ANSI, code page 936 or GBK?): {SAVE_AS_UTF8}"),
     (b"\xff\xfe" + f"{SECRET}={NEW}\r\n".encode("utf-16-le"), 1, UTF16),  # PS 5.1's >, Out-File
     (b"\xfe\xff" + f"{SECRET}={NEW}\r\n".encode("utf-16-be"), 1, UTF16),  # Notepad's UTF-16 BE
     (f"# typed with the input method\r\n{SECRET}\uff1d{NEW}\r\n".encode(), 2,
@@ -252,15 +254,48 @@ def test_a_file_without_a_line_end_after_its_last_pair_joined_to_another(tmp_pat
         Aliases.parse(f"{SECRET}={NEW}\ufeff654321=保密项目2")
 
 
+def test_a_byte_order_mark_within_a_comment_or_a_pair_starts_no_pair(tmp_path):
+    """A byte order mark within a line starts a pair only between pairs or comments, where a file
+    was joined: one within a comment (a title pasted from a file that started with one) leaves
+    the comment one, and one within a pair (a zero-width no-break space pasted with the number)
+    is refused naming U+FEFF, as --alias refuses it."""
+    path = tmp_path / "aliases.txt"
+    path.write_bytes("# \ufeffproject list (copied from the old file)\r\n# note \ufeff more words"
+                     f"\r\n{SECRET}={NEW}\r\n".encode())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Aliases.from_file(path).pairs == {SECRET: NEW}
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "report.html").write_text("<html></html>", encoding="utf-8")
+    res = CliRunner().invoke(main, ["report", str(out), "--alias-file", str(path)],
+                             env={ENV_VAR: None})
+    assert res.exit_code == 0 and res.stdout == f"{out / 'report.html'}\n", res.output
+    invisible = "an invisible or control character"
+    for pair, side in ((f"{SECRET}\ufeff={NEW}", "OLD"),
+                       (f"{SECRET[:3]}\ufeff{SECRET[3:]}={NEW}", "OLD"),
+                       (f"{SECRET}=保密\ufeff项目1", "NEW")):
+        path.write_bytes(f"# pairs\r\n{pair}\r\n".encode())
+        with pytest.raises(AliasError) as err:
+            Aliases.from_file(path)
+        assert str(err.value) == f"alias file {path}, line 2: {side} holds U+FEFF, {invisible}"
+        with pytest.raises(AliasError) as err:
+            Aliases.parse(pair)
+        assert str(err.value) == f"--alias #1: {side} holds U+FEFF, {invisible}"
+
+
 def test_lines_added_in_another_encoding_are_refused_saying_what_to_do(tmp_path):
     """A line added to a UTF-8 file in code page 936 (Windows PowerShell 5.1's Add-Content
     without -Encoding UTF8, cmd's echo >>) leaves a file Notepad shows partly garbled, whichever
-    way it reads it: the error says to type the pairs into a new file, not to save it as UTF-8.
+    way it reads it: the error says to type the pairs into a new file, not to save it as UTF-8,
+    also where the lines before it are ASCII but the file starts with a byte order mark (Notepad
+    reads it as UTF-8, showing the added line garbled).
     A pair holding U+FFFD, which an editor puts for a character it could not read, is refused
     from a file and --alias alike."""
     path = tmp_path / "aliases.txt"
     added = "654321=保密项目2\r\n".encode("cp936")
-    for head, line in ((f"{SECRET}={NEW}\r\n".encode(), 2), (f"{SECRET}={NEW}".encode(), 1)):
+    for head, line in ((f"{SECRET}={NEW}\r\n".encode(), 2), (f"{SECRET}={NEW}".encode(), 1),
+                       (b"\xef\xbb\xbf# project numbers: OLD=NEW\r\nPRJ-7=Project seven\r\n", 3)):
         path.write_bytes(head + added)
         with pytest.raises(AliasError) as err:
             Aliases.from_file(path)
@@ -1191,6 +1226,52 @@ def test_a_caught_exception_keeps_one_hook_however_many_blocks_follow(tmp_path):
     assert "ValueError: worker failed" in res.stderr and "RecursionError" not in res.stderr
     assert "No such file or directory: 'LC-X-S.mzML'" in res.stderr
     assert "RuntimeError: main failed" in res.stderr and SECRET not in res.stderr
+
+
+def test_hooks_put_over_the_console_hooks_with_functools_wraps_are_kept(tmp_path):
+    """A hook another library puts over console()'s with functools.wraps, which copies the
+    attributes of the function it wraps onto the wrapper, is not taken for one of console()'s: a
+    crash reporter wrapping the exception hooks kept for a caught exception stays through the
+    blocks that follow, is called for a thread failing after them, and is the hook once that
+    exception has been printed (aliased); hooks put over all six within a block are kept when it
+    closes."""
+    hooks = ("(sys.excepthook, threading.excepthook, sys.unraisablehook, warnings.showwarning, "
+             "logging.getLogRecordFactory(), logging.Handler.handle)")
+    code = ("import functools, logging, sys, threading, warnings\n"
+            "from lcmsdeconv.aliases import Aliases\n"
+            f"a = Aliases.parse('{SECRET}=X')\n"
+            "calls = []\n"
+            "def wrap(hook, name):\n"
+            "    @functools.wraps(hook)\n"
+            "    def wrapper(*args, **kwargs):\n"
+            "        calls.append(name)\n"
+            "        return hook(*args, **kwargs)\n"
+            "    return wrapper\n"
+            "try:\n    with a.console():\n"
+            f"        open('LC-{SECRET}-S.mzML')\n"
+            "except OSError as exc:\n    caught = exc\n"
+            "reporter = sys.excepthook = wrap(sys.excepthook, 'excepthook')\n"
+            "threading.excepthook = wrap(threading.excepthook, 'thread')\n"
+            "with a.console():\n    pass\n"
+            "def fail():\n    raise ValueError('worker failed')\n"
+            "worker = threading.Thread(target=fail)\nworker.start()\nworker.join()\n"
+            "sys.excepthook(type(caught), caught, caught.__traceback__)\n"
+            "print(calls, sys.excepthook is reporter, flush=True)\n"
+            "with a.console():\n"
+            "    sys.excepthook = wrap(sys.excepthook, 'excepthook')\n"
+            "    threading.excepthook = wrap(threading.excepthook, 'thread')\n"
+            "    sys.unraisablehook = wrap(sys.unraisablehook, 'unraisable')\n"
+            "    warnings.showwarning = wrap(warnings.showwarning, 'warning')\n"
+            "    logging.setLogRecordFactory(wrap(logging.getLogRecordFactory(), 'factory'))\n"
+            "    logging.Handler.handle = wrap(logging.Handler.handle, 'handle')\n"
+            f"    put = {hooks}\n"
+            f"print(put == {hooks})\n")
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=tmp_path, timeout=60)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout == "['thread'] True\nTrue\n"
+    assert "ValueError: worker failed" in res.stderr
+    assert "No such file or directory: 'LC-X-S.mzML'" in res.stderr and SECRET not in res.stderr
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX's")

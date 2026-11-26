@@ -78,6 +78,10 @@ _INVISIBLE_NEW = _INVISIBLE - {"Cf"}
 _LINE_END = re.compile(r"\r\n|\r|\n")
 _LINE_END_BYTES = re.compile(rb"\r\n|\r|\n")
 
+#: a character of three bytes in UTF-8 (as UTF-8 writes Chinese), which text in code page 936
+#: seldom forms, though it often forms one of two bytes (路 is C2 B7 there)
+_UTF8_THREE_BYTES = re.compile(rb"[\xe0-\xef][\x80-\xbf]{2}")
+
 #: what an error about a file that is not UTF-8 tells the user to do
 _SAVE_AS_UTF8 = "save it as UTF-8 (in Notepad: File > Save as, Encoding UTF-8)"
 
@@ -166,6 +170,23 @@ def _pair_problem(old: str, new: str, empty: tuple[str, str] = ("nothing before 
     if "\ufffd" in new:
         return f"NEW holds U+FFFD, {_LOST}"
     return None
+
+
+def _file_parts(line: str) -> list[str]:
+    """An alias file's line split where a file starting with a byte order mark was joined to it
+    after a last line without a line end: at a byte order mark with a pair, a comment or nothing
+    on each side. One elsewhere, a zero-width no-break space pasted within a pair or a comment,
+    is left there: the pair is refused naming U+FEFF, and the comment stays one (a text holding
+    '=' after it is read as a pair, never taken into the comment)."""
+    pieces = line.split("\ufeff")
+    parts = [pieces[0]]
+    for piece in pieces[1:]:
+        if all(not t or t.startswith("#") or "=" in t
+               for t in (parts[-1].strip(), piece.strip())):
+            parts.append(piece)
+        else:
+            parts[-1] += "\ufeff" + piece
+    return parts
 
 
 def _no_equals(line: str) -> str:
@@ -290,13 +311,13 @@ class Aliases:
 
     @classmethod
     def from_file(cls, path: str | os.PathLike, known: Aliases | None = None) -> Aliases:
-        """The pairs of an alias file: UTF-8 (a byte order mark is accepted, and one within a line
-        starts a pair there, as where two files were joined, and so are end-of-file marks,
-        Ctrl-Z, at its end, as cmd's ``copy a+b`` adds), LF, CRLF or CR line ends, one OLD=NEW per
-        line split at the first '=', whitespace around OLD and NEW stripped; blank lines and lines
-        starting with '#' are skipped. A file holding no pair gives none, with an AliasWarning,
-        and so does one with a NEW holding '=' (two pairs on one line, where a file that did not
-        end with a line end was joined to another or added to).
+        """The pairs of an alias file: UTF-8 (a byte order mark is accepted, and one between pairs
+        or comments within a line starts a pair there, as where two files were joined, and so are
+        end-of-file marks, Ctrl-Z, at its end, as cmd's ``copy a+b`` adds), LF, CRLF or CR line
+        ends, one OLD=NEW per line split at the first '=', whitespace around OLD and NEW stripped;
+        blank lines and lines starting with '#' are skipped. A file holding no pair gives none,
+        with an AliasWarning, and so does one with a NEW holding '=' (two pairs on one line, where
+        a file that did not end with a line end was joined to another or added to).
 
         AliasError for a file that is missing or cannot be read, is not UTF-8 (UTF-16 or an ANSI
         code page: the message says to save it as UTF-8; or lines added to it in another
@@ -350,7 +371,9 @@ class Aliases:
         try:
             text = body.decode("utf-8")
         except UnicodeDecodeError as exc:
-            if not body[:exc.start].isascii():  # UTF-8 text before it: lines added otherwise
+            # UTF-8 before it (a byte order mark, or a character of three bytes, as UTF-8 writes
+            # Chinese): lines added otherwise
+            if data.startswith(codecs.BOM_UTF8) or _UTF8_THREE_BYTES.search(body, 0, exc.start):
                 raise error("not UTF-8, though the text before it is (a line added in code page "
                             "936, with Windows PowerShell 5.1's Add-Content without -Encoding "
                             "UTF8 or cmd's echo >>?): type the pairs into a new file in Notepad "
@@ -363,9 +386,10 @@ class Aliases:
             raise error(f"not UTF-8{ansi}: {_SAVE_AS_UTF8}", line_of(body, exc.start)) from None
         joined = []  # the lines with a NEW holding '='
         for n, line in enumerate(_LINE_END.split(text), 1):
-            # a byte order mark starts a file: within a line, a file that did not end with a
-            # line end was joined to another there (cat a b, copy a+b), and a pair starts there
-            for part in line.split("\ufeff"):
+            # a byte order mark starts a file: between pairs or comments within a line, a file
+            # that did not end with a line end was joined to another there (cat a b, copy a+b),
+            # and a pair starts there
+            for part in _file_parts(line):
                 part = part.strip()
                 if not part or part.startswith("#"):
                     continue
@@ -974,10 +998,16 @@ def _escape(exc: BaseException, aliases: Aliases) -> None:
             _pending += 1
 
 
+#: the code of console()'s hooks (that of _install's functions)
+_HOOK_CODE: set[types.CodeType] = set()
+
+
 def _mark(hook) -> tuple[object, Any] | None:
-    """(installation, hook replaced) of a console() hook; None for any other hook. Read from a
-    function's own attributes, never with getattr: a Mock makes up any attribute asked of it."""
-    if not isinstance(hook, types.FunctionType):
+    """(installation, hook replaced) of a console() hook; None for any other hook. Told by its
+    code, which functools.wraps does not copy onto a wrapper as it copies the attributes, and
+    read from the function's own attributes, never with getattr: a Mock makes up any attribute
+    asked of it."""
+    if not isinstance(hook, types.FunctionType) or hook.__code__ not in _HOOK_CODE:
         return None
     own = hook.__dict__
     if "_lcmsdeconv_token" not in own:
@@ -1039,6 +1069,7 @@ def _write(text: str) -> None:
 
 def _hook(function, token: object, previous):
     """``function``, a hook of the installation ``token`` put over ``previous``."""
+    _HOOK_CODE.add(function.__code__)
     function._lcmsdeconv_token = token
     function._lcmsdeconv_previous = previous
     return function

@@ -315,9 +315,10 @@ alias file itself where the outputs do not go. `train`, `export-onnx` and `metho
 trace or method names: they take no pairs, ignore `LCMSDECONV_ALIAS_FILE` and print their paths as
 given.
 
-**The file.** UTF-8 (a byte order mark is accepted, and one within a line starts a pair there, as
-where two files were joined with `cat` or cmd's `copy a.txt+b.txt`, and so are end-of-file marks,
-Ctrl-Z, at its end, as `copy` adds), LF, CRLF or CR line ends, one pair per line:
+**The file.** UTF-8 (a byte order mark is accepted, and one between pairs or comments within a
+line starts a pair there, as where two files were joined with `cat` or cmd's `copy a.txt+b.txt`,
+and so are end-of-file marks, Ctrl-Z, at its end, as `copy` adds), LF, CRLF or CR line ends, one
+pair per line:
 
 ```text
 # project numbers: OLD=NEW
