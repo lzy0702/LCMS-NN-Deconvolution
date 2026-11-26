@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import sys
 import traceback
+import warnings
 from html import escape
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..aliases import Aliases
+from ..aliases import ENV_VAR, AliasError, Aliases, AliasWarning
 from ..core.method import IntegrationEvent, Method, bundled_methods
 from ..core.model import Run
 from ..process import ProcessResult, process_run, reintegrate
@@ -46,6 +47,20 @@ def _message(parent, icon, title: str, text: str) -> None:
     box = QMessageBox(icon, title, text, QMessageBox.StandardButton.Ok, parent)
     box.setTextFormat(Qt.TextFormat.PlainText)
     box.exec()
+
+
+def alias_dialog(text: str, fatal: bool = False) -> None:
+    """Show a note about the name aliases (an alias file holding no pair), or with ``fatal`` an
+    error that keeps the application from starting (an alias file that cannot be used), in a
+    dialog: the application may run without a console (a shortcut to pythonw), where nothing
+    printed is seen."""
+    QApplication.instance() or QApplication(sys.argv)
+    if fatal:
+        _message(None, QMessageBox.Icon.Critical, "lcmsdeconv: name aliases",
+                 f"{text}\n\nThe application was not started: correct the alias file, or the "
+                 f"{ENV_VAR} environment variable, and start it again.")
+    else:
+        _message(None, QMessageBox.Icon.Warning, "lcmsdeconv: name aliases", text)
 
 
 def _apply_theme(app) -> None:
@@ -80,11 +95,11 @@ class ProcessWorker(QObject):
 
 class MainWindow(QMainWindow):
     """The application's window. ``aliases`` (:class:`lcmsdeconv.aliases.Aliases`; default: the
-    pairs of the file $LCMSDECONV_ALIAS_FILE names) are applied to every run and method as it is
+    pairs of the file LCMSDECONV_ALIAS_FILE names) are applied to every run and method as it is
     read or loaded, and to the paths and error texts the window shows, so that its tables,
-    legends, dialogs and the reports it exports show NEW in place of OLD. The method's trace
-    references are resolved against the run as read when it is processed
-    (:meth:`_method_for_run`)."""
+    legends, dialogs and the reports it exports show NEW in place of OLD; the status bar shows
+    the number of pairs in effect. The method's trace references are resolved against the run as
+    read when it is processed (:meth:`_method_for_run`)."""
 
     def __init__(self, run_file: str | None = None, method_name: str | None = None,
                  waters_function: int | None = None, aliases: Aliases | None = None):
@@ -203,6 +218,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Open an mzML run to begin")
+        self.alias_label: QLabel | None = None
+        if self.aliases:  # so the pairs can be seen to be in effect
+            n = len(self.aliases)
+            self.alias_label = QLabel(f"name aliases: {n} {'pair' if n == 1 else 'pairs'}")
+            self.statusBar().addPermanentWidget(self.alias_label)
 
     def _build_events_tab(self) -> QWidget:
         w = QWidget()
@@ -347,6 +367,8 @@ class MainWindow(QMainWindow):
             self._worker = None
 
     def on_processed(self, result):
+        if self.aliases:  # processed aliased (the report's plots use more CJK fonts then)
+            result.alias_pairs = len(self.aliases)
         self.result = result
         self._stop_worker()
         self.process_btn.setEnabled(True)
@@ -476,13 +498,34 @@ class MainWindow(QMainWindow):
 
 def launch(run_file: str | None = None, method: str | None = None,
            waters_function: int | None = None, aliases: Aliases | None = None) -> int:
-    """Run the application; ``aliases`` as for :class:`MainWindow` (default: those of
-    $LCMSDECONV_ALIAS_FILE), also applied to the warnings, log records and tracebacks printed
-    while it runs, that of an error leaving it included
+    """Run the application; ``aliases`` as for :class:`MainWindow` (default: those of the
+    file LCMSDECONV_ALIAS_FILE names, a problem with which is shown in a dialog: one that keeps
+    them from being used returns 1 without opening the window), also applied to the warnings,
+    log records and tracebacks printed while it runs, that of an error leaving it included
     (:meth:`lcmsdeconv.aliases.Aliases.console`)."""
     app = QApplication.instance() or QApplication(sys.argv)
     _apply_theme(app)
-    aliases = Aliases.from_env() if aliases is None else aliases
+    if aliases is None:
+        caught: list = []
+        error = None
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", AliasWarning)
+                aliases = Aliases.from_env()
+        except AliasError as exc:
+            error = str(exc)
+        for w in caught:
+            if issubclass(w.category, AliasWarning):
+                if sys.stderr is not None:
+                    print(f"WARNING: {w.message}", file=sys.stderr)
+                alias_dialog(str(w.message))
+            else:  # as it would have been shown
+                warnings.showwarning(w.message, w.category, w.filename, w.lineno, w.file, w.line)
+        if error is not None:
+            if sys.stderr is not None:
+                print(f"Error: {error}", file=sys.stderr)
+            alias_dialog(error, fatal=True)
+            return 1
     with aliases.console():
         win = MainWindow(run_file, method, waters_function=waters_function, aliases=aliases)
         win.show()

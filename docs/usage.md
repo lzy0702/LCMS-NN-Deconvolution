@@ -298,15 +298,25 @@ LCMSDECONV_ALIAS_FILE=~/aliases.txt lcmsdeconv gui
 **Giving pairs.** `--alias OLD=NEW` and `--alias-file FILE` (both repeatable) are taken by
 `process`, `gui`, `report`, `evaluate` and `synth`, and the environment variable
 `LCMSDECONV_ALIAS_FILE` names a file every one of them reads, as does the desktop application
-however it is started. The pairs of `LCMSDECONV_ALIAS_FILE` come first, then those of each
-`--alias-file` in turn, then each `--alias`; a later pair for one OLD replaces an earlier one. No
-pair is built into lcmsdeconv, and no output records an OLD or a pair: `results.json` records only
-how many pairs were in effect (`alias_pairs`, absent without any). Keep the alias file itself
-where the outputs do not go. `train`, `export-onnx` and `methods` handle no run, trace or method
-names: they take no pairs, ignore `LCMSDECONV_ALIAS_FILE` and print their paths as given.
+however it is started. Its value may be in double quotes, as Windows' "Copy as path" gives a path,
+and may start with `~` or hold environment variables (`%USERPROFILE%`, `$HOME`); give an absolute
+path, as a relative one is read from whatever folder lcmsdeconv starts in (an error then shows the
+folder it was looked for in). A variable named `LCMSDECONV_ALIAS_FILE` with a space after the
+name, as cmd's `set LCMSDECONV_ALIAS_FILE = ...` makes, stops the command with an error. The pairs
+of `LCMSDECONV_ALIAS_FILE` come first, then those of each `--alias-file` in turn, then each
+`--alias`; a later pair for one OLD replaces an earlier one. No pair is built into lcmsdeconv, and
+no output records an OLD or a pair: `results.json` records only how many pairs were in effect
+(`alias_pairs`, absent without any). To see that pairs are in effect, `process` prints `name
+aliases: 2 pairs` first (unless `--quiet`), and the desktop application shows the same in its
+status bar; neither shows anything without pairs. An alias file holding no pair (only comments,
+say) aliases nothing, and a warning says so (in a dialog in the desktop application). Keep the
+alias file itself where the outputs do not go. `train`, `export-onnx` and `methods` handle no run,
+trace or method names: they take no pairs, ignore `LCMSDECONV_ALIAS_FILE` and print their paths as
+given.
 
 **The file.** UTF-8 (a byte order mark is accepted, also at the start of a line, as where two files
-were joined with `cat`), LF, CRLF or CR line ends, one pair per line:
+were joined with `cat`, and so are end-of-file marks, Ctrl-Z, at its end, as where they were
+joined with cmd's `copy a.txt+b.txt`), LF, CRLF or CR line ends, one pair per line:
 
 ```text
 # project numbers: OLD=NEW
@@ -317,14 +327,23 @@ PRJ-7 = Project seven
 Each line is split at its first `=` (so NEW may hold `=`, OLD cannot), and the whitespace around OLD
 and NEW is stripped. Blank lines and lines whose first non-blank character is `#` are skipped (an
 OLD starting with `#` is given with `--alias`); there are no comments at the end of a line. A
-file that is missing or cannot be read, is not UTF-8 (a file saved as UTF-16 included), or has a
-line without `=`, with an empty OLD or NEW, or with an invisible or control character in either (a
-zero-width space or direction mark pasted with the number, a tab, NUL; such an OLD would match
-nothing) stops the command with an error naming the file and the line, never quoting the line,
-which holds the text being hidden: `Error: alias file aliases.txt, line 3: no '=' (expected
-OLD=NEW)`, `Error: alias file aliases.txt, line 2: OLD holds U+200B, an invisible or control
-character`. The `--alias` pairs are checked the same way (`Error: --alias #1: ...`). The file's
-path in such an error is shown with the pairs read before it and those of `--alias`.
+file that is missing or cannot be read, is not UTF-8 (a file saved as UTF-16 or in an ANSI code
+page included: the error says how to save it as UTF-8), or has a line without `=` (the error names
+a full-width `＝` typed with an input method), with an empty OLD or NEW, with an invisible or
+control character in OLD (a zero-width space or direction mark pasted with the number, a tab, NUL)
+or with a full-width or compatibility character in OLD (`１２３４５６` typed with an input method in
+full-width mode, a no-break or ideographic space pasted from a document) stops the command with an
+error naming the file and the line, never quoting the line, which holds the text being hidden;
+the desktop application shows the error in a dialog and does not start, as it may run without a
+console. Such an OLD would match nothing, as names are written in plain characters. A NEW may
+hold format characters (Persian's zero-width non-joiner, an emoji's zero-width joiner, a soft
+hyphen), but no control character or line break. The errors read `Error: alias file aliases.txt, line 3: no '='
+(expected OLD=NEW)`, `Error: alias file aliases.txt, line 2: OLD holds U+200B, an invisible or
+control character` or `Error: alias file aliases.txt, line 1: OLD holds U+FF11, a full-width or
+compatibility form of a character, which does not match the plain one: type it half-width (the
+input method in English or half-width mode)`. The `--alias` pairs are checked the same way
+(`Error: --alias #1: ...`). The file's path in such an error is shown with the pairs read before
+it and those of `--alias`.
 
 **Matching.** Case-sensitive, with the pairs and the names compared in Unicode's composed form
 (NFC). At each position the longest OLD wins, in a single pass, so a NEW is never matched again. An
@@ -371,18 +390,21 @@ is part of a number, with a digit, or a `.` or `,` and a digit, right before or 
 (`0.123456`, `123456.7`), is not counted. For each file holding any, it prints one warning on
 stderr naming the file, each OLD in the name shown as `***`, and the count, never the text found
 (`WARNING: report.html still holds 2 occurrences of an alias's OLD text`). It then checks what else
-`--out` holds, an earlier run's outputs say, which it does not rewrite or delete: the name of every
-file and folder there, and the text of those named as outputs are (`results.json`, `species.csv`,
-`report.html`, `peaks_*.csv`): `WARNING: peaks_UV_***.csv, which this run did not write, holds 2
-occurrences of an alias's OLD text`. Give `--out` a fresh folder, or delete such files, before
-handing it on. The check never fails the command. A NEW that holds its OLD always trips it.
+`--out` holds, at any depth (an earlier run's outputs, there or in a folder in it), which it does
+not rewrite or delete: the name of every file and folder, and the text of those named as outputs
+are (`results.json`, `species.csv`, `report.html`, `peaks_*.csv`): `WARNING: run1/peaks_UV_***.csv,
+which this run did not write, holds 2 occurrences of an alias's OLD text` (at most 10,000 entries
+are looked at, and no text above 50 MB is read). Give `--out` a fresh folder, or delete such
+files, before handing it on. The check never fails the command. A NEW that holds its OLD outside a
+number trips it.
 
 **Chinese names in the plots.** A NEW in Chinese (`保密项目1`) is drawn in the report's plots
 through the same CJK font fallback as any trace or species name in Chinese: Microsoft YaHei or
-SimHei on Windows, PingFang SC or Hiragino Sans GB on macOS, Noto Sans CJK (any of its SC, TC, HK,
-JP or KR faces, each of which holds simplified Chinese), Source Han Sans SC or WenQuanYi Zen Hei on
-Linux. A Linux machine with none of these draws each Chinese character in the plots as an empty
-box (`UV □□□□1`), and matplotlib warns
+SimHei on Windows, PingFang SC or Hiragino Sans GB on macOS, Noto Sans CJK SC, Source Han Sans SC
+or WenQuanYi Zen Hei on Linux, the first of them installed; for a run processed with pairs, Noto
+Sans CJK's TC, HK, JP and KR faces, each of which holds simplified Chinese, are tried after those
+(a run without pairs is drawn as before). A Linux machine with none of these draws each Chinese
+character in the plots as an empty box (`UV □□□□1`), and matplotlib warns
 `Glyph 20445 (\N{CJK UNIFIED IDEOGRAPH-4FDD}) missing from font(s) DejaVu Sans`; the report's text
 is unaffected (the browser draws it with its own fonts). Install a CJK font (`sudo apt install
 fonts-noto-cjk` or `fonts-wqy-zenhei` on Debian or Ubuntu, `sudo dnf install
@@ -390,6 +412,24 @@ google-noto-sans-cjk-fonts` on Fedora), delete matplotlib's font cache (`rm -rf
 ~/.cache/matplotlib`) so that it finds the new font, and process the run again. (matplotlib before
 3.11 reads only the first face of a font collection, Noto Sans CJK JP in Debian's and Ubuntu's
 `fonts-noto-cjk`; that face draws simplified Chinese too.)
+
+**On Windows.** Save the alias file as UTF-8: in Notepad, File > Save as with Encoding UTF-8; in
+Windows PowerShell 5.1, `Set-Content -Encoding UTF8 -Path "$env:USERPROFILE\lcmsdeconv\aliases.txt"
+-Value '123456=保密项目1'`. Its `>`, `Out-File` and plain `Set-Content` write UTF-16 or the ANSI
+code page, and cmd's `echo` writes code page 936: such files are refused. Keep the file at an
+absolute path outside the folders you hand on or synchronise, `%USERPROFILE%\lcmsdeconv\aliases.txt`
+say (with file name extensions shown in Explorer, check that it is not `aliases.txt.txt`), or, for
+every user of the computer, `C:\ProgramData\lcmsdeconv\aliases.txt`, readable by them. Set the
+variable for your account with `setx LCMSDECONV_ALIAS_FILE "%USERPROFILE%\lcmsdeconv\aliases.txt"`,
+or in Advanced system settings > Environment Variables > User variables, with no quotes around the
+value; for every user, run `setx /M` as an administrator. It applies to the programs started after
+it is set: open a new console. cmd's `set` and PowerShell's `$env:` set it for that console only,
+and the desktop application started from the Start menu does not see it. The desktop application
+reads the file when it starts: restart it after editing the file. Then check that the pairs are in
+effect: `process` prints `name aliases: 1 pair` and paths showing NEW, `results.json` holds
+`alias_pairs`, and the desktop application's status bar shows `name aliases: 1 pair`. In a batch
+file, give a NEW in Chinese in an alias file rather than with `--alias`, as cmd reads a batch
+file in code page 936.
 
 **Python.** `lcmsdeconv.aliases.Aliases` holds the pairs (without any it changes nothing), and
 `lcmsdeconv.io.results.write_outputs` writes what `process` writes:
@@ -401,7 +441,7 @@ from lcmsdeconv.io.mzml import read_mzml, read_uv_csv
 from lcmsdeconv.io.results import write_outputs
 from lcmsdeconv.process import process_run
 
-aliases = Aliases.from_env() | Aliases.parse(["123456=保密项目1"])  # or Aliases.from_file(path)
+aliases = Aliases.from_env() | Aliases.parse(["123456=保密项目1"])  # or .from_file(alias_path)
 with aliases.console():  # warnings, log records and tracebacks printed aliased
     run = read_mzml(path)
     uv = read_uv_csv(uv_path)  # where the UV trace comes as a CSV file (--uv-csv)
@@ -409,20 +449,35 @@ with aliases.console():  # warnings, log records and tracebacks printed aliased
     result = process_run(run, Method.load("rplc_pos_protein"), aliases=aliases)
     written = write_outputs(result, "results")  # results.json, species.csv, peaks_*.csv, report
 print(aliases.apply("results/results.json"))
-for name, n in aliases.leaks(written, "results"):
-    print(f"WARNING: {name} still holds {n} occurrences of an alias's OLD text")
+# the files written, then what else the folder holds (best a fresh one), as process checks them
+for name, n in aliases.leaks(written, "results") + aliases.leaks_in("results", exclude=written):
+    print(f"WARNING: {name} holds {n} occurrences of an alias's OLD text")
 ```
 
 `Aliases.collect(files, pairs)` puts pairs together as the command line does (the file
 `LCMSDECONV_ALIAS_FILE` names, then `files`, then `pairs`), `merged` or `|` combine two sets (the
-later wins), `apply(text)` aliases a text, and `alias_run(run)` and `alias_method(method, run)`
-return aliased copies (the objects passed in are not changed), which is what `process_run(...,
-aliases=...)` processes; it records the number of pairs in `result.alias_pairs`. Give
-`alias_method` the run as read, before `alias_run`: it resolves the method's trace references
-against it (without it, they are aliased as text, which names another trace where aliasing made two
-trace names equal). Pass a run and a method aliased already to `process_run` without `aliases=`:
-aliasing twice can differ from aliasing once. Within `aliases.console()`, a traceback Python prints
-for an exception leaving the block, after it, where nothing catches it, is aliased too.
+later wins), `apply(text)` aliases a text, `leaks(files, folder)` and `leaks_in(folder, exclude)`
+check files and what else a folder holds at any depth, and `alias_run(run)` and
+`alias_method(method, run)` return aliased copies (the objects passed in are not changed), which
+is what `process_run(..., aliases=...)` processes; it records the number of pairs in
+`result.alias_pairs`. Give `alias_method` the run as read, before `alias_run`: it resolves the
+method's trace references against it (without it, they are aliased as text, which names another
+trace where aliasing made two trace names equal). Pass a run and a method aliased already to
+`process_run` without `aliases=`: aliasing twice can differ from aliasing once.
+
+Within `aliases.console()`, what Python prints as text is aliased. A warning is passed on, aliased,
+to the warnings hook in effect, so `warnings.catch_warnings`, `pytest.warns` and
+`logging.captureWarnings` still get it. A log record has its message, exception and stack text
+and its other text fields (file, module, function and thread names, `extra` fields) aliased as it
+is made and as a handler takes it; a record holding no OLD is left as it is. The traceback of an
+exception no one catches, in any thread, an exception Python ignores (one raised in `__del__`, say)
+and the message of `sys.exit("...")` are aliased too. An exception leaving the block is printed
+aliased where nothing catches it, even after the block, and so is a group of such exceptions:
+`sys.excepthook` and `threading.excepthook` keep a hook for this until it has printed every such
+exception, for good where one is caught. Blocks open at once, nested or in other threads (one for
+each worker of a pool, say), share the hooks, which apply the pairs of all of them and are put
+back when the last block closes. Join a thread started within a block before the block ends: one
+that fails after it is printed as Python prints it.
 
 ## Python
 

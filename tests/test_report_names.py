@@ -128,6 +128,30 @@ def test_plots_fall_back_to_a_cjk_font_for_names_in_chinese(tmp_path):
     assert not [w for w in caught if "missing from font" in str(w.message)]
 
 
+def test_the_cjk_fallback_keeps_its_order(monkeypatch):
+    """Where WenQuanYi Zen Hei and Noto Sans CJK JP are both installed (Debian's fonts-noto-cjk
+    as matplotlib before 3.11 sees it), the plots of a run named in Chinese fall back to WenQuanYi
+    Zen Hei, as they always did. Noto Sans CJK's other faces are tried only after CJK_FONTS, and
+    only for a run processed with name aliases, so a run without them is drawn as before."""
+    import matplotlib
+    from matplotlib import font_manager
+
+    def family(fonts, alias_pairs):
+        monkeypatch.setattr(font_manager.fontManager, "ttflist",
+                            [font_manager.FontEntry(name=f) for f in fonts])
+        result = SimpleNamespace(chromatograms={"UV 样品甲": None}, species=[],
+                                 alias_pairs=alias_pairs)
+        with report._plot_fonts(result):
+            return list(matplotlib.rcParams["font.family"])
+
+    base = list(matplotlib.rcParams["font.family"])
+    for pairs in (0, 2):
+        assert family(["Noto Sans CJK JP", "WenQuanYi Zen Hei"], pairs) == base + [
+            "WenQuanYi Zen Hei"]
+    assert family(["Noto Sans CJK JP"], 0) == base  # as before: no fallback
+    assert family(["Noto Sans CJK JP"], 2) == base + ["Noto Sans CJK JP"]
+
+
 def test_peak_table_csv_names_are_unique():
     names = ["TIC", "UV 260", "UV_260", "uv 260", "UV_260_2", "UV/260", "TUV 260 nm"]
     parts = _csv_names(names)

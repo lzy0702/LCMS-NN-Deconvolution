@@ -12,28 +12,46 @@ import click
 from . import __version__
 
 # ------------------------------------------------------------------ name aliases
-#: where a command keeps its aliases (lcmsdeconv.aliases.Aliases) in the context's shared meta
+#: where a command keeps its aliases (lcmsdeconv.aliases.Aliases) in the context's shared meta,
+#: the alias options given, and the notes about them (AliasWarning texts)
 _ALIASES = "lcmsdeconv.aliases"
 _ALIAS_ARGS = "lcmsdeconv.alias_args"
+_ALIAS_NOTES = "lcmsdeconv.alias_notes"
 
 
 def _alias_callback(ctx, param, value):
     """Both alias options are eager, so they are read before any other parameter (whose errors
-    can quote a path): once both are in, the command's aliases are put together,
-    $LCMSDECONV_ALIAS_FILE's pairs first, then --alias-file's, then --alias's."""
+    can quote a path): once both are in, the command's aliases are put together, the pairs of
+    the file LCMSDECONV_ALIAS_FILE names first, then --alias-file's, then --alias's. A note about
+    them (an alias file holding no pair) is printed on stderr."""
     if ctx.resilient_parsing:
         return value
     given = ctx.meta.setdefault(_ALIAS_ARGS, {})
     given[param.name] = value
     if {"alias_file", "alias"} <= given.keys():
-        from .aliases import AliasError, Aliases
+        import warnings
 
+        from .aliases import AliasError, Aliases, AliasWarning
+
+        caught: list = []
         try:
-            ctx.meta[_ALIASES] = Aliases.collect(files=given["alias_file"], pairs=given["alias"])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", AliasWarning)
+                ctx.meta[_ALIASES] = Aliases.collect(files=given["alias_file"],
+                                                     pairs=given["alias"])
         except AliasError as exc:  # its message shows the paths aliased already
             error = click.ClickException(str(exc))
             error.lcmsdeconv_aliased = True
             raise error from None
+        finally:
+            notes = ctx.meta.setdefault(_ALIAS_NOTES, [])
+            for w in caught:
+                if issubclass(w.category, AliasWarning):
+                    notes.append(str(w.message))
+                    click.echo(f"WARNING: {w.message}", err=True)
+                else:  # as it would have been shown
+                    warnings.showwarning(w.message, w.category, w.filename, w.lineno, w.file,
+                                         w.line)
     return value
 
 
@@ -51,7 +69,8 @@ def _alias_options(f):
         "--alias-file", "alias_file", multiple=True, metavar="FILE", is_eager=True,
         expose_value=False, callback=_alias_callback,
         help="Read OLD=NEW pairs from FILE: UTF-8, one pair per line, '#' starts a comment line "
-             "(repeatable; after the file $LCMSDECONV_ALIAS_FILE names, before --alias).")(f)
+             "(repeatable; after the file the environment variable LCMSDECONV_ALIAS_FILE names, "
+             "before --alias).")(f)
 
 
 def _aliases():
@@ -63,11 +82,41 @@ def _aliases():
     return found if found is not None else Aliases()
 
 
+def _env_aliases():
+    """The pairs of the file LCMSDECONV_ALIAS_FILE names, for an error raised before a command's
+    alias options are read (none where they cannot be read: that error comes later)."""
+    from .aliases import AliasError, Aliases
+
+    try:
+        return Aliases.from_env()
+    except AliasError:
+        return Aliases()
+
+
+class _AliasedGroup(click.Group):
+    """The command group: its own errors (an unknown command, which quotes what was given, a run
+    file put before the command, say) show the pairs of LCMSDECONV_ALIAS_FILE."""
+
+    def parse_args(self, ctx, args):
+        try:
+            return super().parse_args(ctx, args)
+        except click.ClickException as exc:
+            exc.message = _env_aliases().apply(exc.message)
+            raise
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.ClickException as exc:
+            exc.message = _env_aliases().apply(exc.message)
+            raise
+
+
 class _AliasedCommand(click.Command):
-    """A command whose messages show its aliases (``--alias``, ``--alias-file``,
-    $LCMSDECONV_ALIAS_FILE): click's errors about its parameters (a path that does not exist),
-    its own errors, and, while it runs, Python warnings, log records and the traceback of an
-    unexpected error, each aliased as text. Without aliases, it is click's Command."""
+    """A command whose messages show its aliases (``--alias``, ``--alias-file``, the file
+    LCMSDECONV_ALIAS_FILE names): click's errors about its parameters (a path that does not
+    exist), its own errors, and, while it runs, Python warnings, log records and the traceback
+    of an unexpected error, each aliased as text. Without aliases, it is click's Command."""
 
     def parse_args(self, ctx, args):
         try:
@@ -77,12 +126,7 @@ class _AliasedCommand(click.Command):
                 raise
             aliases = ctx.meta.get(_ALIASES)
             if aliases is None:  # an error before the alias options were read
-                from .aliases import AliasError, Aliases
-
-                try:
-                    aliases = Aliases.from_env()
-                except AliasError:
-                    aliases = Aliases()
+                aliases = _env_aliases()
             exc.message = aliases.apply(exc.message)
             raise
 
@@ -90,31 +134,59 @@ class _AliasedCommand(click.Command):
         aliases = ctx.meta.get(_ALIASES)
         if not aliases:
             return super().invoke(ctx)
+        # click's own exceptions end the command: raised after the console, not through it
+        # (an exception leaving it would keep its hook in sys.excepthook)
+        stop = None
         with aliases.console():
             try:
                 return super().invoke(ctx)
             except click.ClickException as exc:
                 exc.message = aliases.apply(exc.message)
-                raise
-            except (click.exceptions.Exit, click.exceptions.Abort):
-                raise
+                stop = exc
+            except (click.exceptions.Exit, click.exceptions.Abort) as exc:
+                stop = exc
             except Exception:
                 click.echo(aliases.apply(traceback.format_exc()), err=True, nl=False)
-                ctx.exit(1)
+        if stop is not None:
+            raise stop
+        ctx.exit(1)
 
 
-def _output_like(name: str) -> bool:
-    """Whether a file name is one `process` gives its outputs."""
-    return name in ("results.json", "species.csv", "report.html") or (
-        name.startswith("peaks_") and name.endswith(".csv"))
+class _GuiCommand(_AliasedCommand):
+    """`gui`: an alias file or pair that cannot be used, and a note about them, are also shown
+    in a dialog, as the application may be started without a console (a shortcut to pythonw),
+    where nothing printed is seen."""
+
+    def parse_args(self, ctx, args):
+        try:
+            return super().parse_args(ctx, args)
+        except click.ClickException as exc:
+            if getattr(exc, "lcmsdeconv_aliased", False):  # from the alias options
+                _alias_dialogs(ctx.meta.get(_ALIAS_NOTES, []), exc.message)
+            raise
+
+
+def _alias_dialogs(notes, error=None) -> None:
+    """Show notes about the aliases, and an error that keeps the application from starting, in
+    dialogs (where the desktop application can be loaded)."""
+    if not notes and error is None:
+        return
+    try:
+        from .gui.app import alias_dialog
+    except ImportError:  # no PySide6: printed on stderr only
+        return
+    for note in notes:
+        alias_dialog(note)
+    if error is not None:
+        alias_dialog(error, fatal=True)
 
 
 def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
     """Warn, on stderr, of each file written that still holds an alias's OLD outside a number
     (in its name relative to ``outdir`` or its text), naming the file (each OLD masked) and the
-    count, never the text found. With ``others``, likewise of what else ``outdir`` holds (an
-    earlier run's outputs, say): the name of each file and folder in it, and the text of those
-    named as outputs are. Never fails."""
+    count, never the text found. With ``others``, likewise of what else ``outdir`` holds, at any
+    depth (an earlier run's outputs, say: :meth:`lcmsdeconv.aliases.Aliases.leaks_in`). Never
+    fails."""
     found: list[tuple[str, int]] = []
     left: list[tuple[str, int]] = []
     try:  # the check never fails the command
@@ -123,11 +195,7 @@ def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
         pass
     try:
         if others:
-            mine = {Path(p) for p in written}
-            rest = sorted(p for p in outdir.iterdir() if p not in mine)
-            outputs = [p for p in rest if _output_like(p.name) and p.is_file()]
-            left = (aliases.leaks(outputs, outdir)
-                    + aliases.leaks([p for p in rest if p not in outputs], outdir, text=False))
+            left = aliases.leaks_in(outdir, exclude=written)
     except Exception:
         pass
 
@@ -136,12 +204,12 @@ def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
 
     for name, n in found:
         click.echo(f"WARNING: {name} still holds {times(n)} of an alias's OLD text", err=True)
-    for name, n in sorted(left):
+    for name, n in left:
         click.echo(f"WARNING: {name}, which this run did not write, holds {times(n)} of an "
                    "alias's OLD text", err=True)
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(cls=_AliasedGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__)
 def main():
     """Neural-network deconvolution and quantitation for LC-ESI-MS of macromolecules."""
@@ -166,10 +234,12 @@ def main():
 def process(input_file, method, out, model, uv_csv, waters_function, report, quiet):
     """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify.
 
-    With alias pairs (--alias, --alias-file, $LCMSDECONV_ALIAS_FILE), every output and message
-    shows NEW in place of OLD in the run's, its traces' and the method's names and in the paths
-    printed; the files written are then checked for any OLD left, and so is what else --out
-    holds (an earlier run's outputs: give a fresh --out). See docs/usage.md, "Name aliases".
+    With alias pairs (--alias, --alias-file, the file the environment variable
+    LCMSDECONV_ALIAS_FILE names), every output and message shows NEW in place of OLD in the
+    run's, its traces' and the method's names and in the paths printed, and the number of pairs
+    in effect is printed first; the files written are then checked for any OLD left, and so is
+    what else --out holds, at any depth (an earlier run's outputs: give a fresh --out). See
+    docs/usage.md, "Name aliases".
     """
     from .core.method import Method, rt_window_text
     from .io.mzml import read_mzml, read_uv_csv
@@ -182,6 +252,8 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
     # method's trace references follow the traces' aliased names): everything after shows the
     # aliased names only
     meth = Method.load(method)
+    if aliases and not quiet:  # so the pairs can be seen to be in effect
+        click.echo(f"name aliases: {len(aliases)} {'pair' if len(aliases) == 1 else 'pairs'}")
     if not quiet:
         click.echo(f"reading {shown(str(input_file))}")
     if str(input_file).lower().endswith(".raw"):
@@ -407,7 +479,7 @@ def report(results_dir, open_it):
         webbrowser.open(p.resolve().as_uri())
 
 
-@main.command(cls=_AliasedCommand)
+@main.command(cls=_GuiCommand)
 @click.option("--run", "run_file", default=None, type=click.Path(exists=True, dir_okay=False),
               help="mzML or mzMLb run to open.")
 @click.option("--method", "-m", default=None)
@@ -418,12 +490,14 @@ def gui(run_file, method, waters_function):
     """Launch the desktop application.
 
     With alias pairs, the application shows NEW in place of OLD in every name, path, table,
-    legend and dialog, and in the reports it exports.
+    legend and dialog of its own, and in the reports it exports (the system's file dialogs show
+    your folders as they are); its status bar shows the number of pairs in effect.
     """
     if waters_function is not None and not run_file:
         raise click.UsageError("--waters-function applies to the --run file")
     from .gui.app import launch
 
+    _alias_dialogs(click.get_current_context().meta.get(_ALIAS_NOTES, []))
     launch(run_file, method, waters_function=waters_function, aliases=_aliases())
 
 

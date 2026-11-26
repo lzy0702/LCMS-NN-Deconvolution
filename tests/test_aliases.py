@@ -4,13 +4,16 @@ Every number and name here is made up: 123456 plays the project number to hide.
 """
 
 import dataclasses
+import io
 import json
 import logging
+import logging.handlers
 import re
 import subprocess
 import sys
 import threading
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +26,7 @@ from lcmsdeconv.core.model import Chromatogram, Run, Spectrum
 
 SECRET = "123456"
 NEW = "保密项目1"
+SAVE_AS_UTF8 = "save it as UTF-8 (in Notepad: File > Save as, Encoding UTF-8)"
 DATA_URI = re.compile(r"data:[\w.+/-]+;base64,[A-Za-z0-9+/=]*")
 
 
@@ -49,12 +53,13 @@ def test_parse_errors_never_quote_the_pair(item, reason):
     (f"{SECRET}\u200b={NEW}", "OLD", "U+200B"),  # a zero-width space pasted with the number
     (f"\ufeff{SECRET}={NEW}", "OLD", "U+FEFF"),
     (f"{SECRET}\x00={NEW}", "OLD", "U+0000"),
-    (f"{SECRET}=\u200e{NEW}", "NEW", "U+200E"),
+    (f"{SECRET}=A\x07{NEW}", "NEW", "U+0007"),
     (f"{SECRET}=A\u2028B", "NEW", "U+2028"),
 ])
 def test_invisible_characters_are_refused(item, side, code):
     """An OLD holding an invisible or control character would match nothing, silently: refused,
-    naming the character's code point, never the pair."""
+    naming the character's code point, never the pair. A NEW may not hold a control character or
+    a line break either."""
     with pytest.raises(AliasError) as err:
         Aliases.parse(["a=b", item])
     assert str(err.value) == f"--alias #2: {side} holds {code}, an invisible or control character"
@@ -74,14 +79,15 @@ def test_alias_file_format(tmp_path):
     assert Aliases.from_file(lf).pairs == a.pairs
     empty = tmp_path / "empty.txt"
     empty.write_text("# nothing yet\n", encoding="utf-8")
-    assert not Aliases.from_file(empty)
+    with pytest.warns(UserWarning, match=f"^alias file {re.escape(str(empty))} holds no pair"):
+        assert not Aliases.from_file(empty)
 
 
 @pytest.mark.parametrize("content, reason, line", [
     (f"QQ=RR\n# fine\nPRJ {SECRET} no equals\n", "no '='", 3),
     (f"QQ=RR\n={SECRET}\n", "nothing before '='", 2),
     (f"\n\nPRJ-{SECRET}=\n", "nothing after '='", 3),
-    (b"QQ=RR\r\nQZ=RZ\r\nPRJ-\xff\xfe\r\n", "not UTF-8", 3),
+    (b"QQ=RR\r\nQZ=RZ\r\nPRJ-\xff\xfe\r\n", f"not UTF-8: {SAVE_AS_UTF8}", 3),
 ])
 def test_alias_file_errors_name_file_and_line_but_not_the_line(tmp_path, content, reason, line):
     path = tmp_path / "secret-aliases.txt"
@@ -100,13 +106,13 @@ def test_alias_file_errors_name_file_and_line_but_not_the_line(tmp_path, content
 @pytest.mark.parametrize("content, line, reason", [
     (f"QQ=RR\n{SECRET}\u200b={NEW}\n".encode(), 2,
      "OLD holds U+200B, an invisible or control character"),
-    (f"QQ=RR\nQZ=RZ\n{SECRET}=\u200e{NEW}\n".encode(), 3,
-     "NEW holds U+200E, an invisible or control character"),
+    (f"QQ=RR\nQZ=RZ\n{SECRET}=\x07{NEW}\n".encode(), 3,
+     "NEW holds U+0007, an invisible or control character"),
     (f"{SECRET}=A\u2028B\nPRJ\n".encode(), 1,  # U+2028 ends no line: an editor shows one
      "NEW holds U+2028, an invisible or control character"),
     (f"QQ=RR\n{SECRET}={NEW}\n".encode("utf-16-le"), 1,
-     "not UTF-8 (it holds NUL bytes, as UTF-16 text does)"),
-    (b"QQ=RR\rQZ=RZ\rPRJ-\xff=x\r", 3, "not UTF-8"),  # a lone CR ends a line
+     f"not UTF-8 (it holds NUL bytes, as UTF-16 text does): {SAVE_AS_UTF8}"),
+    (b"QQ=RR\rQZ=RZ\rPRJ-\xff=x\r", 3, f"not UTF-8: {SAVE_AS_UTF8}"),  # a lone CR ends a line
 ])
 def test_alias_file_with_invisible_characters_or_utf16(tmp_path, content, line, reason):
     path = tmp_path / "aliases.txt"
@@ -124,6 +130,78 @@ def test_byte_order_marks_where_files_were_joined(tmp_path):
                        + f"{SECRET}={NEW}\r\n".encode())
     a = Aliases.from_file(joined)
     assert a.pairs == {"999999": "X", SECRET: NEW} and a.apply(f"LC-{SECRET}") == f"LC-{NEW}"
+
+
+@pytest.mark.parametrize("new", ["پروژه\u200cمحرمانه", "\U0001f469\u200d\U0001f52c Lab",
+                                 "Projekt\u00adname", "\u200eX"])
+def test_a_new_may_hold_format_characters(tmp_path, new):
+    """A NEW may hold format characters, which do not keep it from showing: Persian's zero-width
+    non-joiner, an emoji's zero-width joiner, a soft hyphen, a direction mark (an OLD may not)."""
+    assert Aliases.parse(f"{SECRET}={new}").apply(f"LC-{SECRET}-S") == f"LC-{new}-S"
+    path = tmp_path / "aliases.txt"
+    path.write_text(f"{SECRET}={new}\n", encoding="utf-8")
+    assert Aliases.from_file(path).pairs == {SECRET: new}
+
+
+@pytest.mark.parametrize("old, code", [("１２３４５６", "U+FF11"), (f"LC\u00a0{SECRET}", "U+00A0"),
+                                       (f"LC\u3000{SECRET}", "U+3000"),
+                                       (f"LC\uff0d{SECRET}", "U+FF0D")])
+def test_full_width_and_compatibility_characters_in_an_old_are_refused(tmp_path, old, code):
+    """An OLD typed with an input method in full-width mode, or pasted with a no-break or
+    ideographic space or a full-width hyphen, would never match the plain characters a name is
+    written in: refused, naming the character's code point (never the pair), from --alias, a
+    file and the command line alike."""
+    reason = f"OLD holds {code}, a full-width or compatibility form of a character"
+    with pytest.raises(AliasError) as err:
+        Aliases.parse(["a=b", f"{old}={NEW}"])
+    assert str(err.value).startswith(f"--alias #2: {reason}") and old not in str(err.value)
+    path = tmp_path / "aliases.txt"
+    path.write_bytes(f"# typed in Notepad\r\n{old}={NEW}\r\n".encode())
+    with pytest.raises(AliasError) as err:
+        Aliases.from_file(path)
+    assert str(err.value).startswith(f"alias file {path}, line 2: {reason}")
+    res = CliRunner().invoke(main, ["report", str(tmp_path), "--alias-file", str(path)],
+                             env={ENV_VAR: None})
+    assert res.exit_code == 1
+    assert res.stderr.startswith(f"Error: alias file {path}, line 2: {reason}")
+    assert old not in res.output and "Traceback" not in res.output
+
+
+@pytest.mark.parametrize("content, line, reason", [
+    (f"{SECRET}={NEW}\r\n".encode("cp936"), 1,  # Notepad's 'ANSI', PowerShell 5.1's Set-Content
+     f"not UTF-8 (saved as ANSI, code page 936 or GBK?): {SAVE_AS_UTF8}"),
+    (b"\xff\xfe" + f"{SECRET}={NEW}\r\n".encode("utf-16-le"), 1,  # Notepad's 'Unicode', PS 5.1's >
+     "UTF-16 (Notepad's 'Unicode', the > and Out-File of Windows PowerShell 5.1), not UTF-8: "
+     + SAVE_AS_UTF8),
+    (b"\xfe\xff" + f"{SECRET}={NEW}\r\n".encode("utf-16-be"), 1,
+     "UTF-16 (Notepad's 'Unicode', the > and Out-File of Windows PowerShell 5.1), not UTF-8: "
+     + SAVE_AS_UTF8),
+    (f"# typed with the input method\r\n{SECRET}\uff1d{NEW}\r\n".encode(), 2,
+     "no '=' (it holds U+FF1D, a full-width equals sign: type '=' half-width, the input method "
+     "in English or half-width mode)"),
+])
+def test_files_windows_tools_write_are_refused_saying_what_to_do(tmp_path, content, line, reason):
+    """The files Windows' tools write by default (ANSI, UTF-16) and a full-width '=' are refused
+    with what to do about them, never quoting the line."""
+    path = tmp_path / "aliases.txt"
+    path.write_bytes(content)
+    with pytest.raises(AliasError) as err:
+        Aliases.from_file(path)
+    assert str(err.value) == f"alias file {path}, line {line}: {reason}"
+    with pytest.raises(AliasError, match="^--alias #1: no '=' \\(it holds U\\+FF1D"):
+        Aliases.parse(f"{SECRET}\uff1d{NEW}")
+
+
+def test_end_of_file_marks_are_ignored(tmp_path):
+    """cmd's `copy a.txt+b.txt c.txt` ends the file it joins with an end-of-file mark, Ctrl-Z,
+    which Notepad does not show: ignored at the end of a file."""
+    joined = tmp_path / "joined.txt"
+    joined.write_bytes(b"\xef\xbb\xbf999999=X\r\n\xef\xbb\xbf" + f"{SECRET}={NEW}\r\n".encode()
+                       + b"\x1a")
+    assert Aliases.from_file(joined).pairs == {"999999": "X", SECRET: NEW}
+    last = tmp_path / "last.txt"
+    last.write_bytes(f"{SECRET}={NEW}".encode() + b"\x1a")
+    assert Aliases.from_file(last).pairs == {SECRET: NEW}
 
 
 def test_alias_file_missing_or_a_directory(tmp_path):
@@ -178,6 +256,55 @@ def test_from_env(tmp_path, monkeypatch):
     assert Aliases.from_env({ENV_VAR: ""}).pairs == {}
     with pytest.raises(AliasError, match=f"^{ENV_VAR}: alias file .*: not found$"):
         Aliases.from_env({ENV_VAR: str(tmp_path / "missing.txt")})
+
+
+def test_the_variable_may_be_quoted_or_start_with_a_tilde(tmp_path, monkeypatch):
+    """Windows keeps the quotes of cmd's `set X="C:\\..."` and of Explorer's "Copy as path" in the
+    value, and only a POSIX shell expands ~ or a variable: the value is taken as meant. A relative
+    path is read from the current folder, which an error then shows."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "aliases.txt").write_text(f"{SECRET}={NEW}\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LCMSDECONV_TEST_FOLDER", str(home))
+    for value in (f'"{home / "aliases.txt"}"', f"  {home / 'aliases.txt'} ", "~/aliases.txt",
+                  "$LCMSDECONV_TEST_FOLDER/aliases.txt"):
+        assert Aliases.from_env({ENV_VAR: value}).pairs == {SECRET: NEW}, value
+    assert not Aliases.from_env({ENV_VAR: '""'})
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(AliasError) as err:
+        Aliases.from_env({ENV_VAR: "aliases.txt"})
+    assert str(err.value) == f"{ENV_VAR}: alias file {Path.cwd() / 'aliases.txt'}: not found"
+
+
+def test_a_variable_named_with_spaces_is_an_error(tmp_path):
+    """cmd's `set LCMSDECONV_ALIAS_FILE = C:\\aliases.txt` sets a variable whose name ends in a
+    space: an error naming it, not no pairs without a word."""
+    path = tmp_path / "aliases.txt"
+    path.write_text(f"{SECRET}={NEW}\n", encoding="utf-8")
+    with pytest.raises(AliasError) as err:
+        Aliases.from_env({f"{ENV_VAR} ": f" {path}"})
+    assert str(err.value).startswith(f"{ENV_VAR} is not set, but '{ENV_VAR} ' is")
+    assert str(path) not in str(err.value)
+    assert Aliases.from_env({ENV_VAR: str(path), f"{ENV_VAR} ": "x"}).pairs == {SECRET: NEW}
+
+
+def test_an_alias_file_holding_no_pair_is_warned_of(tmp_path):
+    """An alias file named on purpose but holding no pair (only comments, say) aliases nothing:
+    a warning says so, naming the file (aliased), never a line."""
+    from lcmsdeconv.aliases import AliasWarning
+
+    empty = tmp_path / f"aliases-{SECRET}.txt"
+    empty.write_text(f"# {SECRET}={NEW}\n", encoding="utf-8")
+    with pytest.warns(AliasWarning, match="holds no pair"):
+        assert not Aliases.from_file(empty)
+    (tmp_path / "report.html").write_text("<p>report</p>", encoding="utf-8")
+    res = CliRunner().invoke(main, ["report", str(tmp_path), "--alias-file", str(empty),
+                                    "--alias", f"{SECRET}={NEW}"], env={ENV_VAR: None})
+    assert res.exit_code == 0, res.output
+    assert res.stderr == (f"WARNING: alias file {tmp_path / ('aliases-' + NEW + '.txt')} holds "
+                          "no pair (its lines are blank or comments): no name is aliased\n")
 
 
 def test_precedence_env_then_files_then_pairs(tmp_path):
@@ -518,7 +645,7 @@ def test_leaks_reads_json_html_and_names(tmp_path):
 
 
 # ---------------------------------------------------------------------- the console
-def test_console_aliases_warnings_logs_and_tracebacks(capsys, caplog):
+def test_console_aliases_warnings_logs_and_tracebacks(capsys, caplog, recwarn):
     a = Aliases.parse(f"{SECRET}={NEW}")
     log = logging.getLogger("lcmsdeconv.test_aliases")
     hooks = (warnings.showwarning, logging.lastResort, sys.excepthook)
@@ -531,7 +658,9 @@ def test_console_aliases_warnings_logs_and_tracebacks(capsys, caplog):
         except ValueError:
             sys.excepthook(*sys.exc_info())
     err = capsys.readouterr().err
-    assert f"LC-{NEW}.mzML: its chromatograms were not read" in err
+    # the warning is passed on to the warnings hook in effect (here pytest's, which records it)
+    assert [str(w.message) for w in recwarn] == [f"LC-{NEW}.mzML: its chromatograms were not read"]
+    assert recwarn[0].category is UserWarning
     assert f"ValueError: no scans in LC-{NEW}.mzML" in err and SECRET not in err
     assert caplog.records[-1].getMessage() == f"reading LC-{NEW}.mzML"
     assert (warnings.showwarning, logging.lastResort, sys.excepthook) == hooks
@@ -589,11 +718,282 @@ def test_an_error_leaving_the_console_is_printed_aliased(tmp_path):
     assert res.returncode == 1 and f"KeyError: '{SECRET}'" in res.stderr
 
 
-def test_console_does_not_alias_twice(capsys):
+def test_console_does_not_alias_twice(caplog, recwarn):
     a = Aliases.parse(f"{SECRET}=P-{SECRET}")  # a NEW holding its OLD: aliased twice it grows
-    with a.console(), a.console():
-        warnings.warn(f"run {SECRET}", UserWarning, stacklevel=1)
-    assert f"run P-{SECRET}\n" in capsys.readouterr().err
+    log = logging.getLogger("lcmsdeconv.test_aliases.twice")
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    log.addHandler(handler)
+    try:
+        with a.console(), a.console(), caplog.at_level(logging.WARNING):
+            warnings.warn(f"run {SECRET}", UserWarning, stacklevel=1)
+            log.warning("read %s", SECRET, extra={"run": f"LC-{SECRET}"})
+    finally:
+        log.removeHandler(handler)
+    assert [str(w.message) for w in recwarn] == [f"run P-{SECRET}"]
+    assert stream.getvalue() == f"read P-{SECRET}\n"  # made, then handled twice
+    assert caplog.records[-1].run == f"LC-P-{SECRET}"
+
+
+def test_warnings_reach_the_warnings_hook_in_effect(recwarn):
+    """A warning within console() is passed on, aliased, to the warnings hook in effect, so that
+    warnings.catch_warnings and pytest.warns still get it; a hook of console() that is put back
+    after it (logging.captureWarnings turned on within, off after) passes warnings on unaliased."""
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    with pytest.warns(UserWarning, match=f"^LC-{NEW}-S.mzML has no UV trace$"):
+        with a.console():
+            warnings.warn(f"LC-{SECRET}-S.mzML has no UV trace", UserWarning, stacklevel=1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with a.console():
+            warnings.warn_explicit(f"run {SECRET}", RuntimeWarning, f"/data/LC-{SECRET}/read.py",
+                                   3)
+    assert [(str(w.message), w.category, w.filename) for w in caught] == [
+        (f"run {NEW}", RuntimeWarning, f"/data/LC-{NEW}/read.py")]
+    shown = warnings.showwarning
+    try:
+        with a.console():
+            logging.captureWarnings(True)
+        logging.captureWarnings(False)  # puts back console()'s hook, in effect when it was on
+        warnings.showwarning(UserWarning(f"later {SECRET}"), UserWarning, "x.py", 1)
+    finally:
+        warnings.showwarning = shown
+    assert [str(w.message) for w in recwarn] == [f"later {SECRET}"]  # passed on as it was
+
+
+def test_log_records_without_old_are_left_as_they_are(capsys, caplog):
+    """Within console(), a log record holding no OLD keeps its msg and args, and a handler's
+    formatter formats its exception (its own formatException included); a call logging cannot
+    format is reported with its arguments aliased."""
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    log = logging.getLogger("lcmsdeconv.test_aliases.plain")
+
+    class OneLine(logging.Formatter):
+        def formatException(self, ei):
+            return f"EXC={ei[0].__name__}"
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(OneLine("%(message)s"))
+    own = logging.getLogger("lcmsdeconv.test_aliases.own")
+    own.propagate = False  # not to pytest's handlers, which raise on a call they cannot format
+    own.addHandler(handler)
+    try:
+        with a.console(), caplog.at_level(logging.INFO):
+            log.info("count %d of %s", 5, "files")
+            try:
+                raise ValueError("no number here")
+            except ValueError:
+                own.exception("failed")
+            own.warning("%d scans in %s", "many", f"LC-{SECRET}-S.mzML")
+    finally:
+        own.removeHandler(handler)
+        own.propagate = True
+    record = caplog.records[0]
+    assert (record.msg, record.args) == ("count %d of %s", (5, "files"))
+    assert stream.getvalue() == "failed\nEXC=ValueError\n"
+    err = capsys.readouterr().err
+    assert "--- Logging error ---" in err and f"Arguments: ('many', 'LC-{NEW}-S.mzML')" in err
+    assert SECRET not in err
+
+
+def test_log_records_other_texts_are_aliased(tmp_path, monkeypatch):
+    """A log record's file, module, function and thread names and its ``extra`` fields are
+    aliased too, and so are records made before console() and handled within it (a
+    MemoryHandler's) and records made from a dict (logging.makeLogRecord)."""
+    package = tmp_path / f"pkg-{SECRET}"
+    package.mkdir()
+    (package / f"mod_{SECRET}.py").write_text(
+        f"def log_from_{SECRET}(log):\n    log.warning('plain message')\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(package))
+    module = __import__(f"mod_{SECRET}")
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(threadName)s [%(run)s] %(message)s"))
+    where = io.StringIO()
+    located = logging.StreamHandler(where)
+    located.setFormatter(logging.Formatter("%(pathname)s|%(module)s|%(funcName)s|%(message)s"))
+    log = logging.getLogger("lcmsdeconv.test_aliases.fields")
+    early = logging.getLogger("lcmsdeconv.test_aliases.early")
+    spot = logging.getLogger("lcmsdeconv.test_aliases.located")
+    memory = logging.handlers.MemoryHandler(10, flushLevel=logging.CRITICAL + 1, target=handler)
+    for logger, h in ((log, handler), (early, memory), (spot, located)):
+        logger.propagate = False
+        logger.addHandler(h)
+    try:
+        early.warning("made before: %s", f"LC-{SECRET}-S", extra={"run": "early"})
+        with a.console():
+            worker = threading.Thread(
+                target=lambda: log.warning("read", extra={"run": f"LC-{SECRET}-S"}),
+                name=f"reader-{SECRET}")
+            worker.start()
+            worker.join()
+            memory.flush()
+            handler.handle(logging.makeLogRecord({
+                "msg": f"remote record LC-{SECRET}-S", "levelno": 30, "levelname": "WARNING",
+                "threadName": "remote", "run": "remote"}))
+            getattr(module, f"log_from_{SECRET}")(spot)
+    finally:
+        for logger, h in ((log, handler), (early, memory), (spot, located)):
+            logger.removeHandler(h)
+            logger.propagate = True
+    assert stream.getvalue().splitlines() == [
+        f"reader-{NEW} [LC-{NEW}-S] read", f"MainThread [early] made before: LC-{NEW}-S",
+        f"remote [remote] remote record LC-{NEW}-S"]
+    assert where.getvalue() == (f"{package.parent / ('pkg-' + NEW) / ('mod_' + NEW + '.py')}|"
+                                f"mod_{NEW}|log_from_{NEW}|plain message\n")
+
+
+def test_contexts_in_threads_at_once(tmp_path, capsys, caplog, recwarn):
+    """Workers each in a console() of their own: the first to close leaves the hooks to the
+    others, an exception leaving a worker's context (in its thread) is printed aliased, and the
+    hooks are put back once the last has closed."""
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    log = logging.getLogger("lcmsdeconv.test_aliases.workers")
+    hooks = (warnings.showwarning, sys.excepthook, threading.excepthook,
+             logging.getLogRecordFactory(), logging.Handler.handle, sys.unraisablehook)
+    second_in, first_out = threading.Event(), threading.Event()
+
+    def first():
+        with a.console():
+            second_in.wait(10)
+        first_out.set()
+
+    def second():
+        with a.console():
+            second_in.set()
+            first_out.wait(10)
+            log.warning("second worker read %s", f"LC-{SECRET}-S")
+            warnings.warn(f"LC-{SECRET}-S has no UV trace", UserWarning, stacklevel=1)
+            open(tmp_path / f"LC-{SECRET}-S.mzML")  # a run that is not there
+
+    with caplog.at_level(logging.WARNING):
+        workers = [threading.Thread(target=first), threading.Thread(target=second)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join()
+    err = capsys.readouterr().err
+    assert caplog.messages[-1] == f"second worker read LC-{NEW}-S"
+    assert [str(w.message) for w in recwarn] == [f"LC-{NEW}-S has no UV trace"]
+    assert f"No such file or directory: '{tmp_path / ('LC-' + NEW + '-S.mzML')}'" in err
+    assert SECRET not in err
+    assert (warnings.showwarning, sys.excepthook, threading.excepthook,
+            logging.getLogRecordFactory(), logging.Handler.handle, sys.unraisablehook) == hooks
+
+
+def test_hooks_are_put_back_after_contexts_opened_at_once(monkeypatch):
+    """Two threads opening console() at the same moment (the first held as it puts its hooks in,
+    as a busy machine can hold it, until the second has arrived and the first has put them in),
+    then many threads at once: no hook is left behind once all have closed."""
+    import time
+
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    hooks = (warnings.showwarning, sys.excepthook, threading.excepthook,
+             logging.getLogRecordFactory(), logging.Handler.handle, sys.unraisablehook)
+    factory, calls, second = logging.getLogRecordFactory, [], threading.Event()
+
+    def held():  # console() reads the record factory as it puts its hooks in
+        calls.append(None)
+        if len(calls) == 1:  # the first thread: until the second gets here too
+            second.wait(1)
+        elif len(calls) == 2:  # the second: until the first has put its hooks in
+            second.set()
+            deadline = time.monotonic() + 1
+            while factory() is hooks[3] and time.monotonic() < deadline:
+                time.sleep(0.01)
+        return factory()
+
+    monkeypatch.setattr(logging, "getLogRecordFactory", held)
+    second_in, first_out = threading.Event(), threading.Event()
+
+    def first():
+        with a.console():
+            second_in.wait(2)
+        first_out.set()
+
+    def second_thread():
+        with a.console():
+            second_in.set()
+            first_out.wait(2)
+
+    workers = [threading.Thread(target=first), threading.Thread(target=second_thread)]
+    workers[0].start()
+    time.sleep(0.05)
+    workers[1].start()
+    for w in workers:
+        w.join()
+    monkeypatch.undo()
+    assert (warnings.showwarning, sys.excepthook, threading.excepthook,
+            logging.getLogRecordFactory(), logging.Handler.handle, sys.unraisablehook) == hooks
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for _ in range(30):
+            barrier = threading.Barrier(8)
+
+            def run(barrier=barrier):
+                barrier.wait()
+                with a.console():
+                    pass
+
+            workers = [threading.Thread(target=run) for _ in range(8)]
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join()
+            assert (warnings.showwarning, sys.excepthook, threading.excepthook,
+                    logging.getLogRecordFactory(), logging.Handler.handle,
+                    sys.unraisablehook) == hooks
+    finally:
+        sys.setswitchinterval(interval)
+
+
+def test_an_exception_leaving_the_console_keeps_a_hook_until_printed(capsys):
+    """An exception leaving console() that the caller catches keeps the hook that prints it
+    aliased in sys.excepthook; once it is printed, the hook it replaced is put back."""
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    hooks = (sys.excepthook, threading.excepthook)
+    try:
+        with a.console():
+            raise ValueError(f"no scans in LC-{SECRET}.mzML")
+    except ValueError as exc:
+        caught = exc
+    assert sys.excepthook is not hooks[0]
+    sys.excepthook(type(caught), caught, caught.__traceback__)  # as Python does, uncaught
+    assert f"ValueError: no scans in LC-{NEW}.mzML" in capsys.readouterr().err
+    assert (sys.excepthook, threading.excepthook) == hooks
+
+
+@pytest.mark.parametrize("case", ["exit", "ignored", "group", "warning"])
+def test_exits_ignored_exceptions_and_groups_are_printed_aliased(tmp_path, case):
+    """Python prints the message of sys.exit("..."), an exception it ignores (raised in
+    __del__) and a group of exceptions that left the context, gathered after it, without
+    sys.excepthook or after the context: each aliased; a warning is printed aliased on stderr."""
+    if case == "group" and sys.version_info < (3, 11):
+        pytest.skip("exception groups are Python 3.11's")
+    body = {
+        "exit": f"with a.console():\n    sys.exit('cannot read LC-{SECRET}-S.mzML')\n",
+        "ignored": ("class Dying:\n    def __del__(self):\n"
+                    f"        raise OSError(2, 'No such file', 'LC-{SECRET}-S.mzMLb')\n"
+                    "with a.console():\n    d = Dying()\n    del d\n"),
+        "group": ("errors = []\nfor _ in range(2):\n    try:\n        with a.console():\n"
+                  f"            open('LC-{SECRET}-S.mzML')\n"
+                  "    except OSError as exc:\n        errors.append(exc)\n"
+                  "raise ExceptionGroup('runs failed', errors)\n"),
+        "warning": ("with a.console():\n"
+                    f"    warnings.warn('LC-{SECRET}-S.mzML: its chromatograms were not read')\n"),
+    }[case]
+    code = ("import sys, warnings\nfrom lcmsdeconv.aliases import Aliases\n"
+            f"a = Aliases.parse('{SECRET}=X')\n" + body)
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=tmp_path, timeout=300)
+    assert res.returncode == {"exit": 1, "ignored": 0, "group": 1, "warning": 0}[case]
+    assert {"exit": "cannot read LC-X-S.mzML", "ignored": "'LC-X-S.mzMLb'",
+            "group": "No such file or directory: 'LC-X-S.mzML'",
+            "warning": "LC-X-S.mzML: its chromatograms were not read"}[case] in res.stderr
+    assert SECRET not in res.stderr
 
 
 # ---------------------------------------------------------------------- the command line
@@ -686,6 +1086,7 @@ def test_process_shows_no_old_text_anywhere(planted, aliased):
     for name, text in files.items():
         assert SECRET not in name and SECRET not in text, name
     assert SECRET not in res.stdout and SECRET not in res.stderr
+    assert res.stdout.startswith("name aliases: 1 pair\n")  # the pairs can be seen in effect
     assert f"reading {str(planted['mzml']).replace(SECRET, NEW)}" in res.stdout
     assert res.stdout.rstrip().endswith(f"out-{NEW}/results.json")
     assert "WARNING" not in res.stderr  # the check found nothing left
@@ -778,28 +1179,36 @@ def test_leftover_old_text_is_warned_of_without_quoting_it(planted):
 
 
 def test_what_else_out_holds_is_checked_too(planted):
-    """An earlier run's outputs in --out are not rewritten: each name there holding an OLD, and
-    the text of each file named as an output, is warned of, masked; the text of other files is
-    not read, and nothing is deleted."""
+    """An earlier run's outputs in --out are not rewritten: each name there holding an OLD, at
+    any depth, and the text of each file named as an output, is warned of, masked; the text of
+    other files is not read, and nothing is deleted. Aliases.leaks_in checks the same."""
     out = planted["dir"] / "reused"
     out.mkdir()
     (out / f"peaks_UV_{SECRET}.csv").write_text(f"name\nUV {SECRET}\n", encoding="utf-8")
     (out / f"earlier-{SECRET}").mkdir()
     (out / "notes.txt").write_text(f"project {SECRET}\n", encoding="utf-8")
+    earlier = out / "run1"  # an earlier run's --out, one folder down
+    earlier.mkdir()
+    (earlier / "results.json").write_text(json.dumps({"run": f"LC-{SECRET}-S"}), encoding="utf-8")
+    (earlier / f"peaks_UV_{SECRET}.csv").write_text("name\nUV\n", encoding="utf-8")
     res = _process(planted, out, "--alias", f"{SECRET}={NEW}", "--quiet", "--no-report")
     assert res.exit_code == 0, res.output
     warned = sorted(line for line in res.stderr.splitlines() if line.startswith("WARNING: "))
-    assert warned == [
-        "WARNING: earlier-***, which this run did not write, holds 1 occurrence of an alias's "
-        "OLD text",
-        "WARNING: peaks_UV_***.csv, which this run did not write, holds 2 occurrences of an "
-        "alias's OLD text"]
+    left = [("earlier-***", 1), ("peaks_UV_***.csv", 2), ("run1/peaks_UV_***.csv", 1),
+            ("run1/results.json", 1)]
+    assert warned == sorted(
+        f"WARNING: {name}, which this run did not write, holds {n} "
+        f"{'occurrence' if n == 1 else 'occurrences'} of an alias's OLD text" for name, n in left)
     assert (out / f"peaks_UV_{SECRET}.csv").is_file() and (out / f"peaks_UV_{NEW}.csv").is_file()
+    a = Aliases.parse(f"{SECRET}={NEW}")
+    mine = [out / "results.json", out / f"peaks_UV_{NEW}.csv"]
+    assert a.leaks_in(out, exclude=mine) == left
+    assert a.leaks_in(out, limit=2) == [("earlier-***", 1)]  # the first entries only
 
 
-def test_reader_warnings_are_aliased(planted, monkeypatch):
-    """The reader's warning quotes the file's name; printed while aliases are set, it shows the
-    aliased name."""
+def test_reader_warnings_are_aliased(planted, monkeypatch, recwarn):
+    """The reader's warning quotes the file's name; shown while aliases are set (passed on to
+    the warnings hook in effect: here pytest's, which records it), it shows the aliased name."""
     import lcmsdeconv.io.mzml as mzml
 
     def broken(record, array):
@@ -809,7 +1218,10 @@ def test_reader_warnings_are_aliased(planted, monkeypatch):
     res = _process(planted, planted["dir"] / "warned", "--alias", f"{SECRET}={NEW}",
                    "--no-report")
     assert res.exit_code == 0, res.output
-    assert f"LC-{NEW}-S.mzML: its chromatograms after the first 0 were not read" in res.stderr
+    shown = [str(w.message) for w in recwarn]
+    assert [m for m in shown
+            if m.startswith(f"LC-{NEW}-S.mzML: its chromatograms after the first 0 were not read")]
+    assert not [m for m in shown if SECRET in m]
     assert SECRET not in res.stderr and SECRET not in res.stdout
 
 
@@ -830,6 +1242,34 @@ def test_errors_are_aliased_and_clean(planted, tmp_path):
     env = CliRunner().invoke(main, ["report", str(tmp_path)],
                              env={ENV_VAR: str(tmp_path / "gone.txt")})
     assert env.exit_code == 1 and env.stderr.startswith(f"Error: {ENV_VAR}: alias file ")
+
+
+def test_an_unknown_command_is_shown_aliased(tmp_path):
+    """A run put before the command is taken for one: click's error quotes it, shown with the
+    pairs of LCMSDECONV_ALIAS_FILE."""
+    env = tmp_path / "env.txt"
+    env.write_text(f"{SECRET}={NEW}\n", encoding="utf-8")
+    run = tmp_path / f"LC-{SECRET}-S.mzML"
+    res = CliRunner().invoke(main, [str(run), "--method", "rplc_pos_protein"],
+                             env={ENV_VAR: str(env)})
+    assert res.exit_code == 2 and f"No such command '{tmp_path / ('LC-' + NEW + '-S.mzML')}'" \
+        in res.stderr
+    assert SECRET not in res.output
+
+
+def test_a_failed_command_leaves_no_hook_behind(planted, tmp_path, monkeypatch):
+    """A command that fails while it runs with pairs (click's own exit included) leaves
+    sys.excepthook and threading.excepthook as they were."""
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+    monkeypatch.setattr(threading, "excepthook", threading.__excepthook__)
+    hooks = (sys.excepthook, threading.excepthook)
+    res = _process(planted, tmp_path / "o", "-m", str(tmp_path / f"m-{SECRET}.yaml"), "--alias",
+                   f"{SECRET}={NEW}")
+    assert res.exit_code == 1 and f"m-{NEW}.yaml" in res.stderr
+    assert (sys.excepthook, threading.excepthook) == hooks
+    res = _process(planted, tmp_path / "o", "--waters-function", "2", "--alias", f"{SECRET}={NEW}")
+    assert res.exit_code == 1 and res.stderr.startswith("Error: ")  # a ClickException
+    assert (sys.excepthook, threading.excepthook) == hooks
 
 
 def test_an_alias_file_error_shows_its_path_aliased_once(tmp_path):

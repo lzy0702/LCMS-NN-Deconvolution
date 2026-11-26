@@ -84,9 +84,10 @@ Names can be hidden. `--alias OLD=NEW` (`--alias 123456=保密项目1` for a pro
 of such pairs (`--alias-file`), or the file the environment variable `LCMSDECONV_ALIAS_FILE` names
 makes every output and message of `process`, `gui`, `report`, `evaluate` and `synth` show NEW
 wherever a run, trace or method name, or a path, holds OLD; the files keep their names on disk,
-numbers are never touched, and `process` checks the files it wrote, and the names of the others in
-its `--out`, for any OLD left. The pairs are given at run time, none is built in (`docs/usage.md`,
-"Name aliases"; `train`, `export-onnx` and `methods` take none).
+numbers are never touched, and `process` checks the files it wrote, and what else its `--out`
+holds, for any OLD left. The pairs are given at run time, none is built in (`docs/usage.md`,
+"Name aliases", which also covers setting them up on Windows; `train`, `export-onnx` and
+`methods` take none).
 
 ```python
 from lcmsdeconv.core.method import Method

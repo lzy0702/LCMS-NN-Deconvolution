@@ -159,7 +159,7 @@ def test_aliases_show_in_the_window_and_its_exports(qtbot, tmp_path, monkeypatch
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-    from lcmsdeconv.aliases import ENV_VAR
+    from lcmsdeconv.aliases import ENV_VAR, Aliases
     from lcmsdeconv.core.method import Method
     from lcmsdeconv.gui.app import MainWindow
     from lcmsdeconv.io.mzml_writer import write_mzml
@@ -192,6 +192,12 @@ def test_aliases_show_in_the_window_and_its_exports(qtbot, tmp_path, monkeypatch
     win = MainWindow(method_name=str(method_file))
     qtbot.addWidget(win)
     assert len(win.aliases) == 2 and win.method.name == "M-保密项目1"
+    # the status bar shows that pairs are in effect (a window without any shows nothing)
+    assert win.alias_label.text() == "name aliases: 2 pairs"
+    assert win.alias_label.parent() is win.statusBar()
+    plain = MainWindow(aliases=Aliases())
+    qtbot.addWidget(plain)
+    assert plain.alias_label is None
     events = win.events_model
     assert [events.data(events.index(0, c), Qt.DisplayRole) for c in (1, 2)] == [
         "note 保密项目1", "by 保密项目1"]
@@ -204,6 +210,7 @@ def test_aliases_show_in_the_window_and_its_exports(qtbot, tmp_path, monkeypatch
     # processed as the Process button processes: the method names the second trace still
     win.on_processed(process_run(win.run, win._method_for_run()))
     assert win.result.purity["signal"] == "UV 保密项目1 (2)"
+    assert win.result.alias_pairs == 2  # its report's plots try more CJK fonts
     quantified = win.result.chromatograms["UV 保密项目1 (2)"]
     assert quantified.intensity is win._run_read.chromatograms["UV 654321"].intensity
     shown = [win.windowTitle(), win.statusBar().currentMessage(), win.warn_text.toPlainText()]
@@ -264,3 +271,49 @@ def test_gui_command_and_launch_take_the_aliases(qtbot, tmp_path, monkeypatch, c
     sys.excepthook(err.type, err.value, err.tb)  # as Python does, where no one catches it
     printed = capsys.readouterr().err
     assert "nowhere-保密项目1/method-保密项目1.yaml" in printed and "123456" not in printed
+
+
+def test_an_alias_problem_is_shown_in_a_dialog(qtbot, tmp_path, monkeypatch):
+    """Started without a console (pythonw from a shortcut: no stderr), the application shows an
+    alias file that cannot be used in a dialog and does not open its window, through launch()
+    and `lcmsdeconv gui` alike; an alias file holding no pair is shown in a dialog too, and the
+    window opens."""
+    import sys
+
+    from click.testing import CliRunner
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    import lcmsdeconv.gui.app as app
+    from lcmsdeconv.aliases import ENV_VAR
+    from lcmsdeconv.cli import main
+
+    boxes, opened = [], []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append(
+        (box.icon(), box.windowTitle(), box.text())) or 0)
+    monkeypatch.setattr(app.MainWindow, "show", lambda win: opened.append(win))
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0)
+    monkeypatch.setattr(sys, "stderr", None)
+    missing = tmp_path / "aliases.txt"
+    monkeypatch.setenv(ENV_VAR, f'"{missing}"')  # quoted, as Explorer's "Copy as path" gives it
+    assert app.launch() == 1 and not opened
+    assert boxes == [(QMessageBox.Icon.Critical, "lcmsdeconv: name aliases",
+                      f"{ENV_VAR}: alias file {missing}: not found\n\nThe application was not "
+                      f"started: correct the alias file, or the {ENV_VAR} environment variable, "
+                      "and start it again.")]
+    boxes.clear()
+    monkeypatch.undo()
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append(
+        (box.icon(), box.windowTitle(), box.text())) or 0)
+    monkeypatch.setattr(app.MainWindow, "show", lambda win: opened.append(win))
+    monkeypatch.setattr(QApplication, "exec", lambda self: 0)
+    res = CliRunner().invoke(main, ["gui", "--alias-file", str(missing)], env={ENV_VAR: None})
+    assert res.exit_code == 1 and not opened
+    assert boxes[0][0] == QMessageBox.Icon.Critical
+    assert boxes[0][2].startswith(f"alias file {missing}: not found\n\nThe application was not")
+    boxes.clear()
+    missing.write_text("# 123456=保密项目1\n", encoding="utf-8")  # comments only
+    monkeypatch.setenv(ENV_VAR, str(missing))
+    assert app.launch() == 0 and len(opened) == 1
+    assert boxes == [(QMessageBox.Icon.Warning, "lcmsdeconv: name aliases",
+                      f"alias file {missing} holds no pair (its lines are blank or comments): "
+                      "no name is aliased")]
