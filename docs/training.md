@@ -399,10 +399,11 @@ the network-only ones 9 and 6 made of singly charged background (v3 4 and 4), al
 column-wash species of 0.4 % of the run's largest in both, the rest 0.03 % or less. 3206.4 Da of
 the IP-HILIC NC run stays missed.
 
-The networks were also run on a set of eleven ion-pairing reversed-phase runs of oligonucleotides
-from a Waters RDa time-of-flight instrument (resolving power about 15 000), cut to the
-gradient (injection front and column wash left out) and processed with the time-of-flight
-oligonucleotide method at that resolving power, the ion-pairing amine's N-oxide adduct included.
+The networks were also run on Confidential sample 1: eleven ion-pairing reversed-phase runs from a
+Waters RDa time-of-flight instrument (resolving power about 15 000) of a fully phosphorothioated
+DNA (C252H328N72O138P24S24, base composition T13 C4 G6) and forms of it, cut to the gradient
+(injection front and column wash left out) and processed with the time-of-flight oligonucleotide
+method at that resolving power, the ion-pairing amine's N-oxide adduct included.
 There is no truth for them. The yardsticks are a non-negative fit of the raw spectra over a 0.2 Da
 grid of mass offsets around the runs' main compound (its isotope pattern at each offset, at the
 runs' main charges, which hold about 80 % of the forms' signal), read at each known form's offset
@@ -411,7 +412,7 @@ more, or 0.8 times or less, the mass of a stronger co-eluting species that is no
 (judged strongest first; a lower bound: re-readings between 0.8 and 1.25 times are not counted).
 Medians over the runs (the deviations: over the 23 forms):
 
-| time-of-flight runs (11) | comb | A1G5 (v5, proof size) | GW5 (v5) | GC5 (v5) |
+| Confidential sample 1 (11 runs) | comb | A1G5 (v5, proof size) | GW5 (v5) | GC5 (v5) |
 | --- | --- | --- | --- | --- |
 | re-read share of the signal (range over the runs) | 28 % (16-40) | 1.8 % (0-9) | 0.9 % (0-8) | 0.9 % (0-7) |
 | species per run | 139 | 19 | 15 | 14 |

@@ -417,12 +417,13 @@ lockspray scans (a Waters function of its own, which the reader keeps apart; a r
 ppm off is another ion and is skipped, and readings at one time are taken at their median) and
 interpolated over time to the TIC-weighted mean retention time of the run's MS scans (those
 within the analysis window, where one is set; `io/lockmass.py`); processing applies it once and
-leaves the run read as it was. One ratio for the whole run, because a region's scans are summed point by point where they share one m/z axis (the
-region sums below): scaled each by the ratio at its own time, they no longer share one, and their
-sum spreads every peak over the scans' several axes. On eleven RDa runs the comb then left a median
-of 16 % of a run's deconvolved signal in species at 1.25 times or more (or 0.8 times or less) the
-mass of a stronger co-eluting species that is not itself one (judged strongest first), re-readings
-of its ions, against 12 % with no correction and 12 % with one ratio. The drift between the
+leaves the run read as it was. One ratio for the whole run, because a region's scans are summed
+point by point where they share one m/z axis (the region sums below): scaled each by the ratio at
+its own time, they no longer share one, and their sum spreads every peak over the scans' several
+axes. On Confidential sample 1 (eleven RDa runs, `training.md`) the comb then left a median of 16 %
+of a run's deconvolved signal in species at 1.25 times or more (or 0.8 times or less) the mass of a
+stronger co-eluting species that is not itself one (judged strongest first), re-readings of its
+ions, against 12 % with no correction and 12 % with one ratio. The drift between the
 readings is left in the masses: a scan keeps the drift between its time and the ratio's, at most
 the record's `drift_ppm`. With `regions.rt_window` set, the run is cut to that window:
 regions are found within it (their relative floors taken within it, the noise their `min_snr`

@@ -154,13 +154,14 @@ the time away from the species analysed). Every MS scan's m/z is divided by that
 ratio: a one-point lock-mass correction, with one ratio for the whole run rather than one per scan.
 The scans of a region must share one m/z axis to be summed into the spectrum that is deconvolved
 (they are added point by point); scans scaled each by its own ratio no longer share one, and their
-sum spreads every peak over the scans' several axes. On the RDa runs that cost more than the drift
-it removed: scaled scan by scan, the comb left more of a run's signal in species re-read at other
-charges than with no correction at all, and one ratio left as little as none (`architecture.md`,
-section 5). The drift over the run stays in the masses: a scan keeps the drift between its own time
-and the time the ratio is read at, up to the whole spread of the readings (`drift_ppm`) at the end
-of the run farthest from that time; where the lockspray reads +30 ppm at the start and +20 ppm at
-the end and the ion current is centred in the run, the scans at its ends keep about 5 ppm.
+sum spreads every peak over the scans' several axes. On the RDa runs of Confidential sample 1
+(`training.md`) that cost more than the drift it removed: scaled scan by scan, the comb left more of
+a run's signal in species re-read at other charges than with no correction at all, and one ratio
+left as little as none (`architecture.md`, section 5). The drift over the run stays in the masses: a
+scan keeps the drift between its own time and the time the ratio is read at, up to the whole spread
+of the readings (`drift_ppm`) at the end of the run farthest from that time; where the lockspray
+reads +30 ppm at the start and +20 ppm at the end and the ion current is centred in the run, the
+scans at its ends keep about 5 ppm.
 
 `process` applies the correction once, before anything else (the run read is left as it was; a run
 corrected already is not corrected again), and prints the scaling applied, how far the readings

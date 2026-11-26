@@ -888,13 +888,14 @@ What is still wrong on these runs:
   n+1 (2'-OMe C, 319.21 Da) lies within its tolerance (0.6 Da or 2.5 peak widths, whichever is
   larger: from 4 kDa on at the RDa's resolving power), and the marking, within 0.15 Da, then takes
   it.
-- On a set of eleven IP-RP runs from a Waters RDa time-of-flight instrument (given here only in
-  aggregate), with the bundled `rda_iprp_neg_oligo` and the lock mass applied as one ratio,
-  the comb leaves a median of about 12 % (2-19 %) of a run's deconvolved signal in species at 1.25
-  times or more, or 0.8 times or less, the mass of a stronger co-eluting species that is not itself
-  one (judged strongest first), the kind the harmonic-reading rule above judges; the GPU-trained v5
-  charge networks leave a median of under 1 % (at most 3-4 % in a run; `training.md`, recipe v5).
-  With the lock mass applied scan by scan the comb left 16 % (`architecture.md`, section 5).
+- On Confidential sample 1 (eleven IP-RP runs of a fully phosphorothioated DNA, base composition
+  T13 C4 G6, from a Waters RDa time-of-flight instrument; `training.md`, recipe v5), with the
+  bundled `rda_iprp_neg_oligo` and the lock mass applied as one ratio, the comb leaves a median of
+  about 12 % (2-19 %) of a run's deconvolved signal in species at 1.25 times or more, or 0.8 times
+  or less, the mass of a stronger co-eluting species that is not itself one (judged strongest
+  first), the kind the harmonic-reading rule above judges; the GPU-trained v5 charge networks leave
+  a median of under 1 % (at most 3-4 % in a run; `training.md`, recipe v5). With the lock mass
+  applied scan by scan the comb left 16 % (`architecture.md`, section 5).
 - Knife edges of the region builder: the merge of two IP-RPLC conjugate peaks into one region hangs
   on a float comparison of their apex gap with their width (0.6693310 against 0.6693330 min; a pair
   at 17.65-18.21 min of that run splits by 2e-6 min), and through that region a weak, separate
