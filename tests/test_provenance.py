@@ -98,7 +98,10 @@ HOOKS = [("lcmsdeconv.process", "deconvolve_spectrum", "keep"),
          ("lcmsdeconv.deconv.pipeline", "drop_multimers", "dropped"),
          ("lcmsdeconv.deconv.pipeline", "drop_harmonic_readings", "dropped"),
          ("lcmsdeconv.deconv.pipeline", "drop_shared_evidence", "dropped"),
-         ("lcmsdeconv.deconv.pipeline", "drop_coincident_adducts", "dropped")]
+         ("lcmsdeconv.deconv.pipeline", "drop_coincident_adducts", "dropped"),
+         ("lcmsdeconv.deconv.pipeline", "refine_frame", "parts"),
+         ("lcmsdeconv.deconv.refine", "_merge_same_mass", "parts"),
+         ("lcmsdeconv.deconv.refine", "_merge_adduct_components", "parts")]
 
 
 def _switching_run():
@@ -112,8 +115,9 @@ def _switching_run():
 
 def test_without_the_flag_nothing_is_kept_or_written(run, tmp_path, monkeypatch):
     """No provenance is collected (no recorder; no grid view, residual or estimator output kept
-    for it; no members, merge or drop log) and none is written. Every step with a hook is run:
-    the method sets later elutions aside, and a polarity-switching run joins its polarities."""
+    for it; no members, merge, drop or fitted-parts log) and none is written. Every step with a
+    hook is run: the method sets later elutions aside, and a polarity-switching run joins its
+    polarities."""
     import importlib
 
     import lcmsdeconv.provenance as provenance
@@ -340,7 +344,8 @@ def test_the_fit_residual_and_the_dropped_columns_are_the_fits_own(run):
             assert d["step"] in MERGE_STEPS or d["step"] in __import__(
                 "lcmsdeconv.provenance", fromlist=["DROP_STEPS"]).DROP_STEPS
             assert d["attributed_to"] and d["columns"]
-            assert all(a["mass"] > 0 and a["id"] != d["id"] for a in d["attributed_to"])
+            assert all(a["mass"] > 0 and (a["pass"], a["id"]) != (d["pass"], d["id"])
+                       for a in d["attributed_to"])
     steps = {d["step"] for r in prov.regions.values() for d in r["deconvolution"]["dropped"]}
     assert {"harmonic_reading", "shared_evidence"} <= steps
     # where a dropped component's templates lie in a reported one's window, the window says so
@@ -391,6 +396,282 @@ def test_a_figure_draws_the_species_other_pieces_of_its_region_as_its_own(run, m
                 total = sum(float(spec[k][inside].sum()) for k in ("own", "joined", "others"))
                 assert total == pytest.approx(st["grid"]["model"], rel=1e-5)
     assert found
+
+
+def _oligo_run():
+    """Phosphorothioate oligonucleotides (IP-RP, negative mode), three peaks: the fit of a
+    region merges components it found at almost one mass, each part fitted at a template
+    position of its own; a later fit pass reuses ids of components the merges took away; and a
+    species gathers more pieces (adduct forms folded in) than its figure has colours."""
+    cfg = SynthConfig(classes=[ClassConfig("ps_rna", (4000.0, 12000.0))], mode="iprp",
+                      polarity=-1)
+    run, _truth = generate_run(cfg, np.random.default_rng(1), n_peaks=3, rt_range=(0.5, 3.5),
+                               scan_rate_hz=1.0)
+    return run
+
+
+@pytest.fixture(scope="module")
+def oligo():
+    """The oligonucleotide run processed with provenance, and per region with species: its
+    reported and dropped components' templates added up as provenance holds them (before it
+    keeps them in single precision), and what the fit subtracted from the region's grid view,
+    read by wrapping numpy in the fit's module (deconv.refine)."""
+    import lcmsdeconv.deconv.refine as refine
+    import lcmsdeconv.process as process
+    import lcmsdeconv.provenance as provenance
+
+    subtracted, current, models = {}, [None], []
+
+    class Subtract:  # np.subtract, whose .at also adds what it takes to the region's tally
+        def __call__(self, *args, **kwargs):
+            return np.subtract(*args, **kwargs)
+
+        def at(self, a, index, values):
+            np.subtract.at(a, index, values)
+            if current[0] is not None:
+                np.add.at(subtracted.setdefault(current[0], np.zeros(a.size)), index, values)
+
+    class NumPy:
+        subtract = Subtract()
+
+        def __getattr__(self, name):
+            return getattr(np, name)
+
+    deconvolve, init = process.deconvolve_spectrum, provenance._Region.__init__
+
+    def watched_deconvolve(*args, **kwargs):
+        current[0] = id(kwargs["keep"])
+        subtracted.pop(current[0], None)  # a new region's (an id can be another's again)
+        try:
+            return deconvolve(*args, **kwargs)
+        finally:
+            current[0] = None
+
+    def watched_init(self, grid, keep, *args, **kwargs):
+        init(self, grid, keep, *args, **kwargs)
+        dropped = 0.0 if self.dropped_model is None else self.dropped_model
+        models.append((self.model + dropped, subtracted[id(keep)]))
+
+    method = Method.load("iprp_neg_oligo")
+    method.deconvolution.model = "comb"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(refine, "np", NumPy())
+        mp.setattr(process, "deconvolve_spectrum", watched_deconvolve)
+        mp.setattr(provenance._Region, "__init__", watched_init)
+        result = process_run(_oligo_run(), method, provenance=True)
+    return result, models
+
+
+def test_a_component_the_fit_merged_is_placed_where_the_fit_subtracted_its_parts(oligo):
+    """A region's fit merges components it found at almost one mass (or an adduct form into its
+    parent) into one, having subtracted each part's templates where its own fit placed them: the
+    records and the figures place them there too. Every reported component's templates and
+    those dropped after the fit add up to what the fit subtracted, and a merged component lists
+    its parts, whose columns add up to its own."""
+    result, models = oligo
+    assert models
+    for model, subtracted in models:
+        assert np.abs(model - subtracted).max() <= 1e-9 * subtracted.max()
+    comps = [c for s in result.provenance.species for p in s["pieces"]
+             for c in p["evidence"]["components"]]
+    dropped = [d for r in result.provenance.regions.values()
+               for d in r["deconvolution"]["dropped"]]
+    merged = [c for c in comps if c["fitted_parts"]]
+    assert merged and [c for c in comps if c["fitted_parts"] is None]
+    assert [c for c in merged if len({p["template_mass"] for p in c["fitted_parts"]}) > 1]
+    for c in merged:
+        parts = c["fitted_parts"]
+        assert len(parts) > 1 or parts[0]["template_mass"] != pytest.approx(c["template_mass"])
+        fitted: dict = {}
+        for p in parts:
+            for col in p["columns"]:
+                key = (col["z"], col["adduct"])
+                fitted[key] = fitted.get(key, 0.0) + col["fitted"]
+        own = {(st["z"], ""): st["fitted"] for st in c["charge_states"] if st["fitted"] > 0}
+        own |= {(a["z"], a["adduct"]): a["fitted"] for a in c["adduct_columns"]}
+        assert fitted.keys() == own.keys()
+        for key, v in own.items():
+            assert fitted[key] == pytest.approx(v, rel=1e-9)
+    for d in dropped:  # the same of a merged component dropped after the fit
+        if d["fitted_parts"]:
+            fitted = {}
+            for p in d["fitted_parts"]:
+                for col in p["columns"]:
+                    key = (col["z"], col["adduct"])
+                    fitted[key] = fitted.get(key, 0.0) + col["fitted"]
+            assert fitted == pytest.approx({(c["z"], c["adduct"]): c["fitted"]
+                                            for c in d["columns"]}, rel=1e-9)
+
+
+def test_the_fits_merges_carry_each_parts_templates():
+    """The fit's merges (of almost one mass, then an adduct form into its parent) carry each
+    merged component's fitted parts into the one they keep: each part at its own template mass,
+    its columns counted in the kept component's columns of the combined adduct label, so that
+    the parts' columns add up to the kept component's."""
+    from lcmsdeconv.chem.adducts import ADDUCTS, AdductLibrary
+    from lcmsdeconv.core.model import Component
+    from lcmsdeconv.deconv.refine import _merge_adduct_components, _merge_same_mass
+    from lcmsdeconv.provenance import fitted_parts, placements
+
+    lib = AdductLibrary.from_mode("iprp", -1, exclude=("TEA", "DIPEA", "HFIP"))
+    na = ADDUCTS["Na"].avg_mass
+    base = Component(6793.98, 100.0, charges={4: 100.0}, adducts={"base": 100.0},
+                     columns={(4, ""): 100.0})
+    twin = Component(6794.10, 5.0, charges={4: 5.0}, adducts={"base": 5.0},
+                     columns={(4, ""): 5.0}, template_shift=1e-5)
+    form = Component(6793.98 + na, 10.0, charges={4: 10.0}, adducts={"base": 8.0, "+K": 2.0},
+                     columns={(4, ""): 8.0, (4, "+K"): 2.0})
+    form_twin = Component(6794.02 + na, 1.0, charges={4: 1.0}, adducts={"base": 1.0},
+                          columns={(4, ""): 1.0})
+    comps = [base, twin, form, form_twin]
+    where = {id(c): c.mass * float(np.exp(c.template_shift)) for c in comps}
+    parts = {id(c): (c, [(where[id(c)], [(z, lab, (z, lab), v)
+                                         for (z, lab), v in c.columns.items()])])
+             for c in comps}
+    _merge_same_mass(comps, parts=parts)
+    _merge_adduct_components(comps, lib, parts=parts)
+    assert comps == [base] and list(parts) == [id(base)]
+    held = parts[id(base)][1]
+    assert [tm for tm, _cols in held] == [where[id(c)] for c in (base, twin, form, form_twin)]
+    added: dict = {}
+    for _tm, cols in held:
+        for _z, _lab, key, v in cols:
+            added[key] = added.get(key, 0.0) + v
+    assert added == pytest.approx(base.columns) and len(base.columns) == 3
+    # the form's own base-form templates are counted in the +Na column, its +K in +Na's +K
+    form_cols = {lab: key for _z, lab, key, _v in held[2][1]}
+    assert form_cols[""] == (4, "+Na") and form_cols["+K"][1] not in ("", "+K", "+Na")
+    assert held[3][1] == [(4, "", (4, "+Na"), 1.0)]
+    record = fitted_parts(base, base.columns, parts)
+    assert [p["template_mass"] for p in record] == [tm for tm, _cols in held]
+    assert {(c["adduct"], c["template_adduct"]) for c in record[2]["columns"]} == {
+        ("+Na", ""), (form_cols["+K"][1], "+K")}
+    placed = placements(base, base.columns, parts)
+    assert sorted(placed[(4, "")]) == sorted([(where[id(base)], "", 100.0),
+                                              (where[id(twin)], "", 5.0)])
+    # a component fitted as one has none
+    alone = Component(5000.0, 1.0, columns={(4, ""): 1.0})
+    single = {id(alone): (alone, [(5000.0, [(4, "", (4, ""), 1.0)])])}
+    assert placements(alone, alone.columns, single) is None
+    assert fitted_parts(alone, alone.columns, single) is None
+
+
+def test_a_component_is_named_by_its_fit_pass_and_id(oligo):
+    """A later fit pass numbers its components on from the number the earlier passes kept, so
+    an id can recur in a region: wherever a record names a component (its evidence, what was
+    dropped after the fit and what it was attributed to), the fit pass and the id name one, and
+    the reported mass's origin says both."""
+    result, _models = oligo
+    prov = result.provenance
+    by_id: dict = {}
+    by_pass: dict = {}
+
+    def note(region, rec):
+        by_id.setdefault((region, rec["id"]), set()).add(rec["mass"])
+        by_pass.setdefault((region, rec["pass"], rec["id"]), set()).add(rec["mass"])
+
+    for s in prov.species:
+        for p in s["pieces"]:
+            for c in p["evidence"]["components"]:
+                note((p["region"]["polarity"], p["region"]["id"]), c)
+    for key, r in prov.regions.items():
+        for d in r["deconvolution"]["dropped"]:
+            note(key, d)
+            for a in d["attributed_to"]:
+                note(key, a)
+    assert [k for k, masses in by_id.items() if len(masses) > 1]  # an id naming two
+    assert all(len(masses) == 1 for masses in by_pass.values())
+    for s in prov.species:
+        piece = s["pieces"][s["mass_from"]["piece"]]
+        for c in piece["evidence"]["components"]:
+            assert f"{c['id']} (fit pass {c['pass']})" in s["mass_from"]["how"]
+
+
+def test_a_figure_draws_every_piece_of_a_species_of_many(oligo, tmp_path):
+    """A species joined from more pieces than its figure has colours: every piece's trace is
+    drawn, the first ones named in the legend with how each was joined and the others grey
+    under one entry; the spectrum's legend names its other counted pieces by number only."""
+    import matplotlib.axes
+
+    from lcmsdeconv.provenance import PIECE_COLOURS, _draw
+
+    def numbers(values):  # consecutive whole numbers as a run (1-8)
+        values = sorted(values)
+        assert values == list(range(values[0], values[-1] + 1))
+        return f"{values[0]}-{values[-1]}"
+
+    result, _models = oligo
+    prov = result.provenance
+    i = max(range(len(prov.species)), key=lambda k: len(prov.species[k]["pieces"]))
+    rec, data = prov.species[i], prov.figures[i]
+    n = len(rec["pieces"])
+    assert n > len(PIECE_COLOURS)
+    drawn, plot = [], matplotlib.axes.Axes.plot
+
+    def record(self, *args, **kwargs):
+        drawn.append((self, kwargs.get("label"), kwargs.get("color")))
+        return plot(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(matplotlib.axes.Axes, "plot", record)
+        _draw(result, rec, data, tmp_path / "figure.png")
+    spectrum, trace = drawn[0][0], drawn[-1][0]
+    lines = [(label, colour) for ax, label, colour in drawn
+             if ax is trace and label not in ("all forms", "base form")]
+    assert len(lines) == n  # every piece
+    named = [label for label, _c in lines if label and label.startswith("piece ")]
+    assert len(named) == len(PIECE_COLOURS) - 1
+    for k, label in enumerate(named[1:], start=1):
+        assert label.endswith(")") and rec["pieces"][k]["joined_by"] is not None
+    rest = list(range(len(named), n))
+    assert [label for label, _c in lines if label and label.startswith("pieces ")] == [
+        f"pieces {numbers(rest)}: grey, listed in provenance.json"]
+    joined = [label for ax, label, _c in drawn
+              if ax is spectrum and label and label.startswith("its other counted pieces")]
+    assert joined == [f"its other counted pieces of this region (pieces "
+                      f"{numbers(data['joined_pieces'])})"]
+    assert len(data["joined_pieces"]) > len(PIECE_COLOURS) - 1
+
+
+def test_window_sums_read_all_scans_at_once():
+    """``observed`` adds up every scan's own points in a window with a few searches over all of
+    the region's points at once, not two per scan, so that a region of many scans costs no more
+    per window; the sums, points and scans with signal are those of the scans one by one."""
+    from types import SimpleNamespace
+
+    import lcmsdeconv.provenance as provenance
+    from lcmsdeconv.nn.grid import LogMzGrid
+
+    rng = np.random.default_rng(3)
+    grid = LogMzGrid(400.0, 2000.0, 1e-4, -1)
+    calls, search = [], np.searchsorted
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return search(*args, **kwargs)
+
+    for n in (4, 400):
+        frames = [SimpleNamespace(mz=np.sort(rng.uniform(500.0, 1500.0, 300)),
+                                  intensity=rng.exponential(1.0, 300)) for _ in range(n)]
+        mz = np.concatenate([f.mz for f in frames])
+        summed = SimpleNamespace(mz=np.sort(mz), intensity=np.ones(mz.size),
+                                 meta={"frames": frames})
+        region = provenance._Region(grid, {"observed": np.zeros(grid.size)}, summed,
+                                    SimpleNamespace(components=[], noise_sigma=1.0), None, 3.0)
+        calls.clear()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(provenance.np, "searchsorted", counted)
+            seen = region.raw_signal(900.0, 905.0)
+        assert len(calls) <= 4
+        inside = [(f.mz >= 900.0) & (f.mz <= 905.0) for f in frames]
+        sums = [float(f.intensity[m].sum()) for f, m in zip(frames, inside)]
+        assert seen["sum"] == pytest.approx(sum(sums), rel=1e-12)
+        assert seen["points"] == sum(int(m.sum()) for m in inside)
+        assert seen["scans"] == sum(v > 0 for v in sums)
+        assert seen["centroid_mz"] == pytest.approx(
+            sum(float((f.mz[m] * f.intensity[m]).sum()) for f, m in zip(frames, inside))
+            / sum(sums), rel=1e-12)
+    assert 0 < seen["scans"] < 400  # some scans have no point there
 
 
 def test_observed_is_counted_on_each_scans_own_points(run):
@@ -846,6 +1127,8 @@ def test_aliases_reach_every_provenance_file(planted):
     import matplotlib.text
     from matplotlib import font_manager
 
+    from lcmsdeconv.aliases import _file_text
+
     drawn, set_text = [], matplotlib.text.Text.set_text
 
     def record(self, s):
@@ -870,6 +1153,11 @@ def test_aliases_reach_every_provenance_file(planted):
                 text = json.dumps(json.loads(text), ensure_ascii=False)
             texts[name] = text
     assert {"provenance.json", "provenance.html"} <= set(texts)
+    figures = sorted((out / "evidence").glob("species-*.png"))
+    assert figures
+    for p in figures:  # the title each holds as text, as the leak check reads it
+        texts[p.relative_to(out).as_posix()] = _file_text(p)
+        assert f"LC-{NEW}-S: species" in texts[p.relative_to(out).as_posix()]
     for name, text in texts.items():
         assert SECRET not in text, name
     data = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
@@ -907,10 +1195,12 @@ def test_aliases_reach_the_network_name_of_a_run_aliased_already(planted, tmp_pa
     assert aliases.leaks_in(out, exclude=written) == []
 
 
-def test_the_leak_check_reads_provenance_texts_and_figure_names(tmp_path, capsys):
+def test_the_leak_check_reads_provenance_texts_and_figure_titles(tmp_path, capsys):
     """process's check of its outputs covers the provenance files: provenance.json and .html by
-    their text, a figure by its name (its pixels hold no text to read), and an earlier run's
-    provenance files left in --out by their text."""
+    their text, a figure by its name and the title its PNG file holds as text (its pixels are
+    not read), and an earlier run's provenance files and figures left in --out likewise."""
+    import matplotlib.image
+
     aliases = Aliases.parse(f"{SECRET}={NEW}")
     (tmp_path / "evidence").mkdir()
     page = tmp_path / "provenance.json"
@@ -918,17 +1208,50 @@ def test_the_leak_check_reads_provenance_texts_and_figure_names(tmp_path, capsys
     named = tmp_path / "evidence" / f"species-1-{SECRET}x.png"
     named.write_bytes(PNG + b"no text")
     inside = tmp_path / "evidence" / "species-2-100.00.png"
-    inside.write_bytes(PNG + f"tEXt {SECRET} ".encode())  # bytes, not text: not read
-    _check_outputs(aliases, [page, named, inside], tmp_path)
+    inside.write_bytes(PNG + f"tEXt {SECRET} ".encode())  # no text chunk: not read
+    titled = tmp_path / "evidence" / "species-3-200.00.png"
+    matplotlib.image.imsave(titled, np.zeros((2, 2)),
+                            metadata={"Title": f"LC-{SECRET}-S: species 3, 200.00 Da"})
+    _check_outputs(aliases, [page, named, inside, titled], tmp_path)
     err = capsys.readouterr().err
     assert "WARNING: provenance.json still holds 1 occurrence" in err
     assert "WARNING: evidence/species-1-***x.png still holds 1 occurrence" in err
+    assert "WARNING: evidence/species-3-200.00.png still holds 1 occurrence" in err
     assert "species-2" not in err and SECRET not in err
     earlier = tmp_path / "earlier"
-    earlier.mkdir()
+    (earlier / "evidence").mkdir(parents=True)
     (earlier / "provenance.html").write_text(f"<p>LC-{SECRET}-S</p>", encoding="utf-8")
-    assert aliases.leaks_in(tmp_path, exclude=[page, named, inside]) == [
-        ("earlier/provenance.html", 1)]
+    shutil.copyfile(titled, earlier / "evidence" / "species-4-300.00.png")
+    shutil.copyfile(titled, earlier / "notes.png")  # no figure of lcmsdeconv's: by its name
+    assert aliases.leaks_in(tmp_path, exclude=[page, named, inside, titled]) == [
+        ("earlier/evidence/species-4-300.00.png", 1), ("earlier/provenance.html", 1)]
+
+
+def test_an_earlier_runs_figures_left_in_the_folder_are_flagged(planted):
+    """Figures an earlier run drew without aliases show its names in their titles. A later run
+    with an alias into the same --out, which leaves them there (it draws none), warns of each,
+    by the title each holds as text; so does one into a folder holding such an output in a
+    folder of its own, whose own figures (aliased) it does not warn of."""
+    first = planted["dir"] / "first"
+    res = _process(planted, first, "--provenance")
+    assert res.exit_code == 0, res.output
+    figures = sorted(p.relative_to(first).as_posix()
+                     for p in (first / "evidence").glob("species-*.png"))
+    assert figures
+    second = planted["dir"] / "second"
+    shutil.copytree(first, second / "earlier")
+    res = _process(planted, first, "--alias", f"{SECRET}={NEW}")
+    assert res.exit_code == 0, res.output
+    for name in figures:
+        assert f"WARNING: {name}, which this run did not write, holds 1 occurrence" in res.stderr
+    res = _process(planted, second, "--provenance", "--alias", f"{SECRET}={NEW}")
+    assert res.exit_code == 0, res.output
+    for name in figures:
+        assert (f"WARNING: earlier/{name}, which this run did not write, holds 1 occurrence"
+                in res.stderr)
+    assert not [line for line in res.stderr.splitlines() if line.startswith("WARNING: evidence/")]
+    assert list((second / "evidence").glob("species-*.png"))
+    assert SECRET not in res.stderr
 
 
 # ---------------------------------------------------------------------- the version

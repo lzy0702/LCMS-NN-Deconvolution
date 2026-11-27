@@ -47,6 +47,7 @@ import traceback
 import types
 import unicodedata
 import warnings
+import zlib
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,9 @@ _DATA_URI = re.compile(r"data:[\w.+/-]+;base64,[A-Za-z0-9+/=\s]*")
 #: the names `lcmsdeconv process` gives its outputs (what :meth:`Aliases.leaks_in` reads)
 _OUTPUT_NAMES = ("results.json", "species.csv", "report.html", "provenance.json",
                  "provenance.html")
+
+#: what a PNG file starts with
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 #: the largest file whose text :meth:`Aliases.leaks_in` reads, in bytes
 _TEXT_LIMIT = 50 * 2**20
@@ -543,8 +547,9 @@ class Aliases:
         their name relative to ``root`` or (``text``) in their text: (that name with each OLD
         masked, the number of occurrences) for each. The text checked is a JSON file's decoded
         strings, an HTML file's text with its entities decoded and its data URIs (embedded
-        images) left out, any other file's text. A file that cannot be read counts by its name
-        only, as does a directory."""
+        images) left out, a PNG file's text chunks (an evidence figure's title, which names the
+        run and the species; its pixels are not read), any other file's text. A file that
+        cannot be read counts by its name only, as does a directory."""
         root = Path(root)
         out = []
         for p in paths:
@@ -564,11 +569,11 @@ class Aliases:
         (:meth:`count`): an earlier run's outputs, say, beside those of ``exclude`` (the files a
         run wrote there, for :meth:`leaks`), which are left out. Each file and folder is checked
         by its name, and each file named as ``lcmsdeconv process`` names its outputs
-        (results.json, species.csv, report.html, peaks_*.csv, provenance.json and
-        provenance.html; an evidence figure by its name only) by its text too, read as
-        :meth:`leaks` reads it: (its name relative to ``folder`` with each OLD masked, the number
-        of occurrences in its own name and text) for each, sorted. At most ``limit`` entries are
-        looked at, and no text above 50 MB is read."""
+        (results.json, species.csv, report.html, peaks_*.csv, provenance.json, provenance.html,
+        and the evidence figures, evidence/species-*.png, by the title each holds as text) by
+        its text too, read as :meth:`leaks` reads it: (its name relative to ``folder`` with each
+        OLD masked, the number of occurrences in its own name and text) for each, sorted. At
+        most ``limit`` entries are looked at, and no text above 50 MB is read."""
         if not self._pairs:
             return []
         def key(p) -> str:
@@ -589,7 +594,9 @@ class Aliases:
                     continue
                 n = self.count(name)
                 if is_file and (name in _OUTPUT_NAMES
-                                or (name.startswith("peaks_") and name.endswith(".csv"))):
+                                or (name.startswith("peaks_") and name.endswith(".csv"))
+                                or (Path(top).name == "evidence" and name.startswith("species-")
+                                    and name.endswith(".png"))):
                     with contextlib.suppress(OSError):
                         st = p.stat()  # a regular file only: reading a FIFO or device blocks
                         if stat.S_ISREG(st.st_mode) and st.st_size <= _TEXT_LIMIT:
@@ -781,6 +788,8 @@ class Aliases:
 # ---------------------------------------------------------------------- files checked
 def _file_text(path: Path) -> str:
     """The text :meth:`Aliases.leaks` checks in a file; "" where it cannot be read."""
+    if path.suffix.lower() == ".png":
+        return _png_text(path)
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -794,6 +803,48 @@ def _file_text(path: Path) -> str:
     if suffix in (".html", ".htm"):
         return html.unescape(_DATA_URI.sub("", text))
     return text
+
+
+def _inflated(data: bytes) -> bytes:
+    """zlib-compressed text, at most 50 MB of it."""
+    return zlib.decompressobj().decompress(data, _TEXT_LIMIT)
+
+
+def _png_text(path: Path) -> str:
+    """The texts a PNG file holds, its tEXt, zTXt and iTXt chunks (keyword and text), one per
+    line: an evidence figure's title, which names the run and the species as drawn; "" where it
+    cannot be read or is no PNG. Its pixels are not read."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(_TEXT_LIMIT)
+    except OSError:
+        return ""
+    if not data.startswith(_PNG_SIGNATURE):
+        return ""
+    out = []
+    pos = len(_PNG_SIGNATURE)
+    while pos + 8 <= len(data):
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + size]
+        pos += 12 + size
+        if kind == b"IEND":
+            break
+        with contextlib.suppress(ValueError, IndexError, zlib.error):
+            if kind == b"tEXt":
+                key, _sep, text = body.partition(b"\0")
+                out.append(f"{key.decode('latin-1')} {text.decode('latin-1')}")
+            elif kind == b"zTXt":
+                key, _sep, rest = body.partition(b"\0")
+                out.append(f"{key.decode('latin-1')} {_inflated(rest[1:]).decode('latin-1')}")
+            elif kind == b"iTXt":
+                key, _sep, rest = body.partition(b"\0")
+                compressed, rest = rest[0], rest[2:]
+                _language, _sep, rest = rest.partition(b"\0")
+                translated, _sep, text = rest.partition(b"\0")
+                text = _inflated(text) if compressed else text
+                out.append(" ".join(part.decode("utf-8", errors="replace")
+                                    for part in (key, translated, text)))
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------- console

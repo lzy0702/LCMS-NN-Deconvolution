@@ -8,13 +8,15 @@ species it reports, the chain of evidence the processing followed, and
   (their scans, shared boundaries and the fitted columns that the steps after the fit dropped),
   and per species its regions, the pieces it was made of (each with the charges it was linked
   with) and how they were joined, the components of the regions' summed spectra its mass and
-  amount come from (mass, template shift, score, mass spread), each charge state's m/z window
-  with the signal the region's scans measured in it, the fitted templates and what the fit left
+  amount come from (fit pass and id, mass, template shift, score, mass spread, and where the fit
+  placed each part of a component it merged from several), each charge state's m/z window with
+  the signal the region's scans measured in it, the fitted templates and what the fit left
   there, the adduct-form columns, the charge estimator's reading on the envelope's bins and the
   species' per-scan trace; and the SHA-256 of the ``results.json`` it was written with;
 - ``evidence/species-<id>-<mass>.png``: the region-summed spectrum with the species' charge
   states shaded, its fitted templates and its trace over the scans, for the
-  :data:`MAX_FIGURES` largest species;
+  :data:`MAX_FIGURES` largest species (the title, which names the run and the species, also
+  kept as text in the file, for the leak check of name aliases);
 - ``provenance.html``: an index of the species linking their figures.
 
 Everything is taken from the objects the processing makes anyway (a region's scans, summed
@@ -74,9 +76,10 @@ ZOOM_STATES = 4
 #: largest value of each run of grid bins)
 SPAN_POINTS = 1600
 
-#: the colours of a merged species' pieces in its figure's trace panel (the first eight drawn)
-PIECE_COLOURS = ("#7b3294", "#008837", "#a6611a", "#e66101", "#5e3c99", "#018571", "#d01c8b",
-                 "#4d4d4d")
+#: the colours of a merged species' pieces in its figure's trace panel, each named in the
+#: legend: every piece of a species of up to seven, the first six of one of more (the others
+#: drawn grey under one entry, which the panel has room for)
+PIECE_COLOURS = ("#7b3294", "#008837", "#a6611a", "#e66101", "#5e3c99", "#018571", "#d01c8b")
 
 #: merge steps whose joined pieces are not counted in the species' amount
 _NOT_COUNTED = ("set_aside", "other_polarity")
@@ -173,22 +176,79 @@ def piece_charges(species) -> list[dict]:
     return [{"z": int(z), "value": float(v)} for z, v in sorted(species.charges.items())]
 
 
-def dropped_records(dropped) -> list[dict]:
+def _mass_key(mass: float) -> int:
+    """A template mass as :func:`~lcmsdeconv.deconv.templates.build_template` keys it (0.1 mDa):
+    two masses with one key have one template."""
+    return int(round(float(mass) * 1e4))
+
+
+def placements(c, columns: dict, parts: dict | None) -> dict | None:
+    """Where the fit placed the templates of ``columns`` (keys of ``c.columns``) of component
+    ``c``, where that is not one template position: ``{key: [(template mass, the adduct label
+    of the part's template, fitted)]}``. A component the region's fit merged from several (of
+    almost one mass, or an adduct form into its parent: refine's ``_merge_same_mass`` and
+    ``_merge_adduct_components``) holds each part's templates where the part's own fit placed
+    and subtracted them (``parts``: ``deconvolve_spectrum``'s ``keep["parts"]``). None where
+    every one of them sits at the component's own template position, mass x exp(template_shift),
+    under its own label: a component fitted as one."""
+    entry = (parts or {}).get(id(c))
+    if entry is None:
+        return None
+    own = _mass_key(c.mass * float(np.exp(c.template_shift)))
+    out: dict = {}
+    moved = False
+    for tm, cols in entry[1]:
+        for _z, lab, key, v in cols:
+            if key not in columns or not v > 0:
+                continue
+            out.setdefault(key, []).append((float(tm), _adduct(lab), float(v)))
+            moved = moved or _mass_key(tm) != own or _adduct(lab) != _adduct(key[1])
+    return out if moved else None
+
+
+def fitted_parts(c, columns: dict, parts: dict | None) -> list[dict] | None:
+    """``fitted_parts`` of a component's record: for a component the region's fit merged from
+    several (:func:`placements`), each part's template position and the columns of ``columns``
+    it was fitted with (``adduct``: the component's column it is counted in;
+    ``template_adduct``: the adduct state its own template carries); None for one fitted as
+    one, its templates at its own template position."""
+    entry = (parts or {}).get(id(c))
+    if entry is None:
+        return None
+    out = []
+    for tm, cols in entry[1]:
+        rows = sorted((int(z), _adduct(key[1]), _adduct(lab), float(v))
+                      for z, lab, key, v in cols if key in columns and v > 0)
+        if rows:
+            out.append({"template_mass": float(tm),
+                        "columns": [{"z": z, "adduct": a, "template_adduct": t, "fitted": v}
+                                    for z, a, t, v in rows]})
+    if len(out) < 2 and placements(c, columns, parts) is None:
+        return None
+    return out
+
+
+def dropped_records(dropped, parts: dict | None = None, pass_of: dict | None = None
+                    ) -> list[dict]:
     """``regions[].deconvolution.dropped``: the fitted columns the steps after the fit took away
-    (``deconvolve_spectrum``'s ``keep["dropped"]``), each with its step, the component and the
-    stronger components they were attributed to."""
+    (``deconvolve_spectrum``'s ``keep["dropped"]``), each with its step, the component (with
+    the fit pass that found it, ``pass_of``: ``{id(component): pass}``, and where its templates
+    sat, ``parts``: :func:`fitted_parts`) and the stronger components they were attributed
+    to."""
+    pass_of = pass_of or {}
     out = []
     for d in dropped or ():
         c = d["component"]
         cols = sorted(((int(z), _adduct(lab), float(v)) for (z, lab), v in d["columns"].items()
                        if v > 0), key=lambda x: (x[0], x[1]))
         out.append({
-            "step": d["step"], "id": int(c.id), "mass": float(c.mass),
-            "template_mass": float(c.mass * np.exp(c.template_shift)),
+            "step": d["step"], "id": int(c.id), "pass": pass_of.get(id(c)),
+            "mass": float(c.mass), "template_mass": float(c.mass * np.exp(c.template_shift)),
             "component_dropped": bool(d["whole"]),
-            "attributed_to": [{"id": int(k.id), "mass": float(k.mass)}
-                              for k in d["attributed_to"]],
+            "attributed_to": [{"id": int(k.id), "pass": pass_of.get(id(k)),
+                               "mass": float(k.mass)} for k in d["attributed_to"]],
             "columns": [{"z": z, "adduct": lab, "fitted": v} for z, lab, v in cols],
+            "fitted_parts": fitted_parts(c, d["columns"], parts),
         })
     return out
 
@@ -199,15 +259,25 @@ class _Column:
     z: int
     label: str  # "" for the base form
     coef: float
-    template: Any  # lcmsdeconv.deconv.templates.Template
+    template: Any  # lcmsdeconv.deconv.templates.Template, or a _Placed
+
+
+@dataclass
+class _Placed:
+    """The templates the fit placed for one column of a component it merged from parts, added
+    up: ``values * coef`` is every part's template times what the part's fit gave it."""
+
+    bins: np.ndarray
+    values: np.ndarray
 
 
 class _Region:
     """What a region's species are read from, while the region is processed: its scans and
     their summed spectrum, its grid view, what the fit left of it, the model of every component
-    it reports and of the columns dropped after the fit, and the charge estimator's output of
-    each pass. :meth:`release` keeps what its species' figures draw (the grid view and the
-    models) until the species are final."""
+    it reports and of the columns dropped after the fit (each template where the fit placed and
+    subtracted it), and the charge estimator's output of each pass. :meth:`release` keeps what
+    its species' figures draw (the grid view, the models and where the templates sit) until the
+    species are final."""
 
     def __init__(self, grid, keep: dict, summed, fr, instrument, snr: float):
         self.grid = grid
@@ -217,13 +287,24 @@ class _Region:
         self.thr = snr * self.noise  # the decoder's vote threshold
         self.carrier = carrier_mass(grid.polarity)
         self.raw_mz, self.raw_int = _sorted(summed.mz, summed.intensity)
-        # each scan's own points: what the instrument measured (the summed spectrum interpolates
-        # profile scans on axes of their own onto the union of their points)
+        # each scan's own points, all scans together by m/z with the scan each is from: what the
+        # instrument measured (the summed spectrum interpolates profile scans on axes of their
+        # own onto the union of their points)
         frames = (getattr(summed, "meta", None) or {}).get("frames") or ()
-        self.scans = [_sorted(f.mz, f.intensity) for f in frames] or None
+        self.points = None
+        self.n_scans = len(frames)
+        if frames:
+            mz = np.concatenate([np.asarray(f.mz, dtype=float) for f in frames])
+            order = np.argsort(mz, kind="stable")
+            self.points = (mz[order],
+                           np.concatenate([np.asarray(f.intensity, dtype=float)
+                                           for f in frames])[order],
+                           np.repeat(np.arange(len(frames), dtype=np.int32),
+                                     [len(f.mz) for f in frames])[order])
         residual = keep.get("residual")
         self.residual = None if residual is None else np.asarray(residual, dtype=float)
         self.dropped = list(keep.get("dropped", ()))
+        self.parts = keep.get("parts") or {}
         self.cols: dict[int, list[_Column]] = {}
         self.owns: dict[int, tuple[int, np.ndarray]] = {}
         self.model = np.zeros(grid.size)
@@ -243,12 +324,12 @@ class _Region:
     def release(self) -> None:
         """Let go of what only the region's own records read (its scans, summed spectrum, the
         fit's residual, the estimator's output, the templates); keep the grid view and the
-        models, single precision, for the figures."""
+        models, single precision, and where the fit placed the templates, for the figures."""
         self.observed = self.observed.astype(np.float32)
         self.model = self.model.astype(np.float32)
         if self.dropped_model is not None:
             self.dropped_model = self.dropped_model.astype(np.float32)
-        self.raw_mz = self.raw_int = self.scans = self.residual = None
+        self.raw_mz = self.raw_int = self.points = self.residual = None
         self.predictions, self.pass_of, self.evidence = {}, {}, {}
         self.dropped = []
         self.forget()
@@ -265,19 +346,43 @@ class _Region:
                               adduct_mass=st.mass, adduct_label=st.label)
 
     def _columns(self, c, columns: dict) -> list[_Column]:
+        placed = placements(c, columns, self.parts)
         out = []
-        for (z, label), v in columns.items():
+        for key, v in columns.items():
             if not v > 0:
                 continue
-            label = _adduct(label)
-            t = self.template(c, z, label)
+            z, label = int(key[0]), _adduct(key[1])
+            if placed is None or key not in placed:
+                t = self.template(c, z, label)
+            else:
+                t = self._placed(c, z, placed[key], float(v))
             if t is not None:
-                out.append(_Column(int(z), label, float(v), t))
+                out.append(_Column(z, label, float(v), t))
         return out
+
+    def _placed(self, c, z: int, parts: list, coef: float) -> _Placed | None:
+        """The templates of one column of a component merged from parts, each at its part's
+        template mass with its part's adduct state, added up and scaled to ``coef``."""
+        found = []
+        for tm, label, v in parts:
+            st = AdductState.from_label(label)
+            t = build_template(tm, int(z), self.grid, self.instrument, c.compound_class,
+                               adduct_mass=st.mass, adduct_label=st.label)
+            if t is not None:
+                found.append((t, v))
+        if not found or not coef > 0:
+            return None
+        lo = min(int(t.bins.min()) for t, _v in found)
+        y = np.zeros(max(int(t.bins.max()) for t, _v in found) - lo + 1)
+        for t, v in found:
+            y[t.bins - lo] += t.values * v
+        nz = np.flatnonzero(y > 0)
+        return _Placed(nz + lo, y[nz] / coef)
 
     def columns(self, c) -> list[_Column]:
         """The component's fitted (charge, adduct-state) columns with their templates, placed as
-        the fit placed them (the class's envelope at mass * exp(template_shift))."""
+        the fit placed them (the class's envelope at mass * exp(template_shift); for a component
+        the fit merged from parts, each part's at the part's own position, :func:`placements`)."""
         out = self.cols.get(id(c))
         if out is None:
             out = self.cols[id(c)] = self._columns(c, c.columns)
@@ -326,19 +431,19 @@ class _Region:
         i0 = int(np.searchsorted(self.raw_mz, lo, side="left"))
         i1 = int(np.searchsorted(self.raw_mz, hi, side="right"))
         peak = float(self.raw_int[i0:i1].max()) if i1 > i0 else 0.0
-        parts = self.scans if self.scans is not None else [(self.raw_mz, self.raw_int)]
-        n, total, moment, scans = 0, 0.0, 0.0, 0
-        for mz, y in parts:
-            a = int(np.searchsorted(mz, lo, side="left"))
-            b = int(np.searchsorted(mz, hi, side="right"))
-            if b > a:
-                s = float(y[a:b].sum())
-                n += b - a
-                total += s
-                moment += float((y[a:b] * mz[a:b]).sum())
-                scans += int(s > 0)
-        return {"points": n, "sum": total, "max": peak,
-                "scans": scans if self.scans is not None else None,
+        mz, y, scan = self.points if self.points is not None else (self.raw_mz, self.raw_int,
+                                                                   None)
+        a = int(np.searchsorted(mz, lo, side="left"))
+        b = int(np.searchsorted(mz, hi, side="right"))
+        mz, y = mz[a:b], y[a:b]
+        scans = None
+        if scan is None:
+            total = float(y.sum())
+        else:  # each scan's points in the window added up, then the scans'
+            per = np.bincount(scan[a:b], weights=y, minlength=self.n_scans)
+            total, scans = float(per.sum()), int(np.count_nonzero(per > 0))
+        moment = float(np.dot(y, mz))
+        return {"points": b - a, "sum": total, "max": peak, "scans": scans,
                 "centroid_mz": moment / total if total > 0 else None}
 
     def grid_signal(self, b0: int, b1: int, c) -> dict:
@@ -434,6 +539,7 @@ class _Region:
                "score": float(c.score), "mass_spread_ppm": float(c.mass_spread_ppm),
                "compound_class": c.compound_class, "intensity": float(c.intensity),
                "pass": self.pass_of.get(id(c)), "flags": list(c.flags),
+               "fitted_parts": fitted_parts(c, c.columns, self.parts),
                "charge_states": states, "adduct_columns": adducts}
         self.evidence[id(c)] = out
         return out
@@ -532,6 +638,14 @@ class _Region:
                 "windows": sorted(windows), "zooms": zooms}
 
 
+def _component_name(record: dict) -> str:
+    """A component as the texts name it: its id and the fit pass that found it (a later pass
+    numbers its components on from the number the earlier passes kept, so an id can recur in a
+    region; the pass and the id name one)."""
+    found = record.get("pass")
+    return f"{record['id']}" + ("" if found is None else f" (fit pass {found})")
+
+
 # ------------------------------------------------------------------------------ the trail
 @dataclass
 class _Trail:
@@ -574,6 +688,7 @@ class Recorder:
         keep = keep or {}
         grid = keep.get("grid") or fr.meta.get("grid")
         passes = keep.get("passes", [])
+        pass_of = {id(c): i for i, new in enumerate(passes) for c in new}
         self.regions[key] = {
             "shared": [bool(shared[0]), bool(shared[1])],
             "deconvolution": {
@@ -584,7 +699,7 @@ class Recorder:
                 "adducts": list(fr.meta.get("adducts", ())),
                 "noise_sigma": _num(fr.noise_sigma),
                 "residual_fraction": _num(fr.residual_fraction),
-                "dropped": dropped_records(keep.get("dropped")),
+                "dropped": dropped_records(keep.get("dropped"), keep.get("parts"), pass_of),
                 "grid": None if grid is None else {
                     "mz_min": float(grid.mz_min), "mz_max": float(grid.mz_max),
                     "step": float(grid.step), "bins": int(grid.size)},
@@ -697,11 +812,11 @@ class Recorder:
         else:
             p = pieces[primary]
             comps = p["evidence"]["components"]
-            how = (f"the mass of component {comps[0]['id']} of region {p['region']['id']}'s "
-                   "summed spectrum" if len(comps) == 1 else
+            how = (f"the mass of component {_component_name(comps[0])} of region "
+                   f"{p['region']['id']}'s summed spectrum" if len(comps) == 1 else
                    "the intensity-weighted mean, over region "
                    f"{p['region']['id']}'s scans, of the masses of components "
-                   + ", ".join(str(c["id"]) for c in comps))
+                   + ", ".join(_component_name(c) for c in comps))
             if p["joined_by"] == "boundary_piece":
                 how += ("; taken from a boundary piece, whose mass lies nearer the one the "
                         "isotopes put the molecule at")
@@ -758,7 +873,10 @@ class Recorder:
         if spectrum is None:
             return None
         base = s.adduct_intensity.get("base")
+        merged = sum(len(ev["fitted_parts"]) for ev in p["evidence"]["components"]
+                     if ev.get("fitted_parts"))
         return {"spectrum": spectrum, "region": p["region"], "joined_pieces": joined_pieces,
+                "fitted_parts": merged,
                 "time": np.asarray(s.time, dtype=float).copy(),
                 "intensity": np.asarray(s.intensity, dtype=float).copy(),
                 "base": None if base is None else np.asarray(base, dtype=float).copy(),
@@ -979,6 +1097,31 @@ def _region_label(region: dict, both: bool) -> str:
     return f"{region['id']}" + (("+" if region["polarity"] > 0 else "-") if both else "")
 
 
+def _numbers(values) -> str:
+    """Whole numbers as runs: 1-3, 5, 7-8."""
+    out: list[str] = []
+    vals = sorted(set(int(v) for v in values))
+    i = 0
+    while i < len(vals):
+        j = i
+        while j + 1 < len(vals) and vals[j + 1] == vals[j] + 1:
+            j += 1
+        out.append(f"{vals[i]}" if j == i else f"{vals[i]}-{vals[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
+def _joined_text(piece: dict) -> str:
+    """How a piece came into its species, as a figure's legend says it: "" for the species' own,
+    else how it was joined and, for one not counted, that it is not."""
+    step = piece.get("joined_by")
+    if step is None:
+        return ""
+    if not piece.get("counted", True):
+        return f" ({_NOT_COUNTED_TEXT.get(step, 'joined')}: not counted)"
+    return f" ({_JOINED_TEXT.get(step, 'joined')})"
+
+
 def _regions_text(s: dict, both: bool) -> str:
     """A species' regions, those whose pieces are not counted marked with why."""
     out = []
@@ -1078,11 +1221,14 @@ def _draw(result, rec: dict, data: dict, path: Path) -> None:
     ax.plot(spec["mz"], spec["others"], color=orange, lw=0.6, alpha=0.8,
             label="other components' fitted templates")
     if spec.get("joined") is not None:
-        pieces = "; ".join(f"{i}, {_JOINED_TEXT.get(rec['pieces'][i]['joined_by'], 'joined')}"
-                           for i in data.get("joined_pieces", ()))
+        joined = data.get("joined_pieces", ())
         ax.plot(spec["mz"], spec["joined"], color=purple, lw=0.8,
-                label=f"its other counted pieces of this region (piece {pieces})")
-    ax.plot(spec["mz"], spec["own"], color=blue, lw=0.9, label="this species' fitted templates")
+                label="its other counted pieces of this region "
+                      f"(piece{'s' if len(joined) != 1 else ''} {_numbers(joined)})")
+    merged = data.get("fitted_parts") or 0
+    ax.plot(spec["mz"], spec["own"], color=blue, lw=0.9,
+            label="this species' fitted templates"
+                  + (f" ({merged} parts the fit merged, each where fitted)" if merged else ""))
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     # every window shaded; numbered where the number has room (the lowest m/z first)
     span = float(spec["mz"][-1] - spec["mz"][0]) if len(spec["mz"]) > 1 else 1.0
@@ -1142,13 +1288,22 @@ def _draw(result, rec: dict, data: dict, path: Path) -> None:
             for b in (r.start, r.end):
                 axe.axvline(b, color=grey, lw=0.5, ls=":")
     if len(data["pieces"]) > 1:
-        for (i, reg_i, sid, mass, apex_i, counted, tp, yp), colour in zip(data["pieces"][:8],
-                                                                         PIECE_COLOURS):
+        # every piece's trace: each in a colour of its own and named in the legend, or, of a
+        # species of more pieces than colours, the first ones so and the rest grey under one
+        # entry (provenance.json lists them all)
+        pieces = data["pieces"]
+        k = len(pieces) if len(pieces) <= len(PIECE_COLOURS) else len(PIECE_COLOURS) - 1
+        named, rest = pieces[:k], pieces[k:]
+        for (i, reg_i, sid, mass, apex_i, counted, tp, yp), colour in zip(named, PIECE_COLOURS):
             axe.plot(tp, yp, lw=0.8, ls=":" if counted else "-.", color=colour,
                      label=f"piece {i}: species {sid}, region {_region_label(reg_i, both)}, "
                            f"{mass:,.2f} Da"
                            + ("" if apex_i is None else f", apex {apex_i:.2f} min")
-                           + ("" if counted else " (not counted)"))
+                           + _joined_text(rec["pieces"][i]))
+        for j, (_i, _reg, _sid, _mass, _apex, counted, tp, yp) in enumerate(rest):
+            axe.plot(tp, yp, lw=0.7, ls=":" if counted else "-.", color="#999999",
+                     label=(f"pieces {_numbers(p[0] for p in rest)}: grey, listed in "
+                            "provenance.json") if j == 0 else None)
     axe.plot(t, y, color="black", lw=1.0, marker=".", ms=3, label="all forms")
     if data["base"] is not None and len(rec["adduct_fractions"]) > 1:
         axe.plot(t, data["base"], color=blue, lw=0.8, label="base form")
@@ -1161,14 +1316,19 @@ def _draw(result, rec: dict, data: dict, path: Path) -> None:
     axe.set_ylabel("deconvolved intensity", fontsize=8)
     axe.set_title("Trace over the scans (regions shaded)", fontsize=9)
     axe.tick_params(labelsize=7)
-    axe.legend(fontsize=6.5, loc="upper right", frameon=False)
+    many = len(axe.get_legend_handles_labels()[1]) > 6  # set closer, to keep within the panel
+    axe.legend(fontsize=6 if many else 6.5, labelspacing=0.25 if many else 0.5, loc="upper right",
+               frameon=False)
 
     zs = [c["z"] for c in rec["charges"]]
     name = f" ({rec['name']})" if rec["name"] else ""
     n = len(rec["pieces"])
-    fig.suptitle(f"{result.run_name}: species {rec['id']}{name}, {rec['mass']:,.2f} Da\n"
-                 f"{rec['mass_type']} mass, {'positive' if rec['polarity'] > 0 else 'negative'} "
-                 "mode, apex " + ("-" if apex is None else f"{apex:.3f} min") + ", charges "
-                 + (f"{min(zs)}-{max(zs)}" if zs else "-")
-                 + f", {n} piece{'s' if n != 1 else ''}", fontsize=10, parse_math=False)
-    fig.savefig(path, dpi=90)
+    title = (f"{result.run_name}: species {rec['id']}{name}, {rec['mass']:,.2f} Da\n"
+             f"{rec['mass_type']} mass, {'positive' if rec['polarity'] > 0 else 'negative'} "
+             "mode, apex " + ("-" if apex is None else f"{apex:.3f} min") + ", charges "
+             + (f"{min(zs)}-{max(zs)}" if zs else "-") + f", {n} piece{'s' if n != 1 else ''}")
+    fig.suptitle(title, fontsize=10, parse_math=False)
+    # the title, the only text drawn that holds names (the run's, the species'), is kept as
+    # text in the file too: the leak check of a later run with name aliases reads it
+    # (lcmsdeconv.aliases), which the pixels would not let it
+    fig.savefig(path, dpi=90, metadata={"Title": title})

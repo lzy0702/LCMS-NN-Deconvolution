@@ -188,16 +188,15 @@ def _alias_dialogs(notes, error=None) -> None:
 
 def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
     """Warn, on stderr, of each file written that still holds an alias's OLD outside a number
-    (in its name relative to ``outdir`` or its text; a figure, PNG, by its name, as its pixels
-    hold no text to read), naming the file (each OLD masked) and the count, never the text
-    found. With ``others``, likewise of what else ``outdir`` holds, at any depth (an earlier
-    run's outputs, say: :meth:`lcmsdeconv.aliases.Aliases.leaks_in`). Never fails."""
+    (in its name relative to ``outdir`` or its text; a figure's, PNG, is the text the file holds,
+    its title, as its pixels are not read), naming the file (each OLD masked) and the count,
+    never the text found. With ``others``, likewise of what else ``outdir`` holds, at any depth
+    (an earlier run's outputs, its evidence figures included:
+    :meth:`lcmsdeconv.aliases.Aliases.leaks_in`). Never fails."""
     found: list[tuple[str, int]] = []
     left: list[tuple[str, int]] = []
     try:  # the check never fails the command
-        images = [p for p in written if Path(p).suffix.lower() == ".png"]
-        found = aliases.leaks([p for p in written if Path(p).suffix.lower() != ".png"], outdir)
-        found += aliases.leaks(images, outdir, text=False)
+        found = aliases.leaks(written, outdir)
     except Exception:
         pass
     try:

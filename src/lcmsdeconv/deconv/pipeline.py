@@ -99,12 +99,15 @@ def deconvolve_spectrum(
     ``grid``, ``noise_sigma``); ``predictions``, one ``(pass, prediction, signal)`` for each
     pass of the charge estimator, ``signal`` being the grid view or residual it read (a float32
     copy after the first pass); ``passes``, the components each fit pass accepted, in order;
-    ``residual``, what the fit left of the grid view once every pass had subtracted its
-    components (clipped at zero after each, as the fit clips it); and ``dropped``, the fitted
-    columns the steps after the fit took away (drop_multimers, drop_harmonic_readings,
-    drop_shared_evidence, drop_coincident_adducts), each with its step and the stronger
-    components it was attributed to (:func:`lcmsdeconv.deconv.refine._dropped`).
-    Passing nothing leaves the computation unchanged.
+    ``parts``, where the fit placed each component's templates (``refine_frame``'s ``parts``: a
+    component the fit merged from several, of almost one mass or an adduct form into its parent,
+    holds each part's templates where the part's own fit placed them); ``residual``, what the
+    fit left of the grid view once every pass had subtracted its components (clipped at zero
+    after each, as the fit clips it); and ``dropped``, the fitted columns the steps after the
+    fit took away (drop_multimers, drop_harmonic_readings, drop_shared_evidence,
+    drop_coincident_adducts), each with its step and the stronger components it was attributed
+    to (:func:`lcmsdeconv.deconv.refine._dropped`). Passing nothing leaves the computation
+    unchanged.
     """
     polarity = spectrum.polarity
     if instrument is None:
@@ -226,6 +229,7 @@ def deconvolve_spectrum(
     residual_fraction = 1.0
     # masses the adduct walk moved candidates from: adduct forms of the species they joined
     walked: list[float] = []
+    parts: dict | None = keep.setdefault("parts", {}) if keep is not None else None
     for iteration in range(max(1, params.refine_iterations)):
         if iteration > 0:
             found_masses = [e.mass for e in components]
@@ -254,7 +258,7 @@ def deconvolve_spectrum(
             trace=trace, trace_pass=iteration, frames=frames, coelution_r=params.coelution_r,
             known_masses=[c.mass for c in components], walked=walked,
             known_shifts=[c.mass * float(np.expm1(c.template_shift)) for c in components],
-            singly_charged_ok=params.singly_charged_species,
+            singly_charged_ok=params.singly_charged_species, parts=parts,
         )
         if keep is not None:
             keep.setdefault("passes", []).append(list(new))

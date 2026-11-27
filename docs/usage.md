@@ -331,16 +331,19 @@ being counted. `provenance.json` follows that chain backwards:
   piece the reported mass is from and how that mass was obtained, and its trace per scan (scan
   ID, RT, intensity, and each adduct form's part);
 - per component of a piece (the component of the region-summed spectrum it was read from): its
-  mass, the shift of its isotope templates (`template_shift`, ln mass; the templates sit at
-  `template_mass` = mass × exp(shift)), whether its own isotope comb placed them (`comb_placed`;
-  the mass is then their position where that lies within half an isotope spacing of the mass
-  measured, which stands otherwise: `template_mass` shows where they sit), its score, the spread
-  of its charge states' masses, its fitted intensity and the fit pass that found it;
+  id and the fit pass that found it (`pass`; the two name it), its mass, the shift of its
+  isotope templates (`template_shift`, ln mass; the templates sit at `template_mass` = mass ×
+  exp(shift)), whether its own isotope comb placed them (`comb_placed`; the mass is then their
+  position where that lies within half an isotope spacing of the mass measured, which stands
+  otherwise: `template_mass` shows where they sit), its score, the spread of its charge states'
+  masses, its fitted intensity, and, for a component the region's fit merged from parts, where
+  each part's templates sit (`fitted_parts`, below);
 - per charge state z of a component: the theoretical m/z of its envelope (centroid, and the
   monoisotopic peak's where it holds at least 1 % of the tallest isotopologue), whether the
   instrument resolves its isotopes, the envelope's m/z window (`window_mz`, the span of the grid
-  bins holding 99.5 % of its base-form template's area; the fit of the summed spectrum read the
-  template's whole support, `support_mz`), what the region's scans measured in that window, the
+  bins holding 99.5 % of the area of its base-form template as fitted, a merged component's
+  parts' added up; the fit of the summed spectrum read the template's whole support,
+  `support_mz`), what the region's scans measured in that window, the
   fitted intensity of its base-form template and of all its forms, its share of the component,
   and on the grid, summed over the window's bins: the signal, the fitted templates of every
   reported component and of this one, the signal they leave unexplained and how far they
@@ -383,7 +386,24 @@ subtracted its components, clipped at zero after each as the fit clips it, befor
 drop components after the fit. Where a dropped component explained the signal, it stays in
 `unexplained` but not in `fit_residual`, and `dropped_model` holds the dropped templates; a
 region's `deconvolution.residual_fraction` is the fit's residual over the grid bins holding
-signal (above ten noise levels), as a share of their signal.
+signal (above ten noise levels), as a share of their signal. Every template is read where the
+fit placed and subtracted it, so `model` and `dropped_model` add up to what the fit subtracted.
+
+**Components merged by the fit.** Within a fit pass, components found at almost one mass
+(duplicate candidates, within the larger of 150 ppm and 0.4 Da) are merged into the strongest,
+and a weaker component one, two or three adduct masses above a stronger one (within 0.5 Da) into
+it as its adduct form; the merged component reports the parts' columns added up. The fit had subtracted each part's templates where the
+part's own fit placed them, which can lie a dalton or more apart: `fitted_parts` lists each
+part, its template mass and its columns (`adduct`: the merged component's column it is counted
+in; `template_adduct`: the adduct state its own template carries; `fitted`), and the windows, the
+`grid` sums and the figures read each part's templates where they sit. It is null for a
+component fitted as one, whose templates all sit at `template_mass`. A component dropped after
+the fit (`dropped[]`) says the same of itself.
+
+**Naming a component.** A fit pass numbers its components on from the number the earlier
+passes kept, after the merges, so an id can recur in a region: the fit pass and the id name a
+component (`pass` and `id` of its record, of `dropped[]` and of `attributed_to[]`), and
+`mass_from.how` gives both ("component 17 (fit pass 1) of region 19's summed spectrum").
 
 **Schema** (`schema` "lcmsdeconv.provenance", `version` 1):
 
@@ -396,12 +416,13 @@ signal (above ten noise levels), as a share of their signal.
 | `estimator` | `{"kind": "comb", "z_max", "isotope_charges"}` or `{"kind": "network", "backend", "file", "sha256", "view", "isotope_channels", "z_max"}` |
 | `instrument`, `rt_window`, `lock_mass` | the method's instrument model; the analysis window and the lock-mass correction as `results.json` gives them |
 | `regions[]` | `id`, `polarity`, `start`, `end`, `scans` {`n`, `ids`, `rt`: first and last}, `shared_boundaries` {`start`, `end`}, `species` (ids of the reported species with a counted piece from it), `deconvolution` {`engine`, `components`, `passes`, `compound_class`, `adducts`, `noise_sigma`, `residual_fraction`, `dropped[]`, `grid`} |
-| `dropped[]` | `step` (`multimer`, `harmonic_reading`, `shared_evidence`, `coincident_adducts`), `id`, `mass`, `template_mass`, `component_dropped` (false: adduct columns taken from a component the region reports), `attributed_to` [{`id`, `mass`}] (the stronger components, the largest share first), `columns` [{`z`, `adduct`, `fitted`}] |
+| `dropped[]` | `step` (`multimer`, `harmonic_reading`, `shared_evidence`, `coincident_adducts`), `id`, `pass`, `mass`, `template_mass`, `component_dropped` (false: adduct columns taken from a component the region reports), `attributed_to` [{`id`, `pass`, `mass`}] (the stronger components, the largest share first), `columns` [{`z`, `adduct`, `fitted`}], `fitted_parts` (as a component's, for the columns dropped) |
 | `figures` | `directory`, `max`, `drawn`, `species`, `rule` |
 | `timings` | `collect_s` (while processing), `figures_s` (drawing the figures and making the records, before the two files are written) |
 | `species[]` | in `results.json`'s order: `id`, `name`, `mass`, `mass_type`, `polarity`, `compound_class`, `rt_apex`, `rt_range` (its trace's first and last scan), `rt_signal` (first and last scan above zero), `amount` {`base`, `all_forms`, `max`}, `adduct_fractions`, `charges` [{`z`, `share`, `value`}], `adduct_form_of`, `adduct_form`, `flags`, `annotations`, `regions` [{`id`, `polarity`, `start`, `end`, `scans` (their number), `first_scan`, `last_scan`, `shared_boundaries`, `pieces` (the species' pieces from it), `counted`}], `mass_from` {`piece`, `how`}, `pieces[]`, `merges[]`, `eic` {`per_scan`, `scan_ids`, `rt`, `intensity`, `forms`}, `figure` (its path, or null) |
 | `pieces[]` | the species' own first: `region`, `species_id`, `mass`, `rt_apex`, `rt_range`, `scans`, `amount` {`base`, `all_forms`}, `charges` [{`z`, `value`}], `counted`, `joined_by` (null for its own), `evidence` |
-| `evidence` | `kind` `"grid_components"`: `mass_rule`, `components[]` {`id`, `mass`, `mass_type`, `template_shift`, `template_mass`, `comb_placed`, `score`, `mass_spread_ppm`, `compound_class`, `intensity`, `pass`, `flags`, `charge_states[]`, `adduct_columns[]`} |
+| `evidence` | `kind` `"grid_components"`: `mass_rule`, `components[]` {`id`, `mass`, `mass_type`, `template_shift`, `template_mass`, `comb_placed`, `score`, `mass_spread_ppm`, `compound_class`, `intensity`, `pass`, `flags`, `fitted_parts`, `charge_states[]`, `adduct_columns[]`} |
+| `fitted_parts` | null for a component fitted as one; for one the fit merged from parts, each part: `template_mass`, `columns` [{`z`, `adduct`, `template_adduct`, `fitted`}] |
 | `charge_states[]` | `z`, `mz_centroid`, `mz_mono`, `isotopes_resolved`, `fitted`, `fitted_all_forms`, `share`, `window_mz` [low, high], `support_mz` [low, high], `observed` {`points`, `sum`, `max`, `scans`, `centroid_mz`}, `centroid_mass`, `grid` {`bins` [first, last], `observed`, `model`, `component_model`, `unexplained`, `overshoot`, `fit_residual`, `dropped_model`}, `charge_map` {`pass`, `bins`, `p_assigned`, `top1_share`, `alternative` {`z`, `p`}} |
 | `adduct_columns[]` | `z`, `adduct`, `fitted`, `mz_centroid`, `window_mz`, `support_mz`, `observed`, `centroid_mass`, `grid` |
 | `merges[]` | `step` (`adduct_fold`, `adjacent_pieces`, `boundary_piece`, `set_aside`, `other_polarity`), `kept_piece` (the kept species' own piece), `joined_pieces` (the pieces the step brought in: the joined species' own first, then those it had joined before, each also under the step that joined it), `joined` {`species_id`, `mass`, `rt_apex`, `amount`} (as it was when joined), `counted`; `adduct_state` (a fold), `boundary_rt` and `mass_from_piece` (a boundary piece) |
@@ -416,40 +437,46 @@ so they need not add up to the species' amount; their charges do: a species' cha
 same region can be a reading of the very component another piece holds, whose record its
 `evidence` then repeats. A method that quantifies the summed spectra only
 (`deconvolution.quantify_frames: false`) reads each species once per region, at the mean time of
-the region's scans: its trace's points have no scan ID (`eic.per_scan` false). Where a region's
-fit merged two components of almost one mass (or an adduct form into its parent) into one, the
-merged component's columns are drawn and measured at the kept component's template position.
+the region's scans: its trace's points have no scan ID (`eic.per_scan` false).
 
 **Reading a figure.** The title names the run, the species (id, name, mass) and its mass type,
 polarity, apex, charge range and number of pieces. The top panel is the summed spectrum of the
-region the reported mass comes from (grey, as the fit reads it, on the grid; in a
-polarity-switching run, whose region ids restart in each polarity, the id carries its + or -),
-over the m/z span of the species' charge states: each charge state's window is shaded, and
-numbered with its z along the top where the number has room. The species' fitted templates (all
-its forms) are blue; those of its other pieces counted from the same region (an adduct form
-folded in, a reading joined) purple, their windows shaded and numbered in purple; the other
-components' orange. A window where grey stands well above blue, purple and orange holds signal no
-fitted component explains. The middle row shows the strongest charge states close up (up to
-four), titled, as shares of the window's signal on the grid, with what the fit left there (fit
-residual), the signal the reported templates leave unexplained and how far they overshoot it,
-and what the templates fitted and then dropped hold there (from 1 %; they are drawn red,
-dotted); the orange dashes are every reported component's templates added up. The bottom panel is the species' trace
-over the scans (black, a dot per scan; blue, the base form where adduct forms were resolved), its
-regions shaded with their bounds dotted, its apex red, and, for a species joined from pieces,
-each piece's trace as it was linked, labelled with the id it was linked as, its region, mass and
-apex (dash-dot: not counted).
+region the reported mass comes from (grey, as the fit reads it, on the grid; in a polarity-switching
+run, whose region ids restart in each polarity, the id carries its + or -), over the m/z span of the
+species' charge states: each charge state's window is shaded, and numbered with its z along the top
+where the number has room. The species' fitted templates (all its forms) are blue, each where the
+fit placed it (for a component the fit merged from parts, the legend says how many); those of its
+other pieces counted from the same region (an adduct form folded in, a reading joined; the legend
+numbers them) purple, their windows shaded and numbered in purple; the other components' orange. A
+window where grey stands well above blue, purple and orange holds signal no fitted component
+explains. The middle row shows the strongest charge states close up (up to four), titled, as shares
+of the window's signal on the grid, with what the fit left there (fit residual), the signal the
+reported templates leave unexplained and how far they overshoot it, and what the templates fitted
+and then dropped hold there (from 1 %; they are drawn red, dotted); the orange dashes are every
+reported component's templates added up. The bottom panel is the species' trace over the scans
+(black, a dot per scan; blue, the base form where adduct forms were resolved), its regions shaded
+with their bounds dotted, its apex red, and, for a species joined from pieces, each piece's trace as
+it was linked, labelled with the id it was linked as, its region, mass, apex and how it was joined
+(dash-dot: not counted); of a species of more than seven pieces the first six are so labelled and
+the others drawn grey under one entry (`provenance.json` lists them all). The figure's title, the
+only text it draws that holds names (the run's and the species'), is also kept as text in the PNG
+file, where the leak check of name aliases reads it.
 
-**Cost.** Collecting the provenance (per region, the templates of every fitted column added up
-once and the windows measured; each region's grid view and fitted models are then kept, in single
-precision, until the species are final, for their figures) took 0.06-0.3 s per run on the runs
-measured; drawing the figures takes about 0.2 s each, so 300 of them about a minute. On the
-IP-RPLC NC run of the validation (Thermo, 692 scans, 31 regions, comb estimator) `process` took
-45 s with `--provenance` against 27 s without (101 species: 0.3 s collecting, 19 s drawing), and
-its peak memory rose from 322 to 350 MB: a region's scans, summed spectrum, the fit's residual and
-the estimator's output are kept only while the region is processed. `provenance.json` holds every
-charge state and adduct column of every component and every species' trace: about 2-2.5 kB per
-charge state or adduct column recorded (0.6 MB for the 234 of a synthetic run of 7 species,
-2.4 MB for the 1,000 of the NC run's 101); a figure is about 120-175 kB.
+**Cost.** Collecting the provenance (per region, the templates of every fitted column added up once
+and the windows measured, each window over all the region's scans' points at once; each region's
+grid view and fitted models are then kept, in single precision, until the species are final, for
+their figures) took from 0.06 s to about 1 s per run on the runs measured: 0.3 s on the Thermo runs
+of the validation, 1.0 s on the synthetic oligonucleotide preset (`lcmsdeconv synth --preset oligo`:
+3,003 charge states and adduct columns, rich in adduct forms and in components its fit merged from
+parts); drawing the figures takes about 0.2 s each, so 300 of them about a minute. On the IP-RPLC NC
+run of the validation (Thermo, 692 scans, 31 regions, comb estimator) `process` took 46 s with
+`--provenance` against 27 s without (101 species: 0.3 s collecting, 20 s drawing), and its peak
+memory rose from 324 to 351 MB: a region's scans, summed spectrum, the fit's residual and the
+estimator's output are kept only while the region is processed. `provenance.json` holds every charge
+state and adduct column of every component and every species' trace: about 2-2.7 kB per charge state
+or adduct column recorded (0.6 MB for the 234 of a synthetic run of 7 species, 2.5 MB for the 1,000
+of the NC run's 101, 7.4 MB for the 3,003 of the oligonucleotide preset); a figure is about 90-190
+kB.
 
 **Name aliases.** The run's, its traces' and the method's names in the provenance files come
 aliased with the run and the method (`--alias`, `process_run(..., aliases=...)`), and so do the
@@ -458,8 +485,9 @@ scan IDs. The network's file name, taken from the command line or the method, is
 processed without `aliases=`, pass the pairs to `write_outputs(..., aliases=...)` (or
 `write_provenance`, or call `result.provenance.alias_texts(aliases)`), or the file name stays as
 given. `process`'s check of its outputs covers `provenance.json` and `provenance.html` by their
-text and the figures by their names (their pixels hold no text to read; what they draw comes from
-the aliased names).
+text and the figures by their names and the title each holds as text (what they draw comes from
+the aliased names). A figure an earlier run drew shows that run's names: the check finds the
+OLD in its title, among what else `--out` holds.
 
 ## Saturation warnings
 
@@ -597,10 +625,13 @@ not rewrite or delete: the name of every file and folder, and the text of those 
 are (`results.json`, `species.csv`, `report.html`, `peaks_*.csv`, `provenance.json`,
 `provenance.html`): `WARNING: run1/peaks_UV_***.csv, which this run did not write, holds 2
 occurrences of an alias's OLD text` (at most 10,000 entries are looked at, and no text above 50 MB
-is read). An evidence figure (`evidence/*.png`, written with `--provenance`) is checked by its name
-only, among the files written and the others alike: its pixels hold no text to read. Give `--out` a fresh folder, or delete such
-files, before handing it on. The check never fails the command. A NEW that holds its OLD outside a
-number trips it.
+is read). An evidence figure (`evidence/species-*.png`, written with `--provenance`) is checked by
+its name and by the title it holds as text in the PNG file (the run's and the species' names, as
+drawn; its pixels are not read), among the files written and the others alike: a figure an
+earlier run drew without the pairs shows that run's names in its title, and is flagged. Give
+`--out` a fresh folder, or delete such files (an earlier run's `evidence/` with its provenance
+files), before handing it on. The check never fails the command. A NEW that holds its OLD outside
+a number trips it.
 
 **Chinese names in the plots.** A NEW in Chinese (`保密项目1`) is drawn in the report's plots
 through the same CJK font fallback as any trace or species name in Chinese: Microsoft YaHei or

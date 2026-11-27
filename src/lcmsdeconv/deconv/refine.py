@@ -585,6 +585,7 @@ def refine_frame(
     walked: list[float] | None = None,
     known_shifts: list[float] | None = None,
     singly_charged_ok: bool = True,
+    parts: dict | None = None,
 ) -> tuple[list[Component], float, np.ndarray]:
     """Greedy weighted-NNLS fit of candidates, strongest first.
 
@@ -598,6 +599,14 @@ def refine_frame(
     masses walked from in this pass are appended to it. Without ``singly_charged_ok`` a fit
     to z = 1 alone is unsupported like any other single charge state, and z = 1 is added for
     the fit only where its envelope is singly charged (:func:`observed_charges`).
+
+    ``parts``, when a dict is passed, receives where the fit placed each accepted component's
+    templates: ``parts[id(component)] = (component, [(template mass, [(z, adduct label, key,
+    fitted)])])``, one entry per part, ``key`` being the column of ``component.columns`` the
+    part's template is counted in. A component is one part as fitted; the merges below
+    (:func:`_merge_same_mass`, :func:`_merge_adduct_components`) carry a merged component's
+    parts into the one they keep (:func:`_carry_parts`), each still where its own fit placed it.
+    Passing nothing leaves the computation unchanged.
     """
     residual = observed.astype(np.float64).copy() if residual is None else residual
     weights = fit_weights(observed, noise_sigma, grid.step,
@@ -733,6 +742,11 @@ def refine_frame(
         components.append(comp)
         decide(cand_mass0, "accepted", comp.mass)
         cid += 1
+        if parts is not None:  # the templates subtracted below, at the fit's template mass
+            parts[id(comp)] = (comp, [(float(used[0][0].mass) if used else
+                                       comp.mass * float(np.exp(comp.template_shift)),
+                                       [(z, lab, (z, lab), v)
+                                        for (z, lab), v in comp.columns.items()])])
         # subtract fitted envelope
         for tpl, coef in used:
             np.subtract.at(residual, tpl.bins, tpl.values * coef)
@@ -747,8 +761,8 @@ def refine_frame(
     if trace is not None:
         trace.append({"pass": trace_pass, "stage": "pre_merge",
                       "masses": [float(c.mass) for c in components]})
-    _merge_same_mass(components)
-    _merge_adduct_components(components, library)
+    _merge_same_mass(components, parts=parts)
+    _merge_adduct_components(components, library, parts=parts)
     if trace is not None:
         trace.append({"pass": trace_pass, "stage": "post_merge",
                       "masses": [float(c.mass) for c in components]})
@@ -979,8 +993,25 @@ def _refine_mass(comp: Component, raw_mz, raw_int, polarity, tol_ppm: float = 20
                             if bm.size > 1 else 0.0)
 
 
-def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da: float = 0.4):
-    """Combine components that refined to the same mass (duplicate candidates)."""
+def _carry_parts(parts: dict | None, kept: Component, part: Component,
+                 keys: dict | None = None) -> None:
+    """Where ``parts`` is a dict (:func:`refine_frame`'s), move the fitted parts of ``part``, which
+    a merge joined to ``kept``, to ``kept``: each still where its own fit placed it, counted in
+    the column of ``kept`` that ``keys`` maps its column to ({key in ``part``: key in ``kept``};
+    None: the same key)."""
+    if parts is None:
+        return
+    _c, moved = parts.pop(id(part), (part, []))
+    if keys is not None:
+        moved = [(tm, [(z, lab, keys.get(k, k), v) for z, lab, k, v in cols])
+                 for tm, cols in moved]
+    parts.setdefault(id(kept), (kept, []))[1].extend(moved)
+
+
+def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da: float = 0.4,
+                     parts: dict | None = None):
+    """Combine components that refined to the same mass (duplicate candidates). ``parts``, when
+    a dict is passed, follows the merges (:func:`_carry_parts`)."""
     components.sort(key=lambda c: -c.intensity)
     keep: list[Component] = []
     for c in components:
@@ -1002,11 +1033,14 @@ def _merge_same_mass(components: list[Component], tol_ppm: float = 150.0, tol_da
             hit.adducts[a] = hit.adducts.get(a, 0.0) + v
         for key, v in c.columns.items():
             hit.columns[key] = hit.columns.get(key, 0.0) + v
+        _carry_parts(parts, hit, c)
     components[:] = keep
 
 
-def _merge_adduct_components(components: list[Component], library: AdductLibrary, tol_da: float = 0.5):
-    """Merge components separated by an adduct delta into the more intense (base) one."""
+def _merge_adduct_components(components: list[Component], library: AdductLibrary,
+                             tol_da: float = 0.5, parts: dict | None = None):
+    """Merge components separated by an adduct delta into the more intense (base) one. ``parts``,
+    when a dict is passed, follows the merges (:func:`_carry_parts`)."""
     deltas = library.avg_deltas()
     names = library.names()
     components.sort(key=lambda c: -c.intensity)
@@ -1026,9 +1060,13 @@ def _merge_adduct_components(components: list[Component], library: AdductLibrary
                         # its columns too, under the combined labels: the coincident-adduct
                         # step rebuilds a component from its columns
                         step = AdductState.from_label(lab, names)
+                        keys: dict | None = {} if parts is not None else None
                         for (z, clab), v in c.columns.items():
                             key = (z, step.plus(AdductState.from_label(clab, names), names).label)
                             base.columns[key] = base.columns.get(key, 0.0) + v
+                            if keys is not None:
+                                keys[(z, clab)] = key
+                        _carry_parts(parts, base, c, keys)
                         merged = True
                         break
                 if merged:

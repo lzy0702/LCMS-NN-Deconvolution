@@ -112,7 +112,8 @@ lcmsdeconv process run.mzML -m rplc_pos_protein -o results/ --provenance
   and scans it came from (retention-time range, scan IDs, shared boundaries); the pieces it was
   joined from, with the charges each was linked with, and the step that joined each (adduct fold,
   neighbouring reading of one band, boundary piece, later elution set aside); the component of the
-  region-summed spectrum its mass comes from (mass, template shift, score, spread); per charge
+  region-summed spectrum its mass comes from (its fit pass and id, mass, template shift, score,
+  spread, and where the fit placed each part of a component it merged from parts); per charge
   state the theoretical m/z, the envelope's m/z window (99.5 % of its template's area) and the
   template's whole support the fit read, the signal the region's scans measured in the window,
   the fitted templates, what they leave unexplained or overshoot, what the fit itself left there
@@ -124,12 +125,14 @@ lcmsdeconv process run.mzML -m rplc_pos_protein -o results/ --provenance
 - `evidence/species-<id>-<mass>.png`: the region-summed spectrum with the species' charge-state
   windows shaded and numbered and its fitted templates over the signal (its adduct forms folded in
   from the same region beside them), its strongest charge states close up, and its trace over the
-  scans with its apex (the 300 largest species).
+  scans with its apex and each piece's (the 300 largest species); its title is also kept as text
+  in the file, for the leak check of name aliases.
 - `provenance.html`: an index of the species linking their figures.
 
-Without the flag nothing is collected or written for it. Collecting it took at most about half a
-second per run on the runs measured, drawing about 0.2 s per figure; `docs/usage.md`, "Provenance",
-gives the schema field by field, how to read a figure, and the cost.
+Without the flag nothing is collected or written for it. Collecting it took up to about a second
+per run on the runs measured (the most where adduct columns abound, as in the synthetic
+oligonucleotide preset), drawing about 0.2 s per figure; `docs/usage.md`, "Provenance", gives the
+schema field by field, how to read a figure, and the cost.
 
 ## Training
 
