@@ -19,7 +19,9 @@ The report escapes run, method and trace names, so characters such as `&`, `<`, 
 show as written in its text and are drawn as written in its plots (where a trace or species name
 holds characters the plot fonts lack, Chinese say, the plots fall back to a CJK font if one is
 installed: Microsoft YaHei or SimHei on Windows). Names that hold a project number can be shown
-as another text everywhere, `--alias 123456=保密项目1` (see "Name aliases" below).
+as another text everywhere, `--alias 123456=保密项目1` (see "Name aliases" below). With
+`--provenance` it also writes `provenance.json`, `provenance.html` and an evidence figure per
+species: where each mass was read from (see "Provenance" below).
 
 Runs can be mzML or mzMLb (mzML in HDF5, `msconvert --mzMLb`). They are read, and `lcmsdeconv
 synth` writes mzML, with the PSI-MS and Units of Measurement Ontology vocabularies saved in the
@@ -270,6 +272,195 @@ two species show.
 `peaks_<signal>.csv` is a chromatographic peak table with retention time, boundaries, area,
 height, width at half height, area percentage, tailing factor and the baseline code.
 
+## Provenance
+
+Every reported mass can be traced to the retention-time range, the scans and the m/z signals it
+was read from:
+
+```bash
+lcmsdeconv process run.mzML -m rplc_pos_protein -o results/ --provenance
+```
+
+```python
+result = process_run(run, method, provenance=True)       # result.provenance
+write_outputs(result, "results/")                         # lcmsdeconv.io.results
+```
+
+Beside the usual outputs this writes `provenance.json`, `provenance.html` (an index of the
+species: mass, RT range, regions, charge states, pieces, each linked to its figure) and one
+evidence figure per species under `evidence/` (`species-<id>-<mass>.png`, the 300 largest
+species by base-form amount; `provenance.json` says which were drawn).
+`write_outputs(..., provenance=False)` leaves them out, `True` requires them; by default they are
+written where the result holds provenance. Without `--provenance` (in Python, without
+`provenance=True`) nothing is collected or written for it; with it, every other output is the
+same, byte for byte, apart from the processing time in `results.json` (`timings.total_s`) and in
+`report.html`.
+
+`provenance.json` names the `results.json` it was written with by its SHA-256 (`results.sha256`,
+shown in `provenance.html` too). A folder written to again without `--provenance` keeps the
+provenance files of the earlier run, which then describe other results: check that the hash is
+that of the `results.json` beside them (`sha256sum results.json`, `Get-FileHash results.json` in
+PowerShell). Writing the provenance again removes the evidence figures it does not draw.
+
+**What is recorded, and where it comes from.** A run is split into regions around the peaks of
+its total ion current; each region's scans are summed, and the summed spectrum is deconvolved on
+the ln(m/z) grid: the charge estimator assigns charges bin by bin, the votes give candidate
+masses, and each candidate's isotope-envelope templates (one per charge state and adduct form)
+are fitted by weighted non-negative least squares, giving *components*. After the fit, what a
+stronger component explains is dropped: multimers of it, its ions read at other charges,
+envelopes its columns already hold, adduct columns that coincide with its adduct ladder. Each
+component is then quantified in every scan of the region (the trace), and a species is a
+component's trace linked across the scans. Species found in pieces are then joined: an adduct
+form reported apart is folded into its parent, readings of one mass whose traces touch as one
+elution band are joined (a neighbouring region's piece of the band, or a reading of the same
+region that linking kept apart at a gap in its trace), a piece a region boundary cut off is
+joined where its isotopes say it is the same molecule, and the main species' later elutions
+(and, in polarity-switching runs, the other polarity's reading) are named in its flags without
+being counted. `provenance.json` follows that chain backwards:
+
+- per region: its retention-time span, its scans (number and IDs), whether its start or end is a
+  boundary it shares with a neighbour, and its deconvolution (number of components and fit
+  passes, compound class, the adducts it evidenced, noise level, the share of its signal the fit
+  left, the grid, and what was dropped after the fit: each component or adduct column with its
+  step, its fitted columns and the stronger components it was attributed to);
+- per species: id, mass, mass type, polarity, apex and charges (as `results.json` gives them),
+  its retention range, the region(s) it came from (each with the species' pieces from it and
+  whether any of them is counted), its *pieces* (each as linked in its region: region, the id it
+  was linked with, its mass, amount and charges then, and whether it is counted in the species'
+  amount), the *merge steps* that joined them (in the order taken, with what each joined), which
+  piece the reported mass is from and how that mass was obtained, and its trace per scan (scan
+  ID, RT, intensity, and each adduct form's part);
+- per component of a piece (the component of the region-summed spectrum it was read from): its
+  mass, the shift of its isotope templates (`template_shift`, ln mass; the templates sit at
+  `template_mass` = mass × exp(shift)), whether its own isotope comb placed them (`comb_placed`;
+  the mass is then their position where that lies within half an isotope spacing of the mass
+  measured, which stands otherwise: `template_mass` shows where they sit), its score, the spread
+  of its charge states' masses, its fitted intensity and the fit pass that found it;
+- per charge state z of a component: the theoretical m/z of its envelope (centroid, and the
+  monoisotopic peak's where it holds at least 1 % of the tallest isotopologue), whether the
+  instrument resolves its isotopes, the envelope's m/z window (`window_mz`, the span of the grid
+  bins holding 99.5 % of its base-form template's area; the fit of the summed spectrum read the
+  template's whole support, `support_mz`), what the region's scans measured in that window, the
+  fitted intensity of its base-form template and of all its forms, its share of the component,
+  and on the grid, summed over the window's bins: the signal, the fitted templates of every
+  reported component and of this one, the signal they leave unexplained and how far they
+  overshoot it, what the fit itself left there, and the templates of what was dropped after the
+  fit;
+- per adduct-form column (z, adduct state) with a fitted intensity: the same window record;
+- the charge estimator: `comb` (with whether it reads isotope spacing), or the network's file
+  name and SHA-256 (with its backend and view); and per charge state, the estimator's reading
+  on the envelope's bins above the vote threshold, weighted by their signal: the probability of
+  the assigned charge (`p_assigned`), the share of signal on bins whose first choice it is
+  (`top1_share`) and the strongest other charge (`alternative`). The decoder keeps each bin's
+  two most likely charges only, so a charge that is neither counts 0: a low `p_assigned` says the
+  estimator did not read that charge there (a charge state the envelope search added beyond the
+  voted ones, say). For the comb the values are its evidence shares, not probabilities;
+- run-level: the region list, the lock-mass correction and the analysis window (as
+  `results.json` gives them), the instrument model, the SHA-256 of `results.json`, and what each
+  merge step and each drop step means.
+
+**Units.** Masses in Da (average masses unless `mass_type` says mono), times in minutes. Every
+m/z is read on the scans as they were analysed: where the method corrects the lock mass, after
+the correction (`units.mz` then says so), and the m/z the file holds is m/z / (1 +
+`lock_mass.applied_ppm` × 1e-6). `observed` adds up the region's scans' own points in the
+window, all scans together: the instrument's counts (`sum`), the number of those points
+(`points`) and of the scans with signal there (`scans`), and their intensity-weighted mean m/z
+(`centroid_mz`, and the neutral mass it implies, `centroid_mass`); `max` is the tallest point of
+their sum, the
+region-summed spectrum (which, for profile scans each on an m/z axis of its own, reads every scan
+on the union of their points). `observed` and `centroid_mass` hold every signal in the window, a
+neighbour's or an adduct form's envelope as well as the species': `grid.component_model` against
+`grid.model` gives the species' own share of it. The fit reads the summed spectrum resampled on
+the ln(m/z) grid (intensity integrated over each bin and divided by its width); `fitted`, `grid`
+and a component's `intensity` are in those units (a template's area on the grid), which differ
+from the points' by the points' spacing. Compare them with each other, not with `observed`.
+
+In `grid`, `model` adds up the fitted templates of every component the region reports
+(`component_model`: this component's); `unexplained` sums, bin by bin, the signal above them and
+`overshoot` what they put above the signal (`unexplained` − `overshoot` = `observed` − `model`).
+`fit_residual` is what the fit itself left in the window: its residual once every pass had
+subtracted its components, clipped at zero after each as the fit clips it, before the steps that
+drop components after the fit. Where a dropped component explained the signal, it stays in
+`unexplained` but not in `fit_residual`, and `dropped_model` holds the dropped templates; a
+region's `deconvolution.residual_fraction` is the fit's residual over the grid bins holding
+signal (above ten noise levels), as a share of their signal.
+
+**Schema** (`schema` "lcmsdeconv.provenance", `version` 1):
+
+| Key | Contents |
+| --- | --- |
+| `schema`, `version`, `lcmsdeconv` | what the file is, the version of its layout, the version that wrote it |
+| `run`, `method`, `alias_pairs` | as `results.json` |
+| `results` | `file` ("results.json"), `sha256`: the `results.json` it was written with |
+| `units`, `merge_steps`, `drop_steps` | what the numbers are in; what each merge step and each drop step name means |
+| `estimator` | `{"kind": "comb", "z_max", "isotope_charges"}` or `{"kind": "network", "backend", "file", "sha256", "view", "isotope_channels", "z_max"}` |
+| `instrument`, `rt_window`, `lock_mass` | the method's instrument model; the analysis window and the lock-mass correction as `results.json` gives them |
+| `regions[]` | `id`, `polarity`, `start`, `end`, `scans` {`n`, `ids`, `rt`: first and last}, `shared_boundaries` {`start`, `end`}, `species` (ids of the reported species with a counted piece from it), `deconvolution` {`engine`, `components`, `passes`, `compound_class`, `adducts`, `noise_sigma`, `residual_fraction`, `dropped[]`, `grid`} |
+| `dropped[]` | `step` (`multimer`, `harmonic_reading`, `shared_evidence`, `coincident_adducts`), `id`, `mass`, `template_mass`, `component_dropped` (false: adduct columns taken from a component the region reports), `attributed_to` [{`id`, `mass`}] (the stronger components, the largest share first), `columns` [{`z`, `adduct`, `fitted`}] |
+| `figures` | `directory`, `max`, `drawn`, `species`, `rule` |
+| `timings` | `collect_s` (while processing), `figures_s` (drawing the figures and making the records, before the two files are written) |
+| `species[]` | in `results.json`'s order: `id`, `name`, `mass`, `mass_type`, `polarity`, `compound_class`, `rt_apex`, `rt_range` (its trace's first and last scan), `rt_signal` (first and last scan above zero), `amount` {`base`, `all_forms`, `max`}, `adduct_fractions`, `charges` [{`z`, `share`, `value`}], `adduct_form_of`, `adduct_form`, `flags`, `annotations`, `regions` [{`id`, `polarity`, `start`, `end`, `scans` (their number), `first_scan`, `last_scan`, `shared_boundaries`, `pieces` (the species' pieces from it), `counted`}], `mass_from` {`piece`, `how`}, `pieces[]`, `merges[]`, `eic` {`per_scan`, `scan_ids`, `rt`, `intensity`, `forms`}, `figure` (its path, or null) |
+| `pieces[]` | the species' own first: `region`, `species_id`, `mass`, `rt_apex`, `rt_range`, `scans`, `amount` {`base`, `all_forms`}, `charges` [{`z`, `value`}], `counted`, `joined_by` (null for its own), `evidence` |
+| `evidence` | `kind` `"grid_components"`: `mass_rule`, `components[]` {`id`, `mass`, `mass_type`, `template_shift`, `template_mass`, `comb_placed`, `score`, `mass_spread_ppm`, `compound_class`, `intensity`, `pass`, `flags`, `charge_states[]`, `adduct_columns[]`} |
+| `charge_states[]` | `z`, `mz_centroid`, `mz_mono`, `isotopes_resolved`, `fitted`, `fitted_all_forms`, `share`, `window_mz` [low, high], `support_mz` [low, high], `observed` {`points`, `sum`, `max`, `scans`, `centroid_mz`}, `centroid_mass`, `grid` {`bins` [first, last], `observed`, `model`, `component_model`, `unexplained`, `overshoot`, `fit_residual`, `dropped_model`}, `charge_map` {`pass`, `bins`, `p_assigned`, `top1_share`, `alternative` {`z`, `p`}} |
+| `adduct_columns[]` | `z`, `adduct`, `fitted`, `mz_centroid`, `window_mz`, `support_mz`, `observed`, `centroid_mass`, `grid` |
+| `merges[]` | `step` (`adduct_fold`, `adjacent_pieces`, `boundary_piece`, `set_aside`, `other_polarity`), `kept_piece` (the kept species' own piece), `joined_pieces` (the pieces the step brought in: the joined species' own first, then those it had joined before, each also under the step that joined it), `joined` {`species_id`, `mass`, `rt_apex`, `amount`} (as it was when joined), `counted`; `adduct_state` (a fold), `boundary_rt` and `mass_from_piece` (a boundary piece) |
+
+A reader should check `version`, and `evidence.kind`: a decoder that reports whole regions rather
+than grid components (a maximum-entropy engine, say) describes its species with
+`"region_report"` and fields of its own, and names itself in the region's
+`deconvolution.engine`. The pieces' amounts are as they were linked: a joined species counts a
+scan two pieces share once (the larger reading), and pieces that are not `counted` add nothing,
+so they need not add up to the species' amount; their charges do: a species' charges
+(`results.json`'s) are those of its counted pieces added up. A piece joined as a reading of the
+same region can be a reading of the very component another piece holds, whose record its
+`evidence` then repeats. A method that quantifies the summed spectra only
+(`deconvolution.quantify_frames: false`) reads each species once per region, at the mean time of
+the region's scans: its trace's points have no scan ID (`eic.per_scan` false). Where a region's
+fit merged two components of almost one mass (or an adduct form into its parent) into one, the
+merged component's columns are drawn and measured at the kept component's template position.
+
+**Reading a figure.** The title names the run, the species (id, name, mass) and its mass type,
+polarity, apex, charge range and number of pieces. The top panel is the summed spectrum of the
+region the reported mass comes from (grey, as the fit reads it, on the grid; in a
+polarity-switching run, whose region ids restart in each polarity, the id carries its + or -),
+over the m/z span of the species' charge states: each charge state's window is shaded, and
+numbered with its z along the top where the number has room. The species' fitted templates (all
+its forms) are blue; those of its other pieces counted from the same region (an adduct form
+folded in, a reading joined) purple, their windows shaded and numbered in purple; the other
+components' orange. A window where grey stands well above blue, purple and orange holds signal no
+fitted component explains. The middle row shows the strongest charge states close up (up to
+four), titled, as shares of the window's signal on the grid, with what the fit left there (fit
+residual), the signal the reported templates leave unexplained and how far they overshoot it,
+and what the templates fitted and then dropped hold there (from 1 %; they are drawn red,
+dotted); the orange dashes are every reported component's templates added up. The bottom panel is the species' trace
+over the scans (black, a dot per scan; blue, the base form where adduct forms were resolved), its
+regions shaded with their bounds dotted, its apex red, and, for a species joined from pieces,
+each piece's trace as it was linked, labelled with the id it was linked as, its region, mass and
+apex (dash-dot: not counted).
+
+**Cost.** Collecting the provenance (per region, the templates of every fitted column added up
+once and the windows measured; each region's grid view and fitted models are then kept, in single
+precision, until the species are final, for their figures) took 0.06-0.3 s per run on the runs
+measured; drawing the figures takes about 0.2 s each, so 300 of them about a minute. On the
+IP-RPLC NC run of the validation (Thermo, 692 scans, 31 regions, comb estimator) `process` took
+45 s with `--provenance` against 27 s without (101 species: 0.3 s collecting, 19 s drawing), and
+its peak memory rose from 322 to 350 MB: a region's scans, summed spectrum, the fit's residual and
+the estimator's output are kept only while the region is processed. `provenance.json` holds every
+charge state and adduct column of every component and every species' trace: about 2-2.5 kB per
+charge state or adduct column recorded (0.6 MB for the 234 of a synthetic run of 7 species,
+2.4 MB for the 1,000 of the NC run's 101); a figure is about 120-175 kB.
+
+**Name aliases.** The run's, its traces' and the method's names in the provenance files come
+aliased with the run and the method (`--alias`, `process_run(..., aliases=...)`), and so do the
+scan IDs. The network's file name, taken from the command line or the method, is aliased by
+`process`, and by `process_run(..., aliases=...)`; for a run and a method aliased already,
+processed without `aliases=`, pass the pairs to `write_outputs(..., aliases=...)` (or
+`write_provenance`, or call `result.provenance.alias_texts(aliases)`), or the file name stays as
+given. `process`'s check of its outputs covers `provenance.json` and `provenance.html` by their
+text and the figures by their names (their pixels hold no text to read; what they draw comes from
+the aliased names).
+
 ## Saturation warnings
 
 Two independent checks run on every processed file:
@@ -403,9 +594,11 @@ stderr naming the file, each OLD in the name shown as `***`, and the count, neve
 (`WARNING: report.html still holds 2 occurrences of an alias's OLD text`). It then checks what else
 `--out` holds, at any depth (an earlier run's outputs, there or in a folder in it), which it does
 not rewrite or delete: the name of every file and folder, and the text of those named as outputs
-are (`results.json`, `species.csv`, `report.html`, `peaks_*.csv`): `WARNING: run1/peaks_UV_***.csv,
-which this run did not write, holds 2 occurrences of an alias's OLD text` (at most 10,000 entries
-are looked at, and no text above 50 MB is read). Give `--out` a fresh folder, or delete such
+are (`results.json`, `species.csv`, `report.html`, `peaks_*.csv`, `provenance.json`,
+`provenance.html`): `WARNING: run1/peaks_UV_***.csv, which this run did not write, holds 2
+occurrences of an alias's OLD text` (at most 10,000 entries are looked at, and no text above 50 MB
+is read). An evidence figure (`evidence/*.png`, written with `--provenance`) is checked by its name
+only, among the files written and the others alike: its pixels hold no text to read. Give `--out` a fresh folder, or delete such
 files, before handing it on. The check never fails the command. A NEW that holds its OLD outside a
 number trips it.
 
@@ -519,7 +712,10 @@ is what `process_run(..., aliases=...)` processes; it records the number of pair
 `result.alias_pairs`. Give `alias_method` the run as read, before `alias_run`: it resolves the
 method's trace references against it (without it, they are aliased as text, which names another
 trace where aliasing made two trace names equal). Pass a run and a method aliased already to
-`process_run` without `aliases=`: aliasing twice can differ from aliasing once.
+`process_run` without `aliases=`: aliasing twice can differ from aliasing once. The network's file
+name, which `process_run(..., provenance=True)` records, comes with neither: for such a run pass
+the pairs to `write_outputs(..., aliases=aliases)` too, which applies them to the provenance's
+texts only (or call `result.provenance.alias_texts(aliases)`); `process` does so itself.
 
 Within `aliases.console()`, what Python prints as text is aliased. A warning is passed on, aliased,
 to the warnings hook in effect, so `warnings.catch_warnings`, `pytest.warns` and

@@ -20,6 +20,7 @@ def link_species(
     edge_fraction: float = 0.1,
     flat_test: bool = True,
     shared_edges: tuple[bool, bool] = (False, False),
+    members: list | None = None,
 ) -> list[Species]:
     """Group components with consistent mass across consecutive frames.
 
@@ -29,9 +30,14 @@ def link_species(
     ``shared_edges`` marks the ends where the window abuts another region's (a boundary drawn at
     a valley between two bands): a species eluting near that valley peaks there, and the other
     region quantifies the rest of it, so the test is not made on that side.
+
+    ``members``, when a list is passed, receives ``(species, parts)`` for each species returned:
+    the (id, mass) of every component whose readings its trace holds (the region's components,
+    whose per-scan copies carry both). Passing nothing leaves the computation unchanged.
     """
     if not frame_results:
         return []
+    parts = members is not None
     frame_results = sorted(frame_results, key=lambda f: f.rt)
     times = np.array([f.rt for f in frame_results])
 
@@ -54,7 +60,11 @@ def link_species(
                     "cls": comp.compound_class, "score": comp.score,
                     "spread": comp.mass_spread_ppm,
                 })
+                if parts:
+                    tracks[-1]["parts"] = {(comp.id, comp.mass)}
             else:
+                if parts:
+                    best["parts"].add((comp.id, comp.mass))
                 w0, w1 = best["weight"], comp.intensity
                 if w0 + w1 > 0:
                     # an exact weighted mean: flooring the denominator (it was max(w0 + w1,
@@ -112,17 +122,21 @@ def link_species(
             adduct_intensity=adducts, charges=charges, score=tr["score"],
             mass_spread_ppm=float(spread), region_id=region_id, flags=flags,
         ))
+        if parts:
+            members.append((species[-1], sorted(tr["parts"])))
         sid += 1
     species.sort(key=lambda s: -s.total_intensity)
     return species
 
 
 def merge_species_across_polarity(species: list[Species], tolerance_ppm: float = 50.0,
-                                  max_apex_min: float = 0.2) -> list[Species]:
+                                  max_apex_min: float = 0.2, log: list | None = None
+                                  ) -> list[Species]:
     """Merge species detected in both polarities of a polarity-switching run, keeping the reading
     with the larger base form (the amount reported). The two readings must peak together
     (apexes within ``max_apex_min``): isomers of one mass that elute apart stay two species,
-    whichever polarity shows each."""
+    whichever polarity shows each. ``log``, when a list is passed, receives
+    ``("other_polarity", kept, dropped, {})`` for each reading left out."""
     out: list[Species] = []
     for s in sorted(species, key=lambda x: -x.base_intensity):
         hit = None
@@ -135,6 +149,8 @@ def merge_species_across_polarity(species: list[Species], tolerance_ppm: float =
             out.append(s)
         else:
             hit.flags.append(f"also seen in {'positive' if s.polarity > 0 else 'negative'} mode")
+            if log is not None:
+                log.append(("other_polarity", hit, s, {}))
     return out
 
 
@@ -179,7 +195,7 @@ def _coelute(a: Species, b: Species, min_r: float, max_apex_min: float) -> bool:
 
 def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0.6,
                       tolerance_ppm: float = 40.0, min_r: float = 0.8,
-                      max_apex_min: float = 0.1) -> list[Species]:
+                      max_apex_min: float = 0.1, log: list | None = None) -> list[Species]:
     """Count every species' adduct forms with it, wherever the decoder reported them.
 
     Within a region the decoder attaches a species' adduct forms to it as adduct columns when
@@ -204,7 +220,8 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
     impurity, and a report too many is the lesser error. Modifications listed for any class only
     (a PEG unit, 0.07 Da from two sodium ions) do not count.
     ``libraries`` is an :class:`~lcmsdeconv.chem.adducts.AdductLibrary` or a dict of them by
-    polarity.
+    polarity. ``log``, when a list is passed, receives ``("adduct_fold", parent, form,
+    {"adduct_state": label})`` for each form folded.
     """
     from ..chem.adducts import AdductState
     from ..chem.modifications import annotate_delta
@@ -258,6 +275,8 @@ def fold_adduct_forms(species: list[Species], libraries, tolerance_da: float = 0
         for z, v in s.charges.items():
             parent.charges[z] = parent.charges.get(z, 0.0) + v
         folded.setdefault(id(parent), []).append(f"{state.label} ({s.mass:.2f} Da)")
+        if log is not None:
+            log.append(("adduct_fold", parent, s, {"adduct_state": state.label}))
     for k in out:
         if id(k) in folded:
             k.flags.append(FOLD_FLAG + ", ".join(folded[id(k)]))
@@ -301,7 +320,7 @@ def _one_band(times: np.ndarray, y_a: np.ndarray, y_b: np.ndarray, valley: float
 
 def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
                            tolerance_da: float = 0.5, max_gap_min: float = 0.2,
-                           valley: float = 0.5) -> list[Species]:
+                           valley: float = 0.5, log: list | None = None) -> list[Species]:
     """Merge one species that was linked separately in neighbouring regions.
 
     A broad elution band can be split into several regions; the same species is then found in
@@ -318,17 +337,20 @@ def merge_adjacent_species(species: list[Species], tolerance_ppm: float = 30.0,
     band, not yet joined to the strong one, is compared with the strong piece's trace before
     that grew: the merge is repeated until nothing more joins (tails of 2653.32 and 2998.45 Da
     of the IP-RPLC conjugate run over three regions each left their last piece apart).
+
+    ``log``, when a list is passed, receives ``("adjacent_pieces", kept, joined, {})`` for each
+    piece joined.
     """
     out = list(species)
     while True:
-        merged = _merge_pass(out, tolerance_ppm, tolerance_da, max_gap_min, valley)
+        merged = _merge_pass(out, tolerance_ppm, tolerance_da, max_gap_min, valley, log)
         if len(merged) == len(out):
             return merged
         out = merged
 
 
 def _merge_pass(species: list[Species], tolerance_ppm: float, tolerance_da: float,
-                max_gap_min: float, valley: float) -> list[Species]:
+                max_gap_min: float, valley: float, log: list | None = None) -> list[Species]:
     """One pass of :func:`merge_adjacent_species`, strongest piece first."""
     out: list[Species] = []
     for s in sorted(species, key=lambda x: -x.total_intensity):
@@ -348,6 +370,8 @@ def _merge_pass(species: list[Species], tolerance_ppm: float, tolerance_da: floa
             out.append(s)
             continue
         _absorb(hit, s)
+        if log is not None:
+            log.append(("adjacent_pieces", hit, s, {}))
     return out
 
 
@@ -385,7 +409,7 @@ def _reading(sp: Species, t: float, tol: float) -> float:
 def merge_boundary_pieces(species: list[Species], boundaries, same_species, steps,
                           tolerance_ppm: float = 30.0, tolerance_da: float = 0.5,
                           max_da: float = 1.5, min_presence: float = 0.3,
-                          valley: float = 0.5) -> list[Species]:
+                          valley: float = 0.5, log: list | None = None) -> list[Species]:
     """Join to its species a piece of its band that a region boundary cut off and that the
     piece's region read up to a dalton off.
 
@@ -407,7 +431,9 @@ def merge_boundary_pieces(species: list[Species], boundaries, same_species, step
     spacing, peaking at 19.0 min): those stay.
 
     ``boundaries`` holds (polarity, time) of every boundary two regions share, ``steps`` the
-    scan spacing (min) by polarity.
+    scan spacing (min) by polarity. ``log``, when a list is passed, receives
+    ``("boundary_piece", species, piece, {"boundary_rt": time, "mass_from_piece": bool})`` for
+    each piece joined (``mass_from_piece``: the joined species took the piece's mass).
     """
     removed: set[int] = set()
     for s in sorted(species, key=lambda x: x.base_intensity):
@@ -460,6 +486,9 @@ def merge_boundary_pieces(species: list[Species], boundaries, same_species, step
                 if own:
                     k.mass = s.mass
                 removed.add(id(s))
+                if log is not None:
+                    log.append(("boundary_piece", k, s, {"boundary_rt": float(tb),
+                                                          "mass_from_piece": bool(own)}))
                 break
     return [x for x in species if id(x) not in removed]
 
@@ -471,7 +500,8 @@ LATER_FLAG = ("the same molecule found later in the run (a tail past its band, t
 def set_aside_later_elutions(species: list[Species], same_species, steps,
                              tolerance_ppm: float = 30.0, tolerance_da: float = 0.5,
                              min_ratio: float = 20.0, min_gap_min: float = 0.2,
-                             with_main_min: float = 0.1, min_rise: float = 2.0) -> list[Species]:
+                             with_main_min: float = 0.1, min_rise: float = 2.0,
+                             log: list | None = None) -> list[Species]:
     """Name the main species' later elutions in its flags instead of reporting them as species.
 
     The run's main species loads the column far more than anything else, and part of it comes
@@ -499,6 +529,9 @@ def set_aside_later_elutions(species: list[Species], same_species, steps,
     why a method turns this on (``linking.set_aside_later_elutions``, off by default) only where
     the main species' tail and its re-elution in the column wash are the concern: the
     oligonucleotide methods.
+
+    ``log``, when a list is passed, receives ``("set_aside", species, later, {})`` for each
+    species set aside, in the order of ``species``.
     """
     parent: dict[int, Species] = {}
 
@@ -538,6 +571,8 @@ def set_aside_later_elutions(species: list[Species], same_species, steps,
     for s in species:
         if id(s) in parent:
             later.setdefault(id(parent[id(s)]), []).append(s)
+            if log is not None:
+                log.append(("set_aside", parent[id(s)], s, {}))
     for p in species:
         if id(p) in later:
             p.flags.append(LATER_FLAG + ", ".join(

@@ -99,6 +99,38 @@ for s in result.species[:5]:
     print(f"{s.mass:10.2f} Da  RT {s.rt_apex:.2f}  {s.adduct_fractions()}")
 ```
 
+## Provenance
+
+`--provenance` (`process_run(..., provenance=True)`) traces every reported mass back to what it
+was read from, and writes it beside the other outputs, which stay as they are:
+
+```bash
+lcmsdeconv process run.mzML -m rplc_pos_protein -o results/ --provenance
+```
+
+- `provenance.json` (schema `lcmsdeconv.provenance`, with a version): per species, the region(s)
+  and scans it came from (retention-time range, scan IDs, shared boundaries); the pieces it was
+  joined from, with the charges each was linked with, and the step that joined each (adduct fold,
+  neighbouring reading of one band, boundary piece, later elution set aside); the component of the
+  region-summed spectrum its mass comes from (mass, template shift, score, spread); per charge
+  state the theoretical m/z, the envelope's m/z window (99.5 % of its template's area) and the
+  template's whole support the fit read, the signal the region's scans measured in the window,
+  the fitted templates, what they leave unexplained or overshoot, what the fit itself left there
+  and what it fitted and then dropped; its adduct-form columns; the charge estimator (comb, or the
+  network's file and SHA-256, with its reading of each assigned charge on the envelope's bins);
+  and its trace per scan. Run-level: the regions (with what each fit dropped and why), the
+  lock-mass correction, the analysis window, and the SHA-256 of the `results.json` written with
+  it.
+- `evidence/species-<id>-<mass>.png`: the region-summed spectrum with the species' charge-state
+  windows shaded and numbered and its fitted templates over the signal (its adduct forms folded in
+  from the same region beside them), its strongest charge states close up, and its trace over the
+  scans with its apex (the 300 largest species).
+- `provenance.html`: an index of the species linking their figures.
+
+Without the flag nothing is collected or written for it. Collecting it took at most about half a
+second per run on the runs measured, drawing about 0.2 s per figure; `docs/usage.md`, "Provenance",
+gives the schema field by field, how to read a figure, and the cost.
+
 ## Training
 
 The recommended charge network is **LadderNet**, which reads every candidate charge's ladder at
@@ -153,7 +185,7 @@ three-month effort at the same problem, what went wrong there, and what that cha
 | --- | --- |
 | `docs/lessons.md` | lessons from a parallel neural-network effort and the fixes they led to here |
 | `docs/architecture.md` | the logarithmic m/z transform, the network, decoding, refinement, the across-time pipeline |
-| `docs/usage.md` | methods, settings, adducts, reading the output, saturation warnings |
+| `docs/usage.md` | methods, settings, adducts, reading the output, provenance, saturation warnings, name aliases |
 | `docs/integration_events.md` | every integration event, baseline codes, how valley clusters are integrated |
 | `docs/synthetic_data.md` | what is simulated and why labels cannot drift from features |
 | `docs/training.md` | GPU training, model sizes, ONNX deployment, offline installation |

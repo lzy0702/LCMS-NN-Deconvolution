@@ -92,7 +92,8 @@ _LOST = "which stands for a character lost in a change of encoding: type it agai
 _DATA_URI = re.compile(r"data:[\w.+/-]+;base64,[A-Za-z0-9+/=\s]*")
 
 #: the names `lcmsdeconv process` gives its outputs (what :meth:`Aliases.leaks_in` reads)
-_OUTPUT_NAMES = ("results.json", "species.csv", "report.html")
+_OUTPUT_NAMES = ("results.json", "species.csv", "report.html", "provenance.json",
+                 "provenance.html")
 
 #: the largest file whose text :meth:`Aliases.leaks_in` reads, in bytes
 _TEXT_LIMIT = 50 * 2**20
@@ -563,7 +564,8 @@ class Aliases:
         (:meth:`count`): an earlier run's outputs, say, beside those of ``exclude`` (the files a
         run wrote there, for :meth:`leaks`), which are left out. Each file and folder is checked
         by its name, and each file named as ``lcmsdeconv process`` names its outputs
-        (results.json, species.csv, report.html, peaks_*.csv) by its text too, read as
+        (results.json, species.csv, report.html, peaks_*.csv, provenance.json and
+        provenance.html; an evidence figure by its name only) by its text too, read as
         :meth:`leaks` reads it: (its name relative to ``folder`` with each OLD masked, the number
         of occurrences in its own name and text) for each, sorted. At most ``limit`` entries are
         looked at, and no text above 50 MB is read."""

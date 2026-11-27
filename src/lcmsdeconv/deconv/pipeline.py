@@ -86,12 +86,25 @@ def deconvolve_spectrum(
     params: DeconvParams,
     instrument: InstrumentModel | None = None,
     trace: list | None = None,
+    keep: dict | None = None,
 ) -> FrameResult:
     """Deconvolve one spectrum into neutral-mass components.
 
     ``trace``, when a list is passed, receives a snapshot of the candidate list after every
     stage (and every fit decision), so a diagnostic can tell at which stage a known species was
     lost. Passing nothing leaves the computation unchanged.
+
+    ``keep``, when a dict is passed, receives what the components were read from and the result
+    does not hold (:mod:`lcmsdeconv.provenance`): ``observed``, the spectrum's grid view (and
+    ``grid``, ``noise_sigma``); ``predictions``, one ``(pass, prediction, signal)`` for each
+    pass of the charge estimator, ``signal`` being the grid view or residual it read (a float32
+    copy after the first pass); ``passes``, the components each fit pass accepted, in order;
+    ``residual``, what the fit left of the grid view once every pass had subtracted its
+    components (clipped at zero after each, as the fit clips it); and ``dropped``, the fitted
+    columns the steps after the fit took away (drop_multimers, drop_harmonic_readings,
+    drop_shared_evidence, drop_coincident_adducts), each with its step and the stronger
+    components it was attributed to (:func:`lcmsdeconv.deconv.refine._dropped`).
+    Passing nothing leaves the computation unchanged.
     """
     polarity = spectrum.polarity
     if instrument is None:
@@ -101,6 +114,8 @@ def deconvolve_spectrum(
     grid, observed, noise_sigma = spectrum_to_grid(
         spectrum.mz, spectrum.intensity, polarity, params.grid_step, params.grid_mz_max,
         spectrum.is_profile, instrument, frames=spectrum.meta.get("frames"))
+    if keep is not None:
+        keep.update(grid=grid, observed=observed, noise_sigma=noise_sigma)
     if observed.max() <= 0:
         return FrameResult(spectrum.rt, polarity, [], noise_sigma, 0.0, meta={"grid": grid})
 
@@ -129,6 +144,9 @@ def deconvolve_spectrum(
     def detect(signal: np.ndarray, it: int = 0):
         """Charge assignment, mass histogram and candidate cleanup for one spectrum."""
         prediction = predictor.predict_grid(grid, signal, noise_sigma)
+        if keep is not None:  # the residual a later pass reads is changed in place by the fit
+            keep.setdefault("predictions", []).append(
+                (it, prediction, signal if it == 0 else signal.astype(np.float32)))
         lm_axis, hist, charge_support = accumulate_mass_histogram(
             grid, signal, prediction, noise_sigma, snr=params.snr, prob_min=params.prob_min,
             mass_min=params.mass_range[0], mass_max=params.mass_range[1],
@@ -238,24 +256,31 @@ def deconvolve_spectrum(
             known_shifts=[c.mass * float(np.expm1(c.template_shift)) for c in components],
             singly_charged_ok=params.singly_charged_species,
         )
+        if keep is not None:
+            keep.setdefault("passes", []).append(list(new))
         if not new:
             break
         components.extend(new)
+    dropped: list | None = None
+    if keep is not None:
+        keep["residual"] = residual  # what the fit left of the grid view (clipped at zero)
+        dropped = keep.setdefault("dropped", [])
     if params.suppress_multimers:
         # by fitted amounts: with resolved isotopes a multimer's candidate can score like its
         # monomer's and pass suppress_harmonics (refine.drop_multimers). First, so that a
         # multimer explains nothing away from weaker species in the steps below
         components = drop_multimers(components, polarity,
                                     resolution=float(instrument.resolving_power(1000.0)),
-                                    frames=frames, coelution_r=params.coelution_r, trace=trace)
+                                    frames=frames, coelution_r=params.coelution_r, trace=trace,
+                                    dropped=dropped)
         # and the stronger species' ions read at other charges: rational multiples, multiples of
         # adduct forms and of impurities, which no exact-multiple test sees
         components = drop_harmonic_readings(components, raw_mz, raw_int, polarity, instrument,
-                                            library, trace=trace)
+                                            library, trace=trace, dropped=dropped)
     components = drop_shared_evidence(components, library, polarity,
                                       resolution=float(instrument.resolving_power(1000.0)),
-                                      trace=trace)
-    components = drop_coincident_adducts(components, mode_library, trace=trace)
+                                      trace=trace, dropped=dropped)
+    components = drop_coincident_adducts(components, mode_library, trace=trace, dropped=dropped)
     # a species whose templates its own isotope comb placed is reported where they sit
     report_comb_masses(components)
     snap("components", components, -1)

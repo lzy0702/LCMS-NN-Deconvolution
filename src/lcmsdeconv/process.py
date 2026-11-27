@@ -66,6 +66,9 @@ class ProcessResult:
     #: how many name-alias pairs the run and the method were aliased with
     #: (:mod:`lcmsdeconv.aliases`); recorded in the summary when there were any, never their text
     alias_pairs: int = 0
+    #: where each species was read from (:class:`lcmsdeconv.provenance.Provenance`): only with
+    #: ``process_run(..., provenance=True)``, else None
+    provenance: Any = None
 
     def species_eic(self, species: Species) -> Chromatogram:
         return Chromatogram(species.time, species.intensity,
@@ -140,6 +143,7 @@ def process_run(
     progress=None,
     trace: list | None = None,
     aliases=None,
+    provenance: bool = False,
 ) -> ProcessResult:
     """Process one run end to end.
 
@@ -162,6 +166,12 @@ def process_run(
     saturation, purity and content; ``result.chromatograms`` keep the whole traces for display.
     The regions' relative floors are taken within the window, their noise floor on the whole
     run's trace.
+
+    With ``provenance``, ``result.provenance`` records where each species was read from: its
+    regions and scans, the components of the regions' summed spectra its mass and amount come
+    from, their charge states' m/z windows and the signal in them, the pieces merged into it and
+    its per-scan trace (:mod:`lcmsdeconv.provenance`). It is kept from what the processing makes
+    anyway and changes nothing else; without it nothing is kept or computed for it.
     """
     method = method or Method()
     t_start = time.perf_counter()
@@ -194,6 +204,12 @@ def process_run(
         # reads isotope charges: its kind decides whether they are read (as in training), its
         # resolving power what they read
         predictor.instrument = instrument
+    recorder = None
+    if provenance:
+        from .provenance import Recorder
+
+        recorder = Recorder(view, predictor, instrument, params, aliases=aliases,
+                            per_scan=bool(method.deconvolution.quantify_frames))
 
     polarities = run.polarities
     if method.acquisition.polarity == "positive":
@@ -248,12 +264,16 @@ def process_run(
                 progress(f"deconvolving region {region.id} ({region.start:.2f}-{region.end:.2f} min)")
             summed = region.summed(view)
             region_trace: list | None = [] if trace is not None else None
-            fr = deconvolve_spectrum(summed, predictor, params, instrument, trace=region_trace)
+            keep: dict | None = {} if recorder is not None else None
+            fr = deconvolve_spectrum(summed, predictor, params, instrument, trace=region_trace,
+                                     keep=keep)
             if trace is not None:
                 trace.append({"region": region.id, "start": region.start, "end": region.end,
                               "polarity": pol, "stages": region_trace, "species": []})
             evidenced.setdefault(pol, set()).update(fr.meta.get("adducts", ()))
             if not fr.components:
+                if recorder is not None:
+                    recorder.region(region, shared, summed, fr, keep)
                 continue
             grid = fr.meta.get("grid") or LogMzGrid(50.0, params.grid_mz_max, params.grid_step, pol)
             library = AdductLibrary.from_mode(params.adduct_mode, pol,
@@ -268,12 +288,13 @@ def process_run(
                     frame_results.append(bank.quantify(spec))
             else:
                 frame_results = [fr]
+            members: list | None = [] if recorder is not None else None
             sp = link_species(frame_results, method.linking.mass_tolerance_ppm,
                               method.linking.mass_tolerance_da, method.linking.min_frames,
                               method.linking.max_gap_frames, method.linking.noise_peak_ratio,
                               region_id=region.id, start_id=sid,
                               flat_test=not method.deconvolution.quantify_frames,
-                              shared_edges=shared)
+                              shared_edges=shared, members=members)
             n_linked = len(sp)
             if method.deconvolution.quantify_frames and sp:
                 # the context frames only judge flatness: the whole run's, beyond the window too
@@ -283,6 +304,9 @@ def process_run(
             all_species.extend(sp)
             if trace is not None:
                 trace[-1]["species"] = [{"mass": s.mass, "rt_apex": s.rt_apex} for s in sp]
+            if recorder is not None:
+                recorder.region(region, shared, summed, fr, keep, sp, members)
+                keep = members = None  # the region's grid view and estimator output, let go
 
     # a species' adduct forms count with it however each region's decoder reported them: cation
     # adducts (sodium, potassium, ammonium: every electrospray run has them), and the mobile
@@ -303,24 +327,25 @@ def process_run(
                                  or a.name in evidenced.get(pol, set())],
                                 lib.max_per_type, lib.max_total)
         fold_libraries[pol] = lib
+    merges: list | None = [] if recorder is not None else None
     all_species = fold_adduct_forms(
         all_species, fold_libraries, tolerance_da=0.6,
-        tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0))
+        tolerance_ppm=2.5e6 / max(float(instrument.resolving_power(1000.0)), 1.0), log=merges)
     all_species = merge_adjacent_species(all_species, method.linking.mass_tolerance_ppm,
-                                         method.linking.mass_tolerance_da)
+                                         method.linking.mass_tolerance_da, log=merges)
     # a piece of a band that its region read up to a dalton off, and, where the method sets them
     # aside, the main species found again later in the run (its tail beyond its band, the column
     # wash): judged by their isotopes, read in the scans themselves
     same = _same_molecule(view, instrument, params.compound_class)
     all_species = merge_boundary_pieces(all_species, boundaries, same, steps,
                                         method.linking.mass_tolerance_ppm,
-                                        method.linking.mass_tolerance_da)
+                                        method.linking.mass_tolerance_da, log=merges)
     if getattr(method.linking, "set_aside_later_elutions", False):
         all_species = set_aside_later_elutions(all_species, same, steps,
                                                method.linking.mass_tolerance_ppm,
-                                               method.linking.mass_tolerance_da)
+                                               method.linking.mass_tolerance_da, log=merges)
     if len(polarities) > 1:
-        all_species = merge_species_across_polarity(all_species)
+        all_species = merge_species_across_polarity(all_species, log=merges)
     all_species.sort(key=lambda s: -s.base_intensity)
     result.species = all_species
 
@@ -367,6 +392,8 @@ def process_run(
     if result.saturation and result.saturation.messages:
         result.warnings.extend(result.saturation.messages)
 
+    if recorder is not None:
+        result.provenance = recorder.finish(result, merges)
     result.timings["total_s"] = time.perf_counter() - t_start
     return result
 

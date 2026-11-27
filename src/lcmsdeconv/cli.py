@@ -188,14 +188,16 @@ def _alias_dialogs(notes, error=None) -> None:
 
 def _check_outputs(aliases, written, outdir: Path, others: bool = True) -> None:
     """Warn, on stderr, of each file written that still holds an alias's OLD outside a number
-    (in its name relative to ``outdir`` or its text), naming the file (each OLD masked) and the
-    count, never the text found. With ``others``, likewise of what else ``outdir`` holds, at any
-    depth (an earlier run's outputs, say: :meth:`lcmsdeconv.aliases.Aliases.leaks_in`). Never
-    fails."""
+    (in its name relative to ``outdir`` or its text; a figure, PNG, by its name, as its pixels
+    hold no text to read), naming the file (each OLD masked) and the count, never the text
+    found. With ``others``, likewise of what else ``outdir`` holds, at any depth (an earlier
+    run's outputs, say: :meth:`lcmsdeconv.aliases.Aliases.leaks_in`). Never fails."""
     found: list[tuple[str, int]] = []
     left: list[tuple[str, int]] = []
     try:  # the check never fails the command
-        found = aliases.leaks(written, outdir)
+        images = [p for p in written if Path(p).suffix.lower() == ".png"]
+        found = aliases.leaks([p for p in written if Path(p).suffix.lower() != ".png"], outdir)
+        found += aliases.leaks(images, outdir, text=False)
     except Exception:
         pass
     try:
@@ -234,9 +236,13 @@ def main():
                    "(default: the function with the most MS1 scans, which leaves out the "
                    "lockspray function).")
 @click.option("--report/--no-report", default=True, help="Write an HTML report.")
+@click.option("--provenance", is_flag=True,
+              help="Also write provenance.json, provenance.html and evidence/*.png: for each "
+                   "species, the regions, scans and m/z signals its mass and amount were read "
+                   "from (docs/usage.md, 'Provenance').")
 @click.option("--quiet", is_flag=True)
 @_alias_options
-def process(input_file, method, out, model, uv_csv, waters_function, report, quiet):
+def process(input_file, method, out, model, uv_csv, waters_function, report, provenance, quiet):
     """Process an mzML, mzMLb (or Thermo .raw) run: deconvolve, link, integrate and quantify.
 
     With alias pairs (--alias, --alias-file, the file the environment variable
@@ -294,7 +300,7 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
             click.echo(f"  {msg}")
 
     # the lock-mass correction and the analysis window are applied here, once
-    result = process_run(run, meth, model_path=model, progress=progress)
+    result = process_run(run, meth, model_path=model, progress=progress, provenance=provenance)
     result.alias_pairs = len(aliases)
     if not quiet and result.lock_mass:
         from .io.lockmass import lock_mass_text
@@ -304,11 +310,18 @@ def process(input_file, method, out, model, uv_csv, waters_function, report, qui
     if not quiet and result.rt_window:
         click.echo(f"analysis window: {rt_window_text(result.rt_window)}")
     outdir = Path(out)
-    written = write_outputs(result, outdir, report=report, plots=meth.report.plots)
+    if provenance and not quiet:
+        click.echo(f"writing the provenance of {len(result.species)} species")
+    # the aliases also reach the network's file name in the provenance (from the command line
+    # or the method)
+    written = write_outputs(result, outdir, report=report, plots=meth.report.plots,
+                            provenance=provenance, aliases=aliases if provenance else None)
     if aliases:
         _check_outputs(aliases, written, outdir)
     if report and not quiet:
         click.echo(f"report: {shown(str(outdir / 'report.html'))}")
+    if provenance and not quiet:
+        click.echo(f"provenance: {shown(str(outdir / 'provenance.html'))}")
     if not quiet:
         click.echo(f"{len(result.species)} species, {len(result.impurities)} rows in the impurity table")
         for w in result.warnings:

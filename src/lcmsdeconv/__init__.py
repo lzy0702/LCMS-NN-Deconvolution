@@ -2,7 +2,7 @@
 
 import os as _os
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # ONNX Runtime's telemetry off unless the user has set the variable (see
 # lcmsdeconv.nn.infer.import_onnxruntime). Set when lcmsdeconv is imported, so that it also holds

@@ -57,15 +57,16 @@ CJK_FONTS = ("Microsoft YaHei", "SimHei", "PingFang SC", "Hiragino Sans GB", "No
 ALIAS_CJK_FONTS = ("Noto Sans CJK TC", "Noto Sans CJK HK", "Noto Sans CJK JP", "Noto Sans CJK KR")
 
 
-def _plot_fonts(result):
+def _plot_fonts(result, extra=()):
     """A context in which the plots fall back to the first CJK_FONTS font installed (then
     ALIAS_CJK_FONTS for a result with name aliases) for the characters their own fonts lack,
-    which they draw as empty boxes otherwise. Only where a trace or species name holds a
-    character beyond ASCII; no change where no such font is installed."""
+    which they draw as empty boxes otherwise. Only where a trace or species name, or a text of
+    ``extra`` (the run's name, say), holds a character beyond ASCII; no change where no such font
+    is installed."""
     import matplotlib
     from matplotlib import font_manager
 
-    names = [*result.chromatograms, *(s.name or "" for s in result.species)]
+    names = [*result.chromatograms, *(s.name or "" for s in result.species), *extra]
     if all(str(n).isascii() for n in names):
         return matplotlib.rc_context()
     installed = {f.name for f in font_manager.fontManager.ttflist}

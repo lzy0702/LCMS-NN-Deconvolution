@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import unicodedata
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -34,6 +35,14 @@ def save_json(obj: Any, path: str | Path) -> Path:
     return path
 
 
+def results_sha256(result) -> str:
+    """The SHA-256 of the ``results.json`` :func:`write_outputs` writes for ``result``: of the
+    bytes :func:`save_json` writes for its summary (its text with the platform's line ends, in
+    UTF-8)."""
+    text = json.dumps(result.summary(), indent=2, default=_json_default)
+    return hashlib.sha256(text.replace("\n", os.linesep).encode("utf-8")).hexdigest()
+
+
 def load_json(path: str | Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -58,12 +67,19 @@ def save_frames_h5(frame_results, path: str | Path) -> Path:
 
 # ------------------------------------------------------------------ what `process` writes
 def write_outputs(result, outdir: str | Path, report: bool = True,
-                  plots: bool | None = None) -> list[Path]:
+                  plots: bool | None = None, provenance: bool | None = None,
+                  aliases=None) -> list[Path]:
     """Write a processed run's outputs into ``outdir`` as ``lcmsdeconv process`` does:
     ``results.json`` (:meth:`~lcmsdeconv.process.ProcessResult.summary`), ``species.csv`` (where
     there are impurity rows), a ``peaks_<name>.csv`` per peak table (:func:`csv_names`) and, with
     ``report``, ``report.html`` (with plots unless ``plots`` is False; default: the method's
-    ``report.plots``). Returns the files written, in that order."""
+    ``report.plots``); then, with ``provenance``, ``provenance.json`` (which names the
+    results.json written here by its SHA-256), ``provenance.html`` and the evidence figures under
+    ``evidence/`` (:func:`lcmsdeconv.provenance.write_provenance`; default: where the result
+    holds provenance, ``process_run(..., provenance=True)``). ``aliases``
+    (:class:`lcmsdeconv.aliases.Aliases`) are applied to the provenance's texts that do not come
+    with the run and the method (the network's file name), as for a run and a method aliased
+    already; nothing else is changed by them. Returns the files written, in that order."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     written = [save_json(result.summary(), outdir / "results.json")]
@@ -74,6 +90,13 @@ def write_outputs(result, outdir: str | Path, report: bool = True,
         if plots is None:
             plots = result.method.report.plots
         written.append(build_report(result, outdir / "report.html", plots=plots))
+    if provenance is None:
+        provenance = getattr(result, "provenance", None) is not None
+    if provenance:
+        from ..provenance import write_provenance
+
+        sha = hashlib.sha256(written[0].read_bytes()).hexdigest()
+        written += write_provenance(result, outdir, aliases=aliases, results_sha256=sha)
     return written
 
 

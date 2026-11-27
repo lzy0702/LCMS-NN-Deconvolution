@@ -569,6 +569,7 @@ analyte than the source can ionise. Both raise warnings that name the affected p
 | `core/` | data model (spectra, runs, results), methods, vendor-thresholded profiles (`profile.py`) |
 | `deconv/` | templates, mass-histogram decoding, co-elution of charge states, NNLS refinement, per-spectrum pipeline |
 | `diagnostics.py` | charge oracles, one-to-one scoring, loss and false-species attribution |
+| `provenance.py` | where each reported species was read from (`process_run(..., provenance=True)`): regions, scans, pieces and merge steps, components, charge-state windows with the signal the scans measured and what the fit left in them, what each region's fit dropped, evidence figures |
 | `features/` | regions, per-frame quantification, retention-time linking, annotation |
 | `chrom/` | integration events and the integrator |
 | `io/` | mzML, mzMLb and Thermo readers (Waters functions, the lockspray kept apart), the mzML writer, the PSI-MS and UO vocabularies they use, saved with the package and never fetched (`vocabularies.py`, `data/cv/`), the lock-mass correction (`lockmass.py`), result files |

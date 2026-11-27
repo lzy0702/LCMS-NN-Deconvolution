@@ -1080,8 +1080,20 @@ def _flag_harmonics(components: list[Component], tol_ppm: float = 100.0):
                     break
 
 
+def _dropped(dropped: list | None, step: str, c: Component, columns: dict, partners,
+             whole: bool = True) -> None:
+    """Record, where ``dropped`` is a list (:func:`~lcmsdeconv.deconv.pipeline.deconvolve_spectrum`'s
+    ``keep``), fitted columns that a step after the fit took away: ``step``, the component, the
+    columns ({(z, label): fitted}), the stronger components they were attributed to, and whether
+    the component itself was dropped."""
+    if dropped is not None:
+        dropped.append({"step": step, "component": c, "columns": dict(columns),
+                        "attributed_to": [k for k in partners if k is not None], "whole": whole})
+
+
 def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
-                            tol_da: float = 0.5, trace: list | None = None) -> list[Component]:
+                            tol_da: float = 0.5, trace: list | None = None,
+                            dropped: list | None = None) -> list[Component]:
     """Give a weaker species' adduct envelopes that coincide with a stronger species' to it.
 
     Adduct ladders overlap: the PS-to-PO impurity of an oligonucleotide plus potassium
@@ -1092,6 +1104,7 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
     of a component whose mass (species plus adduct) lies within ``tol_da`` of a stronger
     component's mass plus any adduct state of the library is removed from it, whether or not the
     stronger component fitted that state; a component left with no column is dropped.
+    ``dropped``, when a list is passed, receives the columns removed (:func:`_dropped`).
     """
     if len(components) < 2:
         return components
@@ -1101,6 +1114,8 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
     kept: list[Component] = []
     for c in sorted(components, key=lambda c: -c.intensity):
         cols = dict(c.columns)
+        removed: dict = {}
+        partners: list[Component] = []
         if kept and cols:
             for z, lab in list(cols):
                 if not lab or lab == "base" or cols[(z, lab)] <= 0:
@@ -1110,10 +1125,17 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
                     st = library.state_of(lab)
                     shift = st.avg_mass if st is not None else 0.0
                 m = c.mass + shift
-                if any(abs(k.mass + d - m) <= tol_da for k in kept for d in shifts):
+                hit = next((k for k in kept if any(abs(k.mass + d - m) <= tol_da for d in shifts)),
+                           None)
+                if hit is not None:
+                    if dropped is not None:
+                        removed[(z, lab)] = cols[(z, lab)]
+                        if all(hit is not k for k in partners):
+                            partners.append(hit)
                     del cols[(z, lab)]
             if len(cols) < len(c.columns):
                 total = float(sum(v for v in cols.values() if v > 0))
+                _dropped(dropped, "coincident_adducts", c, removed, partners, whole=total <= 0)
                 if total <= 0:
                     if trace is not None:
                         trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
@@ -1131,7 +1153,8 @@ def drop_coincident_adducts(components: list[Component], library: AdductLibrary,
 
 def drop_shared_evidence(components: list[Component], library: AdductLibrary, polarity: int,
                          resolution: float = 30000.0, shared_fraction: float = 0.8,
-                         trace: list | None = None) -> list[Component]:
+                         trace: list | None = None, dropped: list | None = None
+                         ) -> list[Component]:
     """Remove components whose envelopes a stronger component already explains.
 
     A charge misassignment reads a strong envelope as some other mass: charge 40 read as 39,
@@ -1141,6 +1164,8 @@ def drop_shared_evidence(components: list[Component], library: AdductLibrary, po
     sits between them. When at least ``shared_fraction`` of a component's fitted intensity lies
     within two envelope sigmas of a stronger column of a stronger component, the component is
     dropped as an artefact. A real dimer survives, since its odd charge states are its own.
+    ``dropped``, when a list is passed, receives each component dropped (:func:`_dropped`),
+    attributed to the stronger components whose columns hold its fit, the largest share first.
     """
     from .decode import envelope_geometry
 
@@ -1151,23 +1176,30 @@ def drop_shared_evidence(components: list[Component], library: AdductLibrary, po
     masses.setdefault("base", 0.0)
     order = sorted(components, key=lambda c: -c.intensity)
     kept: list[Component] = []
-    kept_cols: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []  # (mz, half-width, coef)
+    # (mz, half-width, coef) of each kept component's columns, and the component
+    kept_cols: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    owners: list[Component] = []
     for c in order:
         cols = [(z, lab, v) for (z, lab), v in c.columns.items() if v > 0]
         if kept and cols:
             total = sum(v for _z, _lab, v in cols)
             shared = 0.0
+            by: dict[int, float] = {}
             for z, lab, v in cols:
                 mz = (c.mass + masses.get(lab or "base", 0.0) + z * carrier) / z
-                for kmz, khw, kcoef in kept_cols:
+                for j, (kmz, khw, kcoef) in enumerate(kept_cols):
                     hit = (np.abs(kmz - mz) <= khw) & (kcoef >= v)
                     if hit.any():
                         shared += v
+                        if dropped is not None:
+                            by[j] = by.get(j, 0.0) + v
                         break
             if total > 0 and shared >= shared_fraction * total:
                 if trace is not None:
                     trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
                                   "outcome": "shared_evidence", "mass": float(c.mass)})
+                _dropped(dropped, "shared_evidence", c, c.columns,
+                         [owners[j] for j in sorted(by, key=lambda j: -by[j])])
                 continue
         kept.append(c)
         if cols:
@@ -1178,13 +1210,14 @@ def drop_shared_evidence(components: list[Component], library: AdductLibrary, po
             # two envelope sigmas hold 95 % of an isotope envelope's ions
             hw = np.maximum(2.0 * env_sigma / zs, mz / max(resolution, 1.0))
             kept_cols.append((mz, hw, np.array([v for _z, _lab, v in cols])))
+            owners.append(c)
     return kept
 
 
 def drop_multimers(components: list[Component], polarity: int, resolution: float = 30000.0,
                    frames=None, coelution_r: float = 0.5, tol_ppm: float = 500.0,
                    max_order: int = 6, ratio: float = 0.6, own_share: float = 0.25,
-                   trace: list | None = None) -> list[Component]:
+                   trace: list | None = None, dropped: list | None = None) -> list[Component]:
     """Remove components at n times the mass of a stronger, co-eluting component (n = 2 to
     ``max_order``): multimers the source makes of a species' own molecules.
 
@@ -1218,6 +1251,8 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
     is judged by its elution, not by its charge-state distribution (the dimer of the IP-RPLC NC
     run has 75 % of its fit on odd states). Methods for native and size-exclusion work, where
     oligomers are the point, turn this off with ``suppress_multimers: false``.
+    ``dropped``, when a list is passed, receives each component dropped (:func:`_dropped`),
+    attributed to its monomer.
     """
     from .coelution import can_judge, coeluting
     from .decode import envelope_geometry
@@ -1262,6 +1297,7 @@ def drop_multimers(components: list[Component], polarity: int, resolution: float
             if trace is not None:
                 trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
                               "outcome": "multimer", "mass": float(monomer[0].mass)})
+            _dropped(dropped, "multimer", c, c.columns, [monomer[0]])
             continue
         kept.append(c)
     return kept
@@ -1271,7 +1307,8 @@ def drop_harmonic_readings(components: list[Component], raw_mz: np.ndarray | Non
                            raw_int: np.ndarray | None, polarity: int,
                            instrument: InstrumentModel, library: AdductLibrary,
                            min_ratio: float = 1.25, ratio: float = 0.6, own_share: float = 0.25,
-                           sigmas: float = 3.0, trace: list | None = None) -> list[Component]:
+                           sigmas: float = 3.0, trace: list | None = None,
+                           dropped: list | None = None) -> list[Component]:
     """Remove components that are a stronger component's ions read at other charges.
 
     Where a species' isotopologues are barely resolved at the instrument's resolving power, as a
@@ -1305,7 +1342,9 @@ def drop_harmonic_readings(components: list[Component], raw_mz: np.ndarray | Non
     goes. A genuine heavier or lighter species has envelopes of its own between the stronger
     one's ions, and a non-covalent dimer its odd charge states: both stay, the dimer for
     drop_multimers' co-elution test. Methods that turn ``suppress_multimers`` off, where
-    oligomers are the point, do not run this either.
+    oligomers are the point, do not run this either. ``dropped``, when a list is passed,
+    receives each component dropped (:func:`_dropped`), attributed to the stronger component
+    it was compared with.
     """
     from .decode import ISOTOPE_SPACING, envelope_geometry, isotope_ladder_spacing
 
@@ -1358,6 +1397,7 @@ def drop_harmonic_readings(components: list[Component], raw_mz: np.ndarray | Non
                 if trace is not None:
                     trace.append({"pass": -1, "stage": "fit", "candidate": float(c.mass),
                                   "outcome": "harmonic_reading", "mass": float(partner.mass)})
+                _dropped(dropped, "harmonic_reading", c, c.columns, [partner])
                 continue
         kept.append(c)
         kept_ions.append(np.array([(mz, max(sigmas * sig / z, float(instrument.fwhm(mz))))

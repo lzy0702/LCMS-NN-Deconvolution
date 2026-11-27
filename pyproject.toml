@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lcmsdeconv"
-version = "0.1.1"
+version = "0.1.2"
 description = "Neural-network deconvolution, EIC extraction, integration and quantitation for LC-ESI-MS of macromolecules"
 readme = "README.md"
 requires-python = ">=3.10"
